@@ -24,6 +24,19 @@ are hypotheses, not causal findings. The final offline gate results are in
   deltas.
 - `polymarket-smoke-markets.json`: metadata sidecar from that smoke run.
 
+The 2026-10-24 files above are retained for comparison. Current
+observations (same methodology, refreshed):
+
+- `polymarket-latency-2026-11-15.json`: single 60-second observation, 5
+  outcome tokens, 2 replicas, release build. Raw run output, not a
+  benchmark claim.
+- `polymarket-smoke-report.json` / `polymarket-smoke-markets.json`:
+  refreshed 2026-11-15 with the documented 20-second command (8 symbols,
+  72 SBE messages, zero writer errors, zero rejected deltas).
+- `live/`: checked-in evidence from live-evidence runs (verified smoke
+  captures, capacity findings, failed runs preserved as failures) with
+  their own provenance chains in each subdirectory's README.
+
 The corresponding SBE capture was written to `/tmp/ec-smoke/polymarket.sbe` and
 is not checked in. Reproduce the run with:
 

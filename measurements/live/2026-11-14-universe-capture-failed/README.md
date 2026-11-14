@@ -86,6 +86,9 @@ stress harness does before any full-universe retry.
 | `sbe-verify.json` + `sbe-verify.log` | the failing verification: mismatch counts and per-symbol samples |
 | `hashes.txt` | sha256 of binary, capture, markets.json, report.json, journal manifest |
 
-The full 8.12 GB capture, 370 MB sidecar and 17.7 GB journal remain in
-`captures/live-20261114T200044Z/` on this machine (gitignored, not checked
-in) for follow-up analysis.
+The full 8.12 GB capture, 370 MB sidecar and 17.7 GB journal were deleted
+from this machine after hashing (disk hygiene; the artifacts are not
+byte-for-byte reproducible). The sha256 values in `hashes.txt` are the
+provenance anchor for what existed; `report.json`, `collector.log` and
+`sbe-verify.json` remain under `captures/live-20261114T200044Z/` (34 MB)
+for follow-up analysis, and their reduced copies are checked in here.
