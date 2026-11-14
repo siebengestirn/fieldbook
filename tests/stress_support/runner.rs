@@ -432,7 +432,15 @@ fn settings_for(mock: &MockKalshi, directory: &Path, config: &CellConfig) -> Set
     settings.collector.max_markets = 0;
     settings.collector.duration_secs = 0;
     settings.collector.writer_queue = config.writer_queue.unwrap_or(4_096);
-    settings.collector.writer_send_timeout_secs = 1;
+    // This timeout governs every writer/metadata/journal shutdown deadline,
+    // including journal finalization: producer quiescence, the finalize
+    // command, the segment fsync + rename and the manifest rewrite. A
+    // 1-second bound passed on a quiet workstation but failed under
+    // GitHub-hosted CI, where dozens of these cells run in parallel on a
+    // 4-vCPU runner and finalization legitimately takes longer. The value is
+    // still far below the harness's own finish deadline; fixture failures
+    // come from the fixtures, never from this deadline.
+    settings.collector.writer_send_timeout_secs = 10;
     settings.collector.max_total_connections = if config.force_capacity_reject { 1 } else { 512 };
     settings.collector.max_shards = 256;
     settings.collector.max_estimated_book_memory_mb = 4_096;

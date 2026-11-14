@@ -227,7 +227,12 @@ async fn update_without_snapshot_fixture_fails_closed() {
         "expected accounting/coverage failure, got {:?}",
         outcome.acceptance.reasons
     );
-    let output = outcome.output.expect("fixture cell must produce output");
+    let output = outcome.output.unwrap_or_else(|| {
+        panic!(
+            "fixture cell must produce output; acceptance reasons: {:?}",
+            outcome.acceptance.reasons
+        )
+    });
     let universe = SyntheticUniverse::generate(12, 200, 20_000);
     let skipped = universe.eligible_tickers_sorted()[0].clone();
     assert!(
@@ -274,7 +279,12 @@ async fn dropped_delta_fixture_fails_closed() {
         "expected unexplained_drops, got {:?}",
         outcome.acceptance.reasons
     );
-    let output = outcome.output.expect("fixture cell must produce output");
+    let output = outcome.output.unwrap_or_else(|| {
+        panic!(
+            "fixture cell must produce output; acceptance reasons: {:?}",
+            outcome.acceptance.reasons
+        )
+    });
     assert_eq!(
         output.sbe_deltas,
         output.events_published as u64 - 5,
@@ -299,7 +309,12 @@ async fn writer_queue_saturation_fixture_preserves_accounting() {
         ..headless_cell_config(15, 2_000)
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
-    let output = outcome.output.expect("writer fixture must produce output");
+    let output = outcome.output.unwrap_or_else(|| {
+        panic!(
+            "writer fixture must produce output; acceptance reasons: {:?}",
+            outcome.acceptance.reasons
+        )
+    });
     assert!(
         output.writer_queue_high_water >= 128,
         "the writer queue must reach its configured bound (high-water {})",
@@ -337,9 +352,12 @@ async fn mock_queue_saturation_fixture_fails_closed() {
         !outcome.acceptance.valid,
         "stalled mock queue must fail acceptance"
     );
-    let output = outcome
-        .output
-        .expect("saturation fixture must produce output");
+    let output = outcome.output.unwrap_or_else(|| {
+        panic!(
+            "saturation fixture must produce output; acceptance reasons: {:?}",
+            outcome.acceptance.reasons
+        )
+    });
     assert!(
         output.mock.queue_saturated > 0,
         "the bounded queue must record saturation events"
@@ -725,9 +743,12 @@ async fn reference_queue_saturation_manifest() {
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
             .await;
     assert!(!outcome.acceptance.valid);
-    let output = outcome
-        .output
-        .expect("saturation fixture must produce output");
+    let output = outcome.output.unwrap_or_else(|| {
+        panic!(
+            "saturation fixture must produce output; acceptance reasons: {:?}",
+            outcome.acceptance.reasons
+        )
+    });
     assert!(output.mock.queue_saturated > 0);
 }
 
@@ -878,7 +899,12 @@ async fn over_application_fixture_fails_closed() {
         outcome.acceptance.reasons
     );
 
-    let output = outcome.output.expect("fixture cell must produce output");
+    let output = outcome.output.unwrap_or_else(|| {
+        panic!(
+            "fixture cell must produce output; acceptance reasons: {:?}",
+            outcome.acceptance.reasons
+        )
+    });
     assert_eq!(
         output.ledger.over_applied,
         Some(duplicates as u64),
