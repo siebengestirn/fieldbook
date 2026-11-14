@@ -242,7 +242,7 @@ VERDICT=${VERDICT:-pass}
 [[ "$JOURNAL_STATUS" == pass ]] || VERDICT=FAIL
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-python3 - "$SANDBOX" "$VAR_LIB" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" \
+if ! python3 - "$SANDBOX" "$VAR_LIB" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" \
   "$DURATION_SECS" "$METRICS_PORT" "$LIVEZ_STATUS" "$READYZ_STATUS" "$METRICS_STATUS" \
   "$EXIT_STATUS" "$UNIT_STATUS" "$SBE_STATUS" "$COMPLETE_STATUS" "$COVERAGE_STATUS" \
   "$JOURNAL_STATUS" "$VERDICT" <<'PY'
@@ -253,7 +253,7 @@ import hashlib, json, pathlib, sys
 root, lib = pathlib.Path(sandbox), pathlib.Path(var_lib)
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-settings = root.parent / "etc" / "engineering-challenge" / "settings.toml"
+settings = root / "etc" / "engineering-challenge" / "settings.toml"
 manifest = {
     "schema_version": 1,
     "verification": "deploy",
@@ -292,6 +292,12 @@ manifest = {
 (root / "deploy-verification.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(manifest, indent=2))
 PY
+then
+  VERDICT=FAIL
+fi
+# Fail-closed: a verification whose manifest cannot be written is a failed
+# verification, never a pass with missing evidence.
+[[ "$VERDICT" == pass ]] || fail "deploy verification failed; see $SANDBOX"
 
 if [[ "$VERDICT" == pass ]]; then
   echo "DEPLOY_VERIFICATION_OK: $SANDBOX"
