@@ -1812,3 +1812,96 @@ fn untracked_terminal_after_created_does_not_resurrect_market() {
     assert_eq!(core.stats().lifecycle_unknown_symbols, 2);
     assert!(core.take_lifecycle_reconcile_request());
 }
+
+/// M1 pin (feed-continuity contracts): a quiet instrument on a healthy
+/// source must never escalate to a source-level reconnect.
+///
+/// The live full-universe failure (measurements/live/
+/// 2026-11-14-universe-capture-failed/) showed 756 connection errors and
+/// 10M failover snapshots; the suspected mechanism is exactly this
+/// escalation — one quiet market exhausts its probe budget and the
+/// recovery request is upgraded to `reconnect: true`, invalidating every
+/// book on the source and demanding a snapshot burst.
+///
+/// Required behavior (fed-continuity contracts, gate B): instrument
+/// quietness yields an instrument-scoped recovery with a refresh action;
+/// a source reconnect is a separate, explicit decision. This test is red
+/// against the current `reconnect |= reconnect` coalescing and defines
+/// the behavior the redesign must satisfy.
+#[test]
+fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
+    let mut core = core();
+    connect_sources(&mut core);
+
+    // 3,000 instruments on one source; the last one stays quiet.
+    const INSTRUMENTS: usize = 3_000;
+    let names: Vec<String> = (0..INSTRUMENTS)
+        .map(|index| format!("Q{index:04}"))
+        .collect();
+    let infos: Vec<MarketInfo> = names.iter().map(|name| market(name)).collect();
+    core.apply_discovery(NOW, infos).unwrap();
+    core.drain_controls();
+    for name in &names {
+        let outputs = core.handle_event(
+            SOURCE_A,
+            snapshot_event(name, 400_000, 600_000, 0),
+        );
+        assert!(!outputs.is_empty(), "{name} must anchor on its snapshot");
+    }
+    core.drain_controls();
+    assert_eq!(
+        core.markets[&names[0]].continuity,
+        ContinuityState::Live,
+        "every anchored instrument starts Live"
+    );
+
+    let stale_after_us = 120_000_000;
+    let probe_spacing_us = 30_000_000;
+    // Advance past the freshness window in probe-spacing steps. Only the
+    // quiet instrument ages; the others keep receiving periodic snapshots
+    // from the tick loop, which must not change their continuity. Controls
+    // are drained once, after the probe budget is exhausted, so the
+    // assertions observe the complete escalation in one place.
+    for step in 1..=4u32 {
+        let now = NOW + stale_after_us + i64::from(step) * probe_spacing_us;
+        let _ = core.tick(now);
+    }
+
+    // The quiet instrument itself must be in recovery, but scoped to the
+    // instrument: no request may carry `reconnect: true`, and no request
+    // may name another instrument.
+    let recoveries: Vec<(SourceId, u64, Vec<String>, bool)> = core
+        .drain_controls()
+        .into_iter()
+        .filter_map(|(source, control)| match control {
+            Control::Recover {
+                generation,
+                symbols,
+                reconnect,
+            } => Some((source, generation, symbols, reconnect)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !recoveries.iter().any(|(_, _, _, reconnect)| *reconnect),
+        "a quiet instrument must never escalate to a source reconnect; got {recoveries:?}"
+    );
+    for (_, _, symbols, _) in &recoveries {
+        assert_eq!(
+            symbols.as_slice(),
+            ["Q2999".to_owned()],
+            "instrument-scoped recovery must name only the quiet instrument"
+        );
+    }
+
+    // The blast radius must be one instrument: every other book keeps its
+    // anchor and stays Live on the same source.
+    for name in &names[..INSTRUMENTS - 1] {
+        assert_eq!(
+            core.markets[name].continuity,
+            ContinuityState::Live,
+            "{name} must be untouched by its neighbor's quietness"
+        );
+        assert_eq!(core.markets[name].active, Some(SOURCE_A));
+    }
+}
