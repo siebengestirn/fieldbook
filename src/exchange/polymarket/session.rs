@@ -16,7 +16,7 @@ use crate::{
     exchange::polymarket::codec::decode_polymarket_message,
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
-    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame},
+    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame, SessionSignal},
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
 };
@@ -186,6 +186,10 @@ impl MarketDataSession for PolymarketSession {
         let received_at_us = now_us().unwrap_or(0);
         let (text, kind) = match payload {
             WsPayload::Idle => return Ok(SessionFrame::idle(0)),
+            // A native transport-level PONG acknowledges a client heartbeat.
+            // Polymarket's application heartbeat is text-based and handled
+            // below; a native ack is still a heartbeat acknowledgement.
+            WsPayload::HeartbeatAck => return Ok(SessionFrame::heartbeat_ack(0)),
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
                 Ok(text) => (text, FrameKind::Binary),
@@ -219,7 +223,7 @@ impl MarketDataSession for PolymarketSession {
         if control.eq_ignore_ascii_case("PING") {
             self.pong_pending = true;
             self.flush_pending_pong().await?;
-            return Ok(SessionFrame::data(
+            let mut frame = SessionFrame::data(
                 Vec::new(),
                 bytes,
                 RawFrame {
@@ -228,10 +232,14 @@ impl MarketDataSession for PolymarketSession {
                 },
                 DecodeOutcome::ignored("control_frame"),
                 received_at_us,
-            ));
+            );
+            // The venue's own probe is a different observation from an
+            // acknowledgement of a client heartbeat.
+            frame.signal = SessionSignal::PeerPing;
+            return Ok(frame);
         }
         if control.eq_ignore_ascii_case("PONG") {
-            return Ok(SessionFrame::data(
+            let mut frame = SessionFrame::data(
                 Vec::new(),
                 bytes,
                 RawFrame {
@@ -240,7 +248,9 @@ impl MarketDataSession for PolymarketSession {
                 },
                 DecodeOutcome::ignored("control_frame"),
                 received_at_us,
-            ));
+            );
+            frame.signal = SessionSignal::HeartbeatAck;
+            return Ok(frame);
         }
         match decode_polymarket_message(&text, received_at_us) {
             Ok(events) => {

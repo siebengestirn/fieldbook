@@ -27,6 +27,10 @@ pub enum WsPayload {
     Text(String),
     /// Binary data frame, preserved as received.
     Binary(Vec<u8>),
+    /// The peer acknowledged a client heartbeat (native WebSocket PONG).
+    /// Surfaced explicitly instead of being collapsed into an idle frame:
+    /// a heartbeat acknowledgement is evidence, not silence.
+    HeartbeatAck,
     /// Control/heartbeat frame; the connection is still alive.
     Idle,
 }
@@ -566,7 +570,7 @@ pub async fn next_payload(stream: &mut WsStream) -> anyhow::Result<WsPayload> {
                 stream.send(Message::Pong(payload)).await?;
                 return Ok(WsPayload::Idle);
             }
-            Message::Pong(_) => return Ok(WsPayload::Idle),
+            Message::Pong(_) => return Ok(WsPayload::HeartbeatAck),
             Message::Close(frame) => {
                 let detail = frame.map_or_else(
                     || "without frame".to_owned(),
@@ -676,17 +680,21 @@ mod tests {
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "first"),
-            WsPayload::Binary(_) | WsPayload::Idle => panic!("expected a text frame"),
+            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck => {
+                panic!("expected a text frame")
+            }
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "second"),
-            WsPayload::Binary(_) | WsPayload::Idle => panic!("expected a text frame"),
+            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck => {
+                panic!("expected a text frame")
+            }
         }
         server.await.unwrap();
     }
 
     #[tokio::test]
-    async fn websocket_ping_and_pong_are_reported_as_idle() {
+    async fn websocket_ping_is_idle_and_pong_is_a_heartbeat_ack() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -711,15 +719,23 @@ mod tests {
             .unwrap();
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Idle => {}
-            WsPayload::Text(_) | WsPayload::Binary(_) => panic!("a ping must be idle"),
+            WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::HeartbeatAck => {
+                panic!("a ping must be idle")
+            }
         }
+        // A native PONG acknowledges a client heartbeat: it is surfaced as
+        // evidence, never collapsed into idle silence.
         match next_payload(&mut stream).await.unwrap() {
-            WsPayload::Idle => {}
-            WsPayload::Text(_) | WsPayload::Binary(_) => panic!("a pong must be idle"),
+            WsPayload::HeartbeatAck => {}
+            WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::Idle => {
+                panic!("a pong must be a heartbeat acknowledgement")
+            }
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "after-control"),
-            WsPayload::Binary(_) | WsPayload::Idle => panic!("expected a text frame"),
+            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck => {
+                panic!("expected a text frame")
+            }
         }
         server.await.unwrap();
     }

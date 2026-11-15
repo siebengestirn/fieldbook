@@ -617,6 +617,9 @@ impl MarketDataSession for KalshiSession {
         let received_at_us = now_us().unwrap_or(0);
         let (text, kind) = match payload {
             WsPayload::Idle => return Ok(SessionFrame::idle(0)),
+            WsPayload::HeartbeatAck => {
+                return Ok(SessionFrame::idle(0));
+            }
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
                 Ok(text) => (text, FrameKind::Binary),

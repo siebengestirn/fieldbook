@@ -15,7 +15,7 @@ use tracing::{info, warn};
 use crate::{
     config::CollectorSettings,
     journal::{DecodeOutcome, JournalHandle, RawFrame},
-    model::{Control, ExchangeEvent, ResetReason, SourceId, SourceStatus},
+    model::{ConnectionHealth, Control, ExchangeEvent, ResetReason, SourceId, SourceStatus},
     time::now_us,
 };
 
@@ -29,6 +29,29 @@ pub struct SessionFrame {
     pub raw: Option<RawFrame>,
     pub decode: DecodeOutcome,
     pub received_at_us: Option<i64>,
+    /// What kind of observation this frame carries, typed at the adapter or
+    /// transport boundary. Never inferred from an empty event list.
+    pub signal: SessionSignal,
+}
+
+/// One typed observation from a session. A heartbeat acknowledgement and a
+/// market event are different facts: a PONG must not update an instrument's
+/// market-data timestamp, and market data must never satisfy a heartbeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionSignal {
+    /// Decoded market data (or an ignorable payload the adapter chose not to
+    /// decode). The only signal that may advance instrument activity.
+    #[default]
+    MarketData,
+    /// The venue acknowledged the client's heartbeat (application-level text
+    /// `PONG` on Polymarket, native WebSocket PONG elsewhere).
+    HeartbeatAck,
+    /// The venue sent its own heartbeat probe (server `PING`). A different
+    /// observation from an acknowledgement of a client ping.
+    PeerPing,
+    /// Session control the adapter handled (subscribe acknowledgements and
+    /// similar) that is neither market data nor a heartbeat exchange.
+    ProtocolControl,
 }
 
 impl SessionFrame {
@@ -40,6 +63,21 @@ impl SessionFrame {
             raw: None,
             decode: DecodeOutcome::default(),
             received_at_us: None,
+            signal: SessionSignal::ProtocolControl,
+        }
+    }
+
+    /// A heartbeat acknowledgement from the venue. Carries no market data
+    /// and no journal payload: it updates heartbeat state and nothing else.
+    #[must_use]
+    pub fn heartbeat_ack(bytes: usize) -> Self {
+        Self {
+            events: Vec::new(),
+            bytes,
+            raw: None,
+            decode: DecodeOutcome::default(),
+            received_at_us: None,
+            signal: SessionSignal::HeartbeatAck,
         }
     }
 
@@ -57,6 +95,7 @@ impl SessionFrame {
             raw: Some(raw),
             decode,
             received_at_us: Some(received_at_us),
+            signal: SessionSignal::MarketData,
         }
     }
 }
@@ -187,11 +226,43 @@ pub struct WorkerConfig {
     pub reconnect_after: Duration,
     pub reconnect_base_backoff: Duration,
     pub reconnect_max_backoff: Duration,
+    /// Heartbeat policy. Adapter-owned: venues differ in mechanism (text
+    /// PING/PONG, native WebSocket PONG) and every threshold here is a
+    /// client policy parameter, not a venue guarantee.
+    pub heartbeat: HeartbeatPolicy,
     /// Shared across every worker so the process never exceeds the configured
     /// number of simultaneous websocket handshakes.
     pub connect_permits: Arc<Semaphore>,
     /// Raw-frame journal shared by every source worker.
     pub journal: Option<JournalHandle>,
+}
+
+/// What the worker does when heartbeat responses go missing past the
+/// response deadline.
+#[derive(Debug, Clone, Copy)]
+pub struct HeartbeatPolicy {
+    /// How long a sent heartbeat may stay unanswered before it counts as
+    /// missed. Monotonic.
+    pub response_deadline: Duration,
+    /// Misses in a row before the connection health becomes `Suspect`.
+    pub miss_threshold: u32,
+    /// Misses in a row before the worker applies the reconnect action.
+    pub reconnect_after_misses: u32,
+}
+
+impl HeartbeatPolicy {
+    /// Conservative default for a 10-second application heartbeat: a
+    /// response deadline well under the send interval would misfire under
+    /// normal latency, so 5 seconds bounds detection; one missed response
+    /// makes the connection suspect, three in a row reconnect it.
+    #[must_use]
+    pub fn ten_second_application_heartbeat() -> Self {
+        Self {
+            response_deadline: Duration::from_secs(5),
+            miss_threshold: 1,
+            reconnect_after_misses: 3,
+        }
+    }
 }
 
 impl WorkerConfig {
@@ -204,6 +275,7 @@ impl WorkerConfig {
             reconnect_after: Duration::from_secs(settings.reconnect_after_secs),
             reconnect_base_backoff: Duration::from_millis(500),
             reconnect_max_backoff: Duration::from_secs(30),
+            heartbeat: HeartbeatPolicy::ten_second_application_heartbeat(),
             connect_permits: Arc::new(Semaphore::new(settings.connect_concurrency.max(1))),
             journal: None,
         }
@@ -324,6 +396,15 @@ pub async fn run_worker(
         status.connected = true;
         status.subscriptions = desired.len();
         status.last_error = None;
+        status.connection_health = ConnectionHealth::Healthy;
+        // A fresh connection has answered nothing yet; heartbeat state
+        // starts clean. Book continuity is intentionally untouched: a
+        // reconnect can only re-anchor books through accepted recovery
+        // snapshots, never through connection success.
+        status.missed_heartbeats = 0;
+        status.last_pong_received_us = None;
+        status.heartbeat_rtt_us = None;
+        let mut outstanding_ping: Option<(Instant, i64)> = None;
         let now = Instant::now();
         let next_periodic_reconnect =
             now + config.reconnect_after + Duration::from_millis(rand::random::<u64>() % 60_000);
@@ -424,19 +505,55 @@ pub async fn run_worker(
                 }
             }
             if must_reconnect || should_stop {
+                status.connection_health = if should_stop {
+                    ConnectionHealth::Stopped
+                } else {
+                    ConnectionHealth::Reconnecting
+                };
                 break;
             }
 
             let now = Instant::now();
-            if now >= next_keepalive {
-                if let Some(active) = session.as_mut()
-                    && let Err(failure) = active.send_keepalive().await
-                {
-                    warn!(%source, error = %format!("{failure:?}"), "keepalive failed");
-                    status.last_error = Some(failure_message(&failure));
+            // Heartbeat accounting, before any new send: an outstanding
+            // heartbeat that passed its response deadline is a miss, and a
+            // heartbeat superseded by a new send without ever being
+            // acknowledged is a miss too. Both mean the venue did not
+            // answer in the window the policy granted it.
+            if let Some((sent_at, _)) = outstanding_ping
+                && now.duration_since(sent_at) >= config.heartbeat.response_deadline
+            {
+                outstanding_ping = None;
+                if apply_heartbeat_miss(&mut status, &config.heartbeat) {
                     must_reconnect = true;
                 }
-                status.last_keepalive_us = now_us().ok();
+            }
+            if now >= next_keepalive {
+                if let Some(active) = session.as_mut() {
+                    match active.send_keepalive().await {
+                        Ok(()) => {
+                            // Only a successful send starts the response
+                            // window; a failed attempt is a transport error
+                            // and must not be recorded as a heartbeat send.
+                            if outstanding_ping.is_some() {
+                                // The previous heartbeat was never
+                                // acknowledged before this new send: a miss,
+                                // however short the interval is relative to
+                                // the deadline.
+                                if apply_heartbeat_miss(&mut status, &config.heartbeat) {
+                                    must_reconnect = true;
+                                }
+                            }
+                            let sent_us = now_us().ok();
+                            status.last_ping_sent_us = sent_us;
+                            outstanding_ping = Some((now, sent_us.unwrap_or(0)));
+                        }
+                        Err(failure) => {
+                            warn!(%source, error = %format!("{failure:?}"), "keepalive failed");
+                            status.last_error = Some(failure_message(&failure));
+                            must_reconnect = true;
+                        }
+                    }
+                }
                 next_keepalive = now + config.keepalive_interval;
             }
             if now >= next_status {
@@ -459,7 +576,10 @@ pub async fn run_worker(
             let wake = next_keepalive
                 .min(next_status)
                 .min(next_periodic_reconnect)
-                .min(idle_deadline);
+                .min(idle_deadline)
+                .min(outstanding_ping.map_or(next_status, |(sent_at, _)| {
+                    sent_at + config.heartbeat.response_deadline
+                }));
             let mut pending_control: Option<Control> = None;
             tokio::select! {
                 // Prefer a ready frame. A dropped poll loses no data: the
@@ -494,6 +614,23 @@ pub async fn run_worker(
                             status.messages = status.messages.saturating_add(1);
                             status.last_frame_us = now_us().ok();
                             idle_deadline = Instant::now() + config.idle_timeout;
+                            // A heartbeat acknowledgement is a different fact
+                            // from market data: it updates heartbeat state and
+                            // nothing else. Market data must never satisfy a
+                            // heartbeat, and a PONG must never touch
+                            // instrument activity.
+                            if frame.signal == SessionSignal::HeartbeatAck {
+                                status.last_pong_received_us = now_us().ok();
+                                if let Some((_, sent_us)) = outstanding_ping {
+                                    status.heartbeat_rtt_us =
+                                        now_us().ok().map(|now| now.saturating_sub(sent_us));
+                                }
+                                outstanding_ping = None;
+                                status.missed_heartbeats = 0;
+                                if status.connection_health == ConnectionHealth::Suspect {
+                                    status.connection_health = ConnectionHealth::Healthy;
+                                }
+                            }
                             update_latency(&mut status, &frame.events);
                             if !frame.events.is_empty()
                                 && events
@@ -772,6 +909,7 @@ async fn close_and_stop(
     }
     status.connected = false;
     status.subscriptions = 0;
+    status.connection_health = ConnectionHealth::Stopped;
     let _ = events.send(WorkerEvent::Status(status.clone())).await;
     let _ = events
         .send(WorkerEvent::Stopped {
@@ -796,6 +934,8 @@ async fn backoff_or_stop(
     connection_epoch: u64,
     receive_seq: u64,
 ) -> bool {
+    status.connection_health = ConnectionHealth::Backoff;
+    let _ = events.send(WorkerEvent::Status(status.clone())).await;
     let sleep = tokio::time::sleep(duration);
     tokio::pin!(sleep);
     loop {
@@ -837,6 +977,29 @@ fn next_backoff(current: Duration, maximum: Duration) -> Duration {
     let doubled = current.saturating_mul(2).min(maximum);
     let jitter = 0.8 + rand::random::<f64>() * 0.4;
     doubled.mul_f64(jitter).min(maximum)
+}
+
+/// Record one missed heartbeat response and apply the policy's health and
+/// reconnect thresholds. Returns `true` when the policy's reconnect action
+/// fires.
+fn apply_heartbeat_miss(status: &mut SourceStatus, policy: &HeartbeatPolicy) -> bool {
+    status.missed_heartbeats = status.missed_heartbeats.saturating_add(1);
+    if status.missed_heartbeats >= u64::from(policy.reconnect_after_misses) {
+        status.connection_health = ConnectionHealth::Suspect;
+        status.last_error = Some(format!(
+            "heartbeat: {} consecutive PONG responses missed",
+            status.missed_heartbeats
+        ));
+        return true;
+    }
+    if status.missed_heartbeats >= u64::from(policy.miss_threshold) {
+        status.connection_health = ConnectionHealth::Suspect;
+        status.last_error = Some(format!(
+            "heartbeat: {} consecutive PONG responses missed",
+            status.missed_heartbeats
+        ));
+    }
+    false
 }
 
 /// Attach the supervisor's receive fence to every decoded event.
@@ -1405,6 +1568,15 @@ mod heartbeat_pin_tests {
             reconnect_after: Duration::from_secs(3_600),
             reconnect_base_backoff: Duration::from_millis(10),
             reconnect_max_backoff: Duration::from_millis(20),
+            // Deterministic policy: a PONG must arrive within 50ms of its
+            // ping, one miss makes the connection suspect, and the policy
+            // never reconnects during the window so the suspect state is
+            // observable rather than immediately rotated.
+            heartbeat: HeartbeatPolicy {
+                response_deadline: Duration::from_millis(50),
+                miss_threshold: 1,
+                reconnect_after_misses: u32::MAX,
+            },
             connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             journal: None,
         };
@@ -1442,7 +1614,30 @@ mod heartbeat_pin_tests {
         let last = statuses
             .last()
             .expect("the worker must publish periodic status");
-        assert_eq!(last.connected, true, "the socket itself never failed");
+        assert!(last.connected, "the socket itself never failed");
+        // Market data kept flowing: transport frames advanced throughout.
+        assert!(
+            last.last_frame_us.is_some(),
+            "market frames must have been received and recorded"
+        );
+        // No PONG ever arrived, so the acknowledgement time stays unset for
+        // the whole run: market data must never satisfy a heartbeat.
+        assert_eq!(
+            last.last_pong_received_us, None,
+            "market traffic must not be recorded as a heartbeat acknowledgement"
+        );
+        // The deterministic policy expired the response deadline: the
+        // failure is counted, the health state leaves Healthy, and the
+        // reason is recorded.
+        assert!(
+            statuses.iter().any(|status| status.missed_heartbeats >= 1),
+            "missed heartbeats must be counted while PONGs are absent"
+        );
+        assert_eq!(
+            last.connection_health,
+            crate::model::ConnectionHealth::Suspect,
+            "the connection must become suspect on missed heartbeats"
+        );
         assert!(
             statuses.iter().any(|status| status
                 .last_error

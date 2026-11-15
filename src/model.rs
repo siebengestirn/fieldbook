@@ -892,10 +892,44 @@ pub struct SourceStatus {
     pub protocol_errors: u64,
     pub bytes_received: u64,
     pub last_frame_us: Option<i64>,
-    pub last_keepalive_us: Option<i64>,
+    /// Wall-clock timestamp of the last *successful* keepalive send. A
+    /// failed send attempt updates `last_error`, never this field.
+    pub last_ping_sent_us: Option<i64>,
+    /// Wall-clock timestamp of the last heartbeat acknowledgement received
+    /// from the venue. `None` while none has ever arrived; market data
+    /// never advances this field.
+    pub last_pong_received_us: Option<i64>,
+    /// Most recent heartbeat round-trip time in microseconds.
+    pub heartbeat_rtt_us: Option<i64>,
+    /// Consecutive heartbeat responses missed past the policy deadline.
+    /// Reset to zero by a received acknowledgement.
+    pub missed_heartbeats: u64,
+    pub connection_health: ConnectionHealth,
     pub latency_ewma_us: Option<i64>,
     pub subscriptions: usize,
     pub last_error: Option<String>,
+}
+
+/// Connection health belongs to the transport and the venue session, never
+/// to instrument activity: a quiet market must not make a healthy
+/// connection look dead, and market data must not make a dead heartbeat
+/// look healthy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ConnectionHealth {
+    /// The worker is establishing (or re-establishing) the connection.
+    #[default]
+    Connecting,
+    /// Transport up; heartbeats acknowledged within policy.
+    Healthy,
+    /// Heartbeat responses missed past the policy threshold; the worker
+    /// watches the connection before applying the reconnect action.
+    Suspect,
+    /// A reconnect has been decided and is in progress.
+    Reconnecting,
+    /// Reconnect attempts are backing off.
+    Backoff,
+    /// The worker has stopped; no further frames will arrive.
+    Stopped,
 }
 
 impl SourceStatus {
