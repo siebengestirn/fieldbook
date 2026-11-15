@@ -515,10 +515,10 @@ pub async fn run_worker(
 
             let now = Instant::now();
             // Heartbeat accounting, before any new send: an outstanding
-            // heartbeat that passed its response deadline is a miss, and a
-            // heartbeat superseded by a new send without ever being
-            // acknowledged is a miss too. Both mean the venue did not
-            // answer in the window the policy granted it.
+            // heartbeat that passed its response deadline is a miss. A
+            // heartbeat is missed because the deadline expired - never
+            // because another scheduled send arrived (the one-outstanding
+            // design below gates sends until the window closes).
             if let Some((sent_at, _)) = outstanding_ping
                 && now.duration_since(sent_at) >= config.heartbeat.response_deadline
             {
@@ -534,18 +534,17 @@ pub async fn run_worker(
                             // Only a successful send starts the response
                             // window; a failed attempt is a transport error
                             // and must not be recorded as a heartbeat send.
-                            if outstanding_ping.is_some() {
-                                // The previous heartbeat was never
-                                // acknowledged before this new send: a miss,
-                                // however short the interval is relative to
-                                // the deadline.
-                                if apply_heartbeat_miss(&mut status, &config.heartbeat) {
-                                    must_reconnect = true;
-                                }
+                            if outstanding_ping.is_none() {
+                                // One outstanding heartbeat: the venue's
+                                // text protocol carries no request nonce to
+                                // correlate a second in-flight ping, so a
+                                // new heartbeat is sent only after the
+                                // previous one was acknowledged or its
+                                // deadline expired.
+                                let sent_us = now_us().ok();
+                                status.last_ping_sent_us = sent_us;
+                                outstanding_ping = Some((now, sent_us.unwrap_or(0)));
                             }
-                            let sent_us = now_us().ok();
-                            status.last_ping_sent_us = sent_us;
-                            outstanding_ping = Some((now, sent_us.unwrap_or(0)));
                         }
                         Err(failure) => {
                             warn!(%source, error = %format!("{failure:?}"), "keepalive failed");
@@ -618,17 +617,52 @@ pub async fn run_worker(
                             // from market data: it updates heartbeat state and
                             // nothing else. Market data must never satisfy a
                             // heartbeat, and a PONG must never touch
-                            // instrument activity.
+                            // instrument activity. An acknowledgement is
+                            // accepted only when a heartbeat is outstanding
+                            // and the response arrives inside the policy's
+                            // deadline; unsolicited, duplicate and late PONGs
+                            // are recorded as unmatched and never restore
+                            // health or clear a miss.
                             if frame.signal == SessionSignal::HeartbeatAck {
                                 status.last_pong_received_us = now_us().ok();
-                                if let Some((_, sent_us)) = outstanding_ping {
-                                    status.heartbeat_rtt_us =
-                                        now_us().ok().map(|now| now.saturating_sub(sent_us));
-                                }
-                                outstanding_ping = None;
-                                status.missed_heartbeats = 0;
-                                if status.connection_health == ConnectionHealth::Suspect {
-                                    status.connection_health = ConnectionHealth::Healthy;
+                                match outstanding_ping {
+                                    Some((sent_at, _))
+                                        if now.duration_since(sent_at)
+                                            < config.heartbeat.response_deadline =>
+                                    {
+                                        // Eligible acknowledgement: monotonic
+                                        // RTT (a wall-clock adjustment must not
+                                        // change a measured duration).
+                                        status.heartbeat_rtt_us = Some(
+                                            i64::try_from(
+                                                now.duration_since(sent_at).as_micros(),
+                                            )
+                                            .unwrap_or(i64::MAX),
+                                        );
+                                        outstanding_ping = None;
+                                        status.missed_heartbeats = 0;
+                                        if status.connection_health
+                                            == ConnectionHealth::Suspect
+                                        {
+                                            status.connection_health =
+                                                ConnectionHealth::Healthy;
+                                        }
+                                    }
+                                    Some(_) => {
+                                        // Late: past the response deadline.
+                                        // The deadline accounting owns the
+                                        // miss; this response stays unmatched.
+                                        status.unmatched_heartbeats = status
+                                            .unmatched_heartbeats
+                                            .saturating_add(1);
+                                    }
+                                    None => {
+                                        // Unsolicited or duplicate: no
+                                        // outstanding heartbeat to match.
+                                        status.unmatched_heartbeats = status
+                                            .unmatched_heartbeats
+                                            .saturating_add(1);
+                                    }
                                 }
                             }
                             update_latency(&mut status, &frame.events);

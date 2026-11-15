@@ -904,6 +904,10 @@ pub struct SourceStatus {
     /// Consecutive heartbeat responses missed past the policy deadline.
     /// Reset to zero by a received acknowledgement.
     pub missed_heartbeats: u64,
+    /// Heartbeat acknowledgements that arrived with no outstanding request
+    /// (unsolicited, duplicate) or past the response deadline (late). A
+    /// recorded unmatched response never restores health or clears a miss.
+    pub unmatched_heartbeats: u64,
     pub connection_health: ConnectionHealth,
     pub latency_ewma_us: Option<i64>,
     pub subscriptions: usize,
