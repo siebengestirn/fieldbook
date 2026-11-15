@@ -638,6 +638,13 @@ pub async fn run_worker(
                 frame = read_next_frame(&mut session) => {
                     match frame {
                         Ok(mut frame) => {
+                            // The frame's actual receive instant, captured
+                            // before any await point. Heartbeat deadline and
+                            // RTT accounting must use this - not the loop-top
+                            // `now`, which was sampled before the asynchronous
+                            // wait and can be arbitrarily stale by the time a
+                            // frame arrives.
+                            let frame_received_at = Instant::now();
                             let received_at_us = frame.received_at_us.unwrap_or_else(|| {
                                 now_us().unwrap_or(0)
                             });
@@ -674,8 +681,11 @@ pub async fn run_worker(
                             // are recorded as unmatched and never restore
                             // health or clear a miss.
                             if frame.signal == SessionSignal::HeartbeatAck {
-                                status.last_pong_received_us = now_us().ok();
-                                match tracker.on_ack_received(now) {
+                                // Wall-clock receipt from the frame itself
+                                // (the transport stamped it on read), not the
+                                // post-journal processing time.
+                                status.last_pong_received_us = Some(received_at_us);
+                                match tracker.on_ack_received(frame_received_at) {
                                     HeartbeatAck::Matched { rtt_us } => {
                                         status.heartbeat_rtt_us = Some(rtt_us);
                                         // The heartbeat state itself is
@@ -2140,5 +2150,165 @@ mod first_ack_pin_tests {
             last.heartbeat_state
         );
         assert_eq!(last.missed_heartbeats, 0);
+    }
+
+    /// M2.1 pin (Finding 2, discriminating case): the acknowledgement is
+    /// delivered by a queue push while the worker is blocked in the frame
+    /// wait that spans the response deadline. The loop-top `now` was
+    /// sampled at the last timer wake - before the ping's window closed -
+    /// so a stale pre-wait timestamp would classify the ack as timely.
+    /// The classification must use the frame's actual receive instant.
+    ///
+    /// The worker's biased select cancels a pending frame read on every
+    /// timer wake, so lateness cannot be modeled with an in-next_frame
+    /// sleep; it is modeled by real-time queue delivery: a 1-second send
+    /// interval, a 50ms deadline, and an ack pushed 1.2 seconds in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ack_pushed_after_the_deadline_is_never_matched() {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        struct QueuedSession {
+            queue: Arc<Mutex<VecDeque<SessionFrame>>>,
+        }
+
+        impl QueuedSession {
+            async fn next_frame_from_queue(&mut self) -> SessionFrame {
+                loop {
+                    if let Some(frame) = self.queue.lock().unwrap().pop_front() {
+                        return frame;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
+
+        #[async_trait]
+        impl MarketDataSession for QueuedSession {
+            fn heartbeat_spec(&self) -> HeartbeatSpec {
+                HeartbeatSpec {
+                    mechanism: HeartbeatMechanism::ApplicationText,
+                    send_interval: Duration::from_secs(1),
+                    response_deadline: Duration::from_millis(50),
+                    miss_threshold: 1,
+                    reconnect_after_misses: u32::MAX,
+                }
+            }
+
+            async fn connect(&mut self) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn apply_subscriptions(
+                &mut self,
+                _desired: &BTreeSet<String>,
+            ) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure> {
+                Ok(self.next_frame_from_queue().await)
+            }
+
+            async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn request_snapshot(
+                &mut self,
+                _symbols: &[String],
+            ) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn close(&mut self) {}
+        }
+
+        struct QueuedFactory {
+            queue: Arc<Mutex<VecDeque<SessionFrame>>>,
+        }
+
+        #[async_trait]
+        impl SessionFactory for QueuedFactory {
+            async fn create_session(
+                &self,
+                _source: SourceId,
+            ) -> anyhow::Result<Box<dyn MarketDataSession>> {
+                Ok(Box::new(QueuedSession {
+                    queue: self.queue.clone(),
+                }))
+            }
+        }
+
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let factory = Arc::new(QueuedFactory {
+            queue: queue.clone(),
+        });
+        let source = SourceId::new(0, 0);
+        let (_commands_tx, commands_rx) = mpsc::channel(8);
+        let (events, mut events_rx) = mpsc::channel(256);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let config = WorkerConfig {
+            status_interval: Duration::from_millis(50),
+            idle_timeout: Duration::from_secs(60),
+            reconnect_after: Duration::from_secs(3_600),
+            reconnect_base_backoff: Duration::from_millis(10),
+            reconnect_max_backoff: Duration::from_millis(20),
+            connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            journal: None,
+        };
+
+        // Push the acknowledgement 1.2 seconds in: the ping is sent at the
+        // 1-second keepalive wake, so the ack arrives roughly 200ms after
+        // the ping and 150ms past the 50ms deadline.
+        let push_queue = queue.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+            push_queue
+                .lock()
+                .unwrap()
+                .push_back(SessionFrame::heartbeat_ack(0));
+        });
+
+        let worker = tokio::spawn(run_worker(
+            factory,
+            source,
+            commands_rx,
+            events.clone(),
+            config,
+            shutdown_rx,
+        ));
+        drop(events);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(2_500);
+        let mut statuses: Vec<SourceStatus> = Vec::new();
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+                Ok(Some(WorkerEvent::Status(status))) => statuses.push(status),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = shutdown_tx.send(());
+        let _ = worker.await;
+
+        let last = statuses
+            .last()
+            .expect("the worker must publish periodic status");
+        assert_eq!(
+            last.heartbeat_state,
+            HeartbeatState::Suspect,
+            "an acknowledgement pushed past the response deadline must never \
+             be matched; a stale pre-wait timestamp would have classified it \
+             as timely and reported Healthy"
+        );
+        assert!(
+            last.unmatched_heartbeats >= 1,
+            "the late acknowledgement must be recorded as unmatched"
+        );
+        assert!(
+            last.heartbeat_rtt_us.is_none(),
+            "a late acknowledgement must not produce an RTT"
+        );
     }
 }
