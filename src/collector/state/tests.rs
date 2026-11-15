@@ -1842,10 +1842,7 @@ fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
     core.apply_discovery(NOW, infos).unwrap();
     core.drain_controls();
     for name in &names {
-        let outputs = core.handle_event(
-            SOURCE_A,
-            snapshot_event(name, 400_000, 600_000, 0),
-        );
+        let outputs = core.handle_event(SOURCE_A, snapshot_event(name, 400_000, 600_000, 0));
         assert!(!outputs.is_empty(), "{name} must anchor on its snapshot");
     }
     core.drain_controls();
@@ -1857,19 +1854,72 @@ fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
 
     let stale_after_us = 120_000_000;
     let probe_spacing_us = 30_000_000;
-    // Advance past the freshness window in probe-spacing steps. Only the
-    // quiet instrument ages; the others keep receiving periodic snapshots
-    // from the tick loop, which must not change their continuity. Controls
-    // are drained once, after the probe budget is exhausted, so the
-    // assertions observe the complete escalation in one place.
+    // Per step: every active instrument receives a real incoming
+    // `LevelChange` stamped with the current synthetic receive time
+    // (quantities vary per step so each event is an actual change), then
+    // the tick runs. `Q2999` receives nothing. This matters: the tick
+    // loop's local periodic snapshots do NOT advance
+    // `last_received_at_us`, so without these events every instrument —
+    // not one — would go stale, and the fixture would prove nothing about
+    // a single quiet instrument. Controls are drained once, after the
+    // probe budget is exhausted, so the assertions observe the complete
+    // escalation in one place.
     for step in 1..=4u32 {
         let now = NOW + stale_after_us + i64::from(step) * probe_spacing_us;
+        let quantity = 10_000_000 + i64::from(step) * 250_000;
+        for name in &names[..INSTRUMENTS - 1] {
+            let _ = core.handle_event(
+                SOURCE_A,
+                delta_event(name, Side::Buy, 400_000, quantity, now),
+            );
+        }
         let _ = core.tick(now);
     }
+    let final_now = NOW + stale_after_us + 4 * probe_spacing_us;
 
-    // The quiet instrument itself must be in recovery, but scoped to the
-    // instrument: no request may carry `reconnect: true`, and no request
-    // may name another instrument.
+    // The 2,999 active instruments stayed active: Live, anchored on the
+    // same source, with receive times advanced to the final step. The core
+    // has only *issued* recovery controls at this point — no worker has
+    // executed them — so their books must not be asserted Resyncing.
+    for name in &names[..INSTRUMENTS - 1] {
+        let state = &core.markets[name];
+        assert_eq!(
+            state.continuity,
+            ContinuityState::Live,
+            "{name} must be untouched by its neighbor's quietness"
+        );
+        assert_eq!(state.active, Some(SOURCE_A));
+        let book = state.books.get(&SOURCE_A).expect("active book");
+        assert_eq!(
+            book.last_received_at_us,
+            Some(final_now),
+            "{name} receive time must have advanced with its market events"
+        );
+    }
+
+    // The quiet instrument: receive time unchanged, continuity left Live,
+    // and its recovery request recorded against its source.
+    let quiet = &core.markets["Q2999"];
+    let quiet_book = quiet.books.get(&SOURCE_A).expect("quiet book");
+    assert_eq!(
+        quiet_book.last_received_at_us,
+        Some(NOW),
+        "the quiet instrument must not inherit any other instrument's activity"
+    );
+    assert_ne!(
+        quiet.continuity,
+        ContinuityState::Live,
+        "an instrument past its freshness window must enter recovery"
+    );
+    assert!(
+        quiet.recovery_requests.contains_key(&SOURCE_A),
+        "the quiet instrument must have a recorded recovery request"
+    );
+
+    // Recovery scope: every request names only the quiet instrument. The
+    // failover attempt against the backup replica (SOURCE_B) is legitimate
+    // instrument-scoped behavior; the active source's request is the one
+    // under contract.
     let recoveries: Vec<(SourceId, u64, Vec<String>, bool)> = core
         .drain_controls()
         .into_iter()
@@ -1883,25 +1933,35 @@ fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
         })
         .collect();
     assert!(
-        !recoveries.iter().any(|(_, _, _, reconnect)| *reconnect),
-        "a quiet instrument must never escalate to a source reconnect; got {recoveries:?}"
+        !recoveries.is_empty(),
+        "an exhausted instrument must produce a recovery request"
     );
-    for (_, _, symbols, _) in &recoveries {
+    for (source, _, symbols, reconnect) in &recoveries {
         assert_eq!(
             symbols.as_slice(),
             ["Q2999".to_owned()],
-            "instrument-scoped recovery must name only the quiet instrument"
+            "every recovery request must name only the quiet instrument (source {source:?})"
         );
+        if *source != SOURCE_A {
+            assert!(
+                !reconnect,
+                "a failover refresh to a backup source must be instrument-scoped"
+            );
+        }
     }
+    let active_request = recoveries
+        .iter()
+        .find(|(source, _, _, _)| *source == SOURCE_A)
+        .expect("the active source must have a recovery request for the quiet instrument");
 
-    // The blast radius must be one instrument: every other book keeps its
-    // anchor and stays Live on the same source.
-    for name in &names[..INSTRUMENTS - 1] {
-        assert_eq!(
-            core.markets[name].continuity,
-            ContinuityState::Live,
-            "{name} must be untouched by its neighbor's quietness"
-        );
-        assert_eq!(core.markets[name].active, Some(SOURCE_A));
-    }
+    // The red pin: the current code escalates an exhausted instrument
+    // probe budget into `reconnect: true` for the whole source. The
+    // feed-continuity contract requires an instrument-scoped refresh; a
+    // source reconnect must be a separate, explicit decision (heartbeat
+    // timeout, transport close, or operator policy) — never an automatic
+    // consequence of one quiet market.
+    assert!(
+        !active_request.3,
+        "a single quiet instrument must not request a source reconnect; got {active_request:?}"
+    );
 }
