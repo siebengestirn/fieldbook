@@ -15,17 +15,21 @@
     "automatic_remote_branch_deletion": false
   },
   "history": {
-    "merge_strategy": "squash",
-    "require_linear_main": true,
+    "merge_strategy": "merge_commit",
+    "require_linear_main": false,
     "published_commit_rewrite": false,
     "forbidden_operations": [
       "rebase published commits",
       "reset --hard on shared work",
       "amend published commits"
     ],
-    "grandfathered_merge_commits": [
-      "e19a85c",
-      "20b4a01"
+    "grandfathered_merge_commits": [],
+    "merge_conditions": [
+      "a pull request is required for every change to main",
+      "CI status checks must pass on the merged head",
+      "no force-pushes to main",
+      "no rewriting published commits",
+      "only reviewed PR merge commits may enter main"
     ]
   },
   "working_tree": {
