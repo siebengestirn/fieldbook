@@ -1869,3 +1869,177 @@ mod heartbeat_pin_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod heartbeat_tracker_tests {
+    use super::*;
+    use crate::model::HeartbeatState as Hs;
+
+    fn spec() -> HeartbeatSpec {
+        HeartbeatSpec {
+            mechanism: HeartbeatMechanism::ApplicationText,
+            send_interval: Duration::from_secs(10),
+            response_deadline: Duration::from_millis(50),
+            miss_threshold: 1,
+            reconnect_after_misses: 3,
+        }
+    }
+
+    /// Deterministic base instant; every offset is a supplied monotonic
+    /// instant, so deadline behavior is owned by logic, not timing luck.
+    fn base() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn no_ack_before_the_deadline_is_no_miss() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0));
+        assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(49)));
+        assert_eq!(tracker.missed(), 0);
+        assert_eq!(tracker.state(), Hs::AwaitingFirstAck);
+    }
+
+    #[test]
+    fn deadline_expiry_advances_the_miss_exactly_once() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0));
+        // The return value is the reconnect action, not the miss itself:
+        // with reconnect_after_misses = 3, the first miss returns false but
+        // is counted, and the state leaves AwaitingFirstAck.
+        assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(50)));
+        assert_eq!(tracker.missed(), 1);
+        assert_eq!(tracker.state(), Hs::Suspect);
+        // The window is closed once the miss is counted: later checks must
+        // not count the same heartbeat again.
+        assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(51)));
+        assert_eq!(tracker.missed(), 1);
+        assert_eq!(tracker.state(), Hs::Suspect);
+    }
+
+    #[test]
+    fn an_eligible_ack_returns_the_monotonic_rtt_and_resets_the_streak() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0));
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(20)),
+            HeartbeatAck::Matched { rtt_us: 20_000 }
+        );
+        assert_eq!(tracker.missed(), 0);
+        assert_eq!(tracker.state(), Hs::Healthy);
+        assert!(tracker.can_send(), "the window closed with the ack");
+    }
+
+    #[test]
+    fn an_unsolicited_pong_never_clears_or_restores_anything() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        // No ping was ever sent.
+        assert_eq!(tracker.on_ack_received(t0), HeartbeatAck::Unsolicited);
+        assert_eq!(tracker.unmatched(), 1);
+        assert_eq!(tracker.state(), Hs::AwaitingFirstAck);
+        // After a real exchange, a duplicate PONG is unsolicited too: the
+        // outstanding window already closed with the first ack.
+        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(10)));
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(15)),
+            HeartbeatAck::Matched { rtt_us: 5_000 }
+        );
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(16)),
+            HeartbeatAck::Unsolicited
+        );
+        assert_eq!(tracker.unmatched(), 2);
+        assert_eq!(tracker.state(), Hs::Healthy);
+    }
+
+    #[test]
+    fn a_late_pong_is_unmatched_and_the_miss_remains() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0));
+        // Real delivery order: the worker's biased select hands the frame
+        // to the ack path before the next loop top reaps the deadline, so
+        // the late response is classified as late - not as unsolicited.
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(51)),
+            HeartbeatAck::Late
+        );
+        assert_eq!(tracker.unmatched(), 1);
+        assert!(
+            !tracker.on_deadline_check(t0 + Duration::from_millis(52)),
+            "the deadline accounting owns the miss (the reconnect action is separate)"
+        );
+        assert_eq!(tracker.missed(), 1, "the late ack must not clear the miss");
+        assert_eq!(tracker.state(), Hs::Suspect);
+    }
+
+    #[test]
+    fn a_pong_from_a_previous_connection_cannot_ack_the_current_heartbeat() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0));
+        // Reconnect: the tracker resets with the connection.
+        tracker.reset();
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(10)),
+            HeartbeatAck::Unsolicited,
+            "an old epoch's acknowledgement is not this connection's evidence"
+        );
+        assert_eq!(tracker.state(), Hs::AwaitingFirstAck);
+        assert_eq!(tracker.missed(), 0);
+    }
+
+    #[test]
+    fn only_one_heartbeat_is_outstanding_at_a_time() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0));
+        assert!(
+            !tracker.can_send(),
+            "a second in-flight ping cannot be correlated without a nonce"
+        );
+        assert!(
+            !tracker.on_ping_sent(t0 + Duration::from_millis(10)),
+            "a superseding send is suppressed, never a miss"
+        );
+        // The window closes via ack or deadline - then a send is possible.
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(20)),
+            HeartbeatAck::Matched { rtt_us: 20_000 }
+        );
+        assert!(tracker.can_send());
+    }
+
+    #[test]
+    fn the_reconnect_action_fires_only_at_the_policy_threshold() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(HeartbeatSpec {
+            reconnect_after_misses: 3,
+            ..spec()
+        });
+        assert!(tracker.on_ping_sent(t0));
+        assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(50)));
+        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(60)));
+        assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(110)));
+        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(120)));
+        assert!(
+            tracker.on_deadline_check(t0 + Duration::from_millis(170)),
+            "the third consecutive miss applies the reconnect action"
+        );
+        assert_eq!(tracker.state(), Hs::Failed);
+    }
+
+    #[test]
+    fn a_disabled_mechanism_never_sends_and_stays_disabled() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(HeartbeatSpec::disabled());
+        assert!(!tracker.can_send());
+        assert!(!tracker.on_ping_sent(t0));
+        assert!(!tracker.on_deadline_check(t0 + Duration::from_secs(60)));
+        assert_eq!(tracker.state(), Hs::Disabled);
+    }
+}
