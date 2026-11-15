@@ -186,10 +186,11 @@ impl MarketDataSession for PolymarketSession {
         let received_at_us = now_us().unwrap_or(0);
         let (text, kind) = match payload {
             WsPayload::Idle => return Ok(SessionFrame::idle(0)),
-            // A native transport-level PONG acknowledges a client heartbeat.
-            // Polymarket's application heartbeat is text-based and handled
-            // below; a native ack is still a heartbeat acknowledgement.
-            WsPayload::HeartbeatAck => return Ok(SessionFrame::heartbeat_ack(0)),
+            // A native transport-level PONG is plumbing, not an application
+            // heartbeat acknowledgement: the venue's heartbeat is the
+            // application-level text PING/PONG exchange handled below. A
+            // native PONG must never clear an outstanding text heartbeat.
+            WsPayload::HeartbeatAck(_) => return Ok(SessionFrame::idle(0)),
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
                 Ok(text) => (text, FrameKind::Binary),

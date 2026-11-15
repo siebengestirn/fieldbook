@@ -22,7 +22,7 @@ use crate::{
     },
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
-    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame},
+    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame, SessionSignal},
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
 };
@@ -617,8 +617,22 @@ impl MarketDataSession for KalshiSession {
         let received_at_us = now_us().unwrap_or(0);
         let (text, kind) = match payload {
             WsPayload::Idle => return Ok(SessionFrame::idle(0)),
-            WsPayload::HeartbeatAck => {
-                return Ok(SessionFrame::idle(0));
+            // A native WebSocket PONG is the venue's heartbeat
+            // acknowledgement for this protocol. It must reach the worker
+            // typed as HeartbeatAck with its control payload preserved, or
+            // the worker counts a healthy connection as missing heartbeats.
+            WsPayload::HeartbeatAck(control_payload) => {
+                return Ok(SessionFrame {
+                    events: Vec::new(),
+                    bytes: control_payload.len(),
+                    raw: Some(RawFrame {
+                        kind: FrameKind::Binary,
+                        payload: control_payload,
+                    }),
+                    decode: DecodeOutcome::ignored("native_pong"),
+                    received_at_us: Some(received_at_us),
+                    signal: SessionSignal::HeartbeatAck,
+                });
             }
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {

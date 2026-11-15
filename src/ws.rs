@@ -29,8 +29,9 @@ pub enum WsPayload {
     Binary(Vec<u8>),
     /// The peer acknowledged a client heartbeat (native WebSocket PONG).
     /// Surfaced explicitly instead of being collapsed into an idle frame:
-    /// a heartbeat acknowledgement is evidence, not silence.
-    HeartbeatAck,
+    /// a heartbeat acknowledgement is evidence, not silence. The control
+    /// payload is preserved for the journal.
+    HeartbeatAck(Vec<u8>),
     /// Control/heartbeat frame; the connection is still alive.
     Idle,
 }
@@ -570,7 +571,7 @@ pub async fn next_payload(stream: &mut WsStream) -> anyhow::Result<WsPayload> {
                 stream.send(Message::Pong(payload)).await?;
                 return Ok(WsPayload::Idle);
             }
-            Message::Pong(_) => return Ok(WsPayload::HeartbeatAck),
+            Message::Pong(payload) => return Ok(WsPayload::HeartbeatAck(payload.to_vec())),
             Message::Close(frame) => {
                 let detail = frame.map_or_else(
                     || "without frame".to_owned(),
@@ -680,13 +681,13 @@ mod tests {
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "first"),
-            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck => {
+            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck(_) => {
                 panic!("expected a text frame")
             }
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "second"),
-            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck => {
+            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck(_) => {
                 panic!("expected a text frame")
             }
         }
@@ -719,21 +720,22 @@ mod tests {
             .unwrap();
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Idle => {}
-            WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::HeartbeatAck => {
+            WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::HeartbeatAck(_) => {
                 panic!("a ping must be idle")
             }
         }
         // A native PONG acknowledges a client heartbeat: it is surfaced as
-        // evidence, never collapsed into idle silence.
+        // evidence, never collapsed into idle silence, and its control
+        // payload is preserved.
         match next_payload(&mut stream).await.unwrap() {
-            WsPayload::HeartbeatAck => {}
+            WsPayload::HeartbeatAck(payload) => assert_eq!(payload, b"ack".to_vec()),
             WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::Idle => {
                 panic!("a pong must be a heartbeat acknowledgement")
             }
         }
         match next_payload(&mut stream).await.unwrap() {
             WsPayload::Text(text) => assert_eq!(text, "after-control"),
-            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck => {
+            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck(_) => {
                 panic!("expected a text frame")
             }
         }
