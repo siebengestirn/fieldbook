@@ -16,7 +16,10 @@ use crate::{
     exchange::polymarket::codec::decode_polymarket_message,
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
-    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame, SessionSignal},
+    session::{
+        HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure, SessionFrame,
+        SessionSignal,
+    },
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
 };
@@ -126,6 +129,13 @@ impl PolymarketSession {
 
 #[async_trait]
 impl MarketDataSession for PolymarketSession {
+    fn heartbeat_spec(&self) -> HeartbeatSpec {
+        // The venue's documented application-level text PING/PONG exchange:
+        // client text PING every 10 seconds, server text PONG. The deadline
+        // and thresholds are client policy, not venue guarantees.
+        HeartbeatSpec::ten_second_application_text()
+    }
+
     async fn connect(&mut self) -> Result<(), SessionFailure> {
         self.close().await;
         let stream = ws::connect(&self.settings.ws_url, &[], &self.connect_options)

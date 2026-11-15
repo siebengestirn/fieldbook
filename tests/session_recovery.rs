@@ -154,19 +154,11 @@ fn make_session(
 
 fn test_config(journal: Option<JournalHandle>) -> WorkerConfig {
     WorkerConfig {
-        keepalive_interval: Duration::from_secs(60),
         status_interval: Duration::from_secs(60),
         idle_timeout: Duration::from_secs(60),
         reconnect_after: Duration::from_secs(60),
         reconnect_base_backoff: Duration::from_millis(10),
         reconnect_max_backoff: Duration::from_millis(50),
-        // Never fires inside these tests: the 60s keepalive interval
-        // outlasts every scenario, and the deadline is far away.
-        heartbeat: engineering_challenge::session::HeartbeatPolicy {
-            response_deadline: Duration::from_secs(3600),
-            miss_threshold: u32::MAX,
-            reconnect_after_misses: u32::MAX,
-        },
         connect_permits: Arc::new(tokio::sync::Semaphore::new(4)),
         journal,
     }

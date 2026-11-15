@@ -908,32 +908,54 @@ pub struct SourceStatus {
     /// (unsolicited, duplicate) or past the response deadline (late). A
     /// recorded unmatched response never restores health or clears a miss.
     pub unmatched_heartbeats: u64,
-    pub connection_health: ConnectionHealth,
+    /// Where the transport stands. Distinct from heartbeat state: a
+    /// connected socket may still be awaiting its first heartbeat
+    /// acknowledgement.
+    pub transport_state: TransportState,
+    /// Where the venue heartbeat stands per the adapter's policy. Never
+    /// inferred from market-data traffic.
+    pub heartbeat_state: HeartbeatState,
     pub latency_ewma_us: Option<i64>,
     pub subscriptions: usize,
     pub last_error: Option<String>,
 }
 
-/// Connection health belongs to the transport and the venue session, never
-/// to instrument activity: a quiet market must not make a healthy
-/// connection look dead, and market data must not make a dead heartbeat
-/// look healthy.
+/// Where the transport stands. One of the two axes of connection health:
+/// a connected socket says nothing about the venue heartbeat, and a
+/// heartbeat says nothing about instrument activity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum ConnectionHealth {
+pub enum TransportState {
     /// The worker is establishing (or re-establishing) the connection.
     #[default]
     Connecting,
-    /// Transport up; heartbeats acknowledged within policy.
-    Healthy,
-    /// Heartbeat responses missed past the policy threshold; the worker
-    /// watches the connection before applying the reconnect action.
-    Suspect,
+    /// The socket is up and frames may flow.
+    Connected,
     /// A reconnect has been decided and is in progress.
     Reconnecting,
     /// Reconnect attempts are backing off.
     Backoff,
     /// The worker has stopped; no further frames will arrive.
     Stopped,
+}
+
+/// Where the venue heartbeat stands under the adapter's policy.
+/// `Connected` transport with `AwaitingFirstAck` heartbeat is a valid,
+/// honest combination: the socket is up, and no heartbeat has been proven
+/// yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum HeartbeatState {
+    /// The adapter declared no client-driven heartbeat for this venue.
+    #[default]
+    Disabled,
+    /// The transport is up but no heartbeat acknowledgement has been
+    /// accepted yet.
+    AwaitingFirstAck,
+    /// Heartbeats acknowledged within policy.
+    Healthy,
+    /// Heartbeat responses missed past the policy threshold.
+    Suspect,
+    /// Misses reached the policy's reconnect action.
+    Failed,
 }
 
 impl SourceStatus {

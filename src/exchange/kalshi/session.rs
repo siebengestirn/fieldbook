@@ -22,7 +22,10 @@ use crate::{
     },
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
-    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame, SessionSignal},
+    session::{
+        HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure, SessionFrame,
+        SessionSignal,
+    },
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
 };
@@ -539,6 +542,12 @@ fn ignored_payload_frame(
 
 #[async_trait]
 impl MarketDataSession for KalshiSession {
+    fn heartbeat_spec(&self) -> HeartbeatSpec {
+        // Kalshi heartbeats over native WebSocket control frames: the ack
+        // correlation is the control payload, not application text.
+        HeartbeatSpec::ten_second_websocket_control()
+    }
+
     async fn connect(&mut self) -> Result<(), SessionFailure> {
         self.close().await;
         let headers = self
