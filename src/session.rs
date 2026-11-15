@@ -678,13 +678,15 @@ pub async fn run_worker(
                                 match tracker.on_ack_received(now) {
                                     HeartbeatAck::Matched { rtt_us } => {
                                         status.heartbeat_rtt_us = Some(rtt_us);
-                                        status.missed_heartbeats = 0;
-                                        if status.heartbeat_state
-                                            == HeartbeatState::Suspect
-                                        {
-                                            status.heartbeat_state =
-                                                HeartbeatState::Healthy;
-                                        }
+                                        // The heartbeat state itself is
+                                        // synchronized from the tracker at the
+                                        // top of the loop
+                                        // (sync_heartbeat_state): the tracker
+                                        // already returned to Healthy on a
+                                        // matched response. Special-casing only
+                                        // Suspect here would leave
+                                        // AwaitingFirstAck stale and let the
+                                        // status disagree with the tracker.
                                     }
                                     HeartbeatAck::Late => {
                                         status.unmatched_heartbeats = status
@@ -1663,9 +1665,13 @@ mod heartbeat_pin_tests {
     /// flowing, `send_keepalive` succeeds, and `next_frame` never yields a
     /// PONG. This is the exact blind spot the feed-continuity contracts
     /// close: market traffic must not be able to mask heartbeat failure.
-    struct SilentServerSession {
-        pings: Arc<AtomicU64>,
-        frames_served: Arc<AtomicU64>,
+    pub(super) struct SilentServerSession {
+        pub(super) pings: Arc<AtomicU64>,
+        pub(super) frames_served: Arc<AtomicU64>,
+        /// When set, the first frame served after this many prior frames is
+        /// a scripted application-text heartbeat acknowledgement; the rest
+        /// are market data. Used to pin the first-ack state transition.
+        pub(super) ack_after_frames: Option<u64>,
     }
 
     impl SilentServerSession {
@@ -1729,6 +1735,11 @@ mod heartbeat_pin_tests {
             // millisecond of test time - so the worker's inbound-idle
             // deadline never fires on its own.
             tokio::time::sleep(Duration::from_millis(1)).await;
+            if let Some(after) = self.ack_after_frames
+                && self.frames_served.load(Ordering::Relaxed) == after
+            {
+                return Ok(SessionFrame::heartbeat_ack(0));
+            }
             Ok(self.market_frame())
         }
 
@@ -1744,9 +1755,10 @@ mod heartbeat_pin_tests {
         async fn close(&mut self) {}
     }
 
-    struct SilentServerFactory {
-        pings: Arc<AtomicU64>,
-        frames_served: Arc<AtomicU64>,
+    pub(super) struct SilentServerFactory {
+        pub(super) pings: Arc<AtomicU64>,
+        pub(super) frames_served: Arc<AtomicU64>,
+        pub(super) ack_after_frames: Option<u64>,
     }
 
     #[async_trait]
@@ -1758,6 +1770,7 @@ mod heartbeat_pin_tests {
             Ok(Box::new(SilentServerSession {
                 pings: self.pings.clone(),
                 frames_served: self.frames_served.clone(),
+                ack_after_frames: self.ack_after_frames,
             }))
         }
     }
@@ -1779,6 +1792,7 @@ mod heartbeat_pin_tests {
         let factory = Arc::new(SilentServerFactory {
             pings: pings.clone(),
             frames_served: frames_served.clone(),
+            ack_after_frames: None,
         });
         let source = SourceId::new(0, 0);
         // Hold the command sender for the whole test: a closed command
@@ -2041,5 +2055,90 @@ mod heartbeat_tracker_tests {
         assert!(!tracker.on_ping_sent(t0));
         assert!(!tracker.on_deadline_check(t0 + Duration::from_secs(60)));
         assert_eq!(tracker.state(), Hs::Disabled);
+    }
+}
+
+#[cfg(test)]
+mod first_ack_pin_tests {
+    use super::heartbeat_pin_tests::SilentServerFactory;
+    use super::*;
+    use crate::model::{HeartbeatState, TransportState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// M2.1 pin (Finding 1): the first eligible acknowledgement must move
+    /// the reported heartbeat state from `AwaitingFirstAck` to `Healthy`.
+    /// The tracker already makes that transition; the worker previously
+    /// mirrored it only from `Suspect`, so tracker and status disagreed
+    /// exactly when the first PONG arrived.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn first_matched_pong_reports_heartbeat_healthy() {
+        let pings = Arc::new(AtomicU64::new(0));
+        let frames_served = Arc::new(AtomicU64::new(0));
+        let factory = Arc::new(SilentServerFactory {
+            pings: pings.clone(),
+            frames_served: frames_served.clone(),
+            ack_after_frames: Some(3),
+        });
+        let source = SourceId::new(0, 0);
+        let (_commands_tx, commands_rx) = mpsc::channel(8);
+        let (events, mut events_rx) = mpsc::channel(256);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let config = WorkerConfig {
+            status_interval: Duration::from_millis(10),
+            idle_timeout: Duration::from_secs(10),
+            reconnect_after: Duration::from_secs(3_600),
+            reconnect_base_backoff: Duration::from_millis(10),
+            reconnect_max_backoff: Duration::from_millis(20),
+            connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            journal: None,
+        };
+
+        let worker = tokio::spawn(run_worker(
+            factory,
+            source,
+            commands_rx,
+            events.clone(),
+            config,
+            shutdown_rx,
+        ));
+        drop(events);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+        let mut statuses: Vec<SourceStatus> = Vec::new();
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+                Ok(Some(WorkerEvent::Status(status))) => statuses.push(status),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = shutdown_tx.send(());
+        let _ = worker.await;
+
+        let last = statuses
+            .last()
+            .expect("the worker must publish periodic status");
+        assert!(
+            pings.load(Ordering::Relaxed) >= 1,
+            "the worker must have sent a heartbeat"
+        );
+        assert!(
+            statuses
+                .iter()
+                .any(|status| status.last_pong_received_us.is_some()),
+            "the acknowledgement must be observed"
+        );
+        assert_eq!(
+            last.transport_state,
+            TransportState::Connected,
+            "the transport stays connected"
+        );
+        assert_eq!(
+            last.heartbeat_state,
+            HeartbeatState::Healthy,
+            "the first matched acknowledgement must report Healthy, got {:?}",
+            last.heartbeat_state
+        );
+        assert_eq!(last.missed_heartbeats, 0);
     }
 }
