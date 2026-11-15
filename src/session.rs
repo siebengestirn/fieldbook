@@ -1278,3 +1278,179 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod heartbeat_pin_tests {
+    use super::*;
+    use crate::model::{Price, QuantityChange, QuantityDelta};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A session whose server never answers a heartbeat: market data keeps
+    /// flowing, `send_keepalive` succeeds, and `next_frame` never yields a
+    /// PONG. This is the exact blind spot the feed-continuity contracts
+    /// close: market traffic must not be able to mask heartbeat failure.
+    struct SilentServerSession {
+        pings: Arc<AtomicU64>,
+        frames_served: Arc<AtomicU64>,
+    }
+
+    impl SilentServerSession {
+        fn market_frame(&self) -> SessionFrame {
+            let event = ExchangeEvent::LevelChange {
+                native_symbol: "HOT".to_owned(),
+                side: crate::Side::Buy,
+                price: Price::from_raw(400_000),
+                change: QuantityChange::Delta(QuantityDelta::from_raw(1_000_000)),
+                meta: crate::model::EventMeta {
+                    received_at_us: 0,
+                    exchange_ts_us: None,
+                    seq: None,
+                    clock: None,
+                    connection_epoch: 0,
+                    receive_seq: 0,
+                },
+            };
+            SessionFrame::data(
+                vec![event],
+                64,
+                RawFrame::text(format!(
+                    r#"{{"type":"market","seq":{}}}"#,
+                    self.frames_served.fetch_add(1, Ordering::Relaxed)
+                )),
+                crate::journal::DecodeOutcome::decoded(1),
+                crate::time::now_us().unwrap_or(0),
+            )
+        }
+    }
+
+    #[async_trait]
+    impl MarketDataSession for SilentServerSession {
+        async fn connect(&mut self) -> Result<(), SessionFailure> {
+            Ok(())
+        }
+
+        async fn apply_subscriptions(
+            &mut self,
+            _desired: &BTreeSet<String>,
+        ) -> Result<(), SessionFailure> {
+            Ok(())
+        }
+
+        async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure> {
+            // Market data keeps arriving continuously - a frame every
+            // millisecond of test time - so the worker's inbound-idle
+            // deadline never fires on its own.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Ok(self.market_frame())
+        }
+
+        async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
+            self.pings.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
+            Ok(())
+        }
+
+        async fn close(&mut self) {}
+    }
+
+    struct SilentServerFactory {
+        pings: Arc<AtomicU64>,
+        frames_served: Arc<AtomicU64>,
+    }
+
+    #[async_trait]
+    impl SessionFactory for SilentServerFactory {
+        async fn create_session(
+            &self,
+            _source: SourceId,
+        ) -> anyhow::Result<Box<dyn MarketDataSession>> {
+            Ok(Box::new(SilentServerSession {
+                pings: self.pings.clone(),
+                frames_served: self.frames_served.clone(),
+            }))
+        }
+    }
+
+    /// M1 pin two (feed-continuity contracts): market-data traffic must
+    /// never satisfy a heartbeat acknowledgement. The server keeps sending
+    /// market frames and never returns a PONG; after the heartbeat
+    /// response deadline expires, the worker must record the heartbeat
+    /// failure while the socket stays connected - not silently treat the
+    /// connection as healthy because frames keep arriving.
+    ///
+    /// Red against the current worker: `send_keepalive` is timestamped and
+    /// the inbound-idle deadline is reset by every frame, but no PONG
+    /// receipt is tracked and no heartbeat failure is ever recorded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn market_data_without_pong_records_a_heartbeat_failure() {
+        let pings = Arc::new(AtomicU64::new(0));
+        let frames_served = Arc::new(AtomicU64::new(0));
+        let factory = Arc::new(SilentServerFactory {
+            pings: pings.clone(),
+            frames_served: frames_served.clone(),
+        });
+        let source = SourceId::new(0, 0);
+        // Hold the command sender for the whole test: a closed command
+        // channel is the worker's shutdown signal.
+        let (_commands_tx, commands_rx) = mpsc::channel(8);
+        let (events, mut events_rx) = mpsc::channel(256);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let config = WorkerConfig {
+            keepalive_interval: Duration::from_millis(10),
+            status_interval: Duration::from_millis(10),
+            idle_timeout: Duration::from_secs(10),
+            reconnect_after: Duration::from_secs(3_600),
+            reconnect_base_backoff: Duration::from_millis(10),
+            reconnect_max_backoff: Duration::from_millis(20),
+            connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            journal: None,
+        };
+        let worker = tokio::spawn(run_worker(
+            factory,
+            source,
+            commands_rx,
+            events.clone(),
+            config,
+            shutdown_rx,
+        ));
+        drop(events);
+
+        // Collect statuses while market frames flow and pings go unanswered.
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+        let mut statuses: Vec<SourceStatus> = Vec::new();
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+                Ok(Some(WorkerEvent::Status(status))) => statuses.push(status),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = shutdown_tx.send(());
+        let _ = worker.await;
+
+        assert!(
+            pings.load(Ordering::Relaxed) >= 10,
+            "the worker must keep sending heartbeats on schedule"
+        );
+        assert!(
+            frames_served.load(Ordering::Relaxed) >= 50,
+            "market data must keep flowing for the whole window"
+        );
+        let last = statuses
+            .last()
+            .expect("the worker must publish periodic status");
+        assert_eq!(last.connected, true, "the socket itself never failed");
+        assert!(
+            statuses.iter().any(|status| status
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("heartbeat"))),
+            "a heartbeat failure must be recorded while market data continues; \
+             statuses={}",
+            statuses.len()
+        );
+    }
+}
