@@ -533,4 +533,89 @@ mod tests {
         session.close().await;
         server.await.unwrap();
     }
+
+    /// M2 pin (feed-continuity contracts): only the application-level text
+    /// `PONG` acknowledges the Polymarket application heartbeat. A native
+    /// WebSocket PONG is transport plumbing, not an application heartbeat
+    /// acknowledgement, and must never clear an outstanding text heartbeat.
+    #[tokio::test]
+    async fn native_pong_does_not_acknowledge_the_application_heartbeat() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let initial = read_json(&mut ws).await;
+            assert_eq!(initial["type"], "market");
+            // A transport-level PONG with no application text.
+            ws.send(Message::Pong(b"native-ack".to_vec().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let settings = PolymarketSettings {
+            ws_url: format!("ws://{address}"),
+            ..PolymarketSettings::default()
+        };
+        let mut session = PolymarketSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session
+            .apply_subscriptions(&BTreeSet::from(["a".to_owned()]))
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_ne!(
+            frame.signal,
+            SessionSignal::HeartbeatAck,
+            "a native WebSocket PONG must not acknowledge the application heartbeat"
+        );
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    /// The application-level text `PONG` is the acknowledgement of the
+    /// client's text `PING`: it must arrive typed as `HeartbeatAck`.
+    #[tokio::test]
+    async fn text_pong_acknowledges_the_application_heartbeat() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let initial = read_json(&mut ws).await;
+            assert_eq!(initial["type"], "market");
+            assert_eq!(read_text(&mut ws).await, "PING");
+            ws.send(Message::Text("PONG".to_owned().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let settings = PolymarketSettings {
+            ws_url: format!("ws://{address}"),
+            ..PolymarketSettings::default()
+        };
+        let mut session = PolymarketSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session
+            .apply_subscriptions(&BTreeSet::from(["a".to_owned()]))
+            .await
+            .unwrap();
+        session.send_keepalive().await.unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_eq!(
+            frame.signal,
+            SessionSignal::HeartbeatAck,
+            "the text PONG must be typed as a heartbeat acknowledgement"
+        );
+        session.close().await;
+        server.await.unwrap();
+    }
 }

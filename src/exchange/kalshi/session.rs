@@ -1041,6 +1041,7 @@ mod tests {
 
     use super::*;
     use crate::model::ExchangeEvent;
+    use crate::session::SessionSignal;
 
     type ServerWs = WebSocketStream<tokio::net::TcpStream>;
 
@@ -2051,5 +2052,84 @@ mod tests {
         ));
         server.await.unwrap();
         session.close().await;
+    }
+    /// M2 pin (feed-continuity contracts): a native WebSocket PONG is the
+    /// Kalshi venue's heartbeat acknowledgement. It must surface through the
+    /// real `KalshiSession::next_frame()` as `SessionSignal::HeartbeatAck`
+    /// with the control payload preserved - not be discarded as an idle
+    /// frame. The worker clears an outstanding heartbeat only on this
+    /// signal; discarding it makes a healthy connection look like missed
+    /// heartbeats.
+    #[tokio::test]
+    async fn native_pong_is_a_heartbeat_acknowledgement_with_payload_preserved() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(listener).await;
+            // connect() establishes the transport without subscribing, so
+            // answer immediately with a native PONG carrying a control
+            // payload.
+            ws.send(Message::Pong(b"heartbeat-ack".to_vec().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut session = test_session(address).await;
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_eq!(
+            frame.signal,
+            SessionSignal::HeartbeatAck,
+            "a native PONG must be classified as a heartbeat acknowledgement"
+        );
+        assert!(
+            frame.events.is_empty(),
+            "an acknowledgement carries no market data"
+        );
+        let raw = frame
+            .raw
+            .as_ref()
+            .expect("the control payload is preserved");
+        assert_eq!(raw.payload, b"heartbeat-ack");
+        assert!(frame.received_at_us.is_some(), "receive time is preserved");
+        server.await.unwrap();
+    }
+
+    /// A native server PING must be answered with a matching native PONG:
+    /// the venue's own transport keepalive must not be left unanswered.
+    #[tokio::test]
+    async fn native_server_ping_is_answered_with_a_matching_pong() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(listener).await;
+            ws.send(Message::Ping(b"server-probe".to_vec().into()))
+                .await
+                .unwrap();
+            // Read frames until the client's matching PONG arrives.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                match tokio::time::timeout_at(deadline, ws.next()).await {
+                    Ok(Some(Ok(Message::Pong(payload)))) => {
+                        assert_eq!(payload, &b"server-probe".to_vec());
+                        return;
+                    }
+                    Ok(Some(Ok(_))) => continue,
+                    Ok(Some(Err(_))) | Ok(None) | Err(_) => {
+                        panic!("client stream ended before the PONG answer")
+                    }
+                }
+            }
+            panic!("no native PONG answer arrived for the server ping");
+        });
+
+        let mut session = test_session(address).await;
+        // Drive the session so the transport layer processes the ping; the
+        // tungstenite client answers it automatically during reads.
+        let _ = tokio::time::timeout(Duration::from_secs(5), session.next_frame()).await;
+        server.await.unwrap();
     }
 }
