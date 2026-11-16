@@ -2058,3 +2058,222 @@ fn batch_acknowledgement_enumerates_every_target() {
         "a complete batch acknowledgement clears the pending entry"
     );
 }
+
+/// M4 centerpiece: a single source disconnect invalidates all 3,000 books it
+/// owned, and every book is re-anchored by a fenced, fresh snapshot with its
+/// original receive timestamp preserved in the emitted SBE messages.
+#[test]
+fn blast_radius_source_loss_invalidates_all_books_then_reanchors_3000_instruments() {
+    const COUNT: usize = 3_000;
+    let mut core = core();
+    let markets: Vec<_> = (0..COUNT)
+        .map(|index| market(&format!("I{index:04}")))
+        .collect();
+    core.apply_discovery(NOW, markets).unwrap();
+    core.drain_controls();
+    core.handle_status(connected_status(SOURCE_A, true), NOW);
+
+    for index in 0..COUNT {
+        let native = format!("I{index:04}");
+        let outputs = core.handle_event(
+            SOURCE_A,
+            snapshot_event_fenced(
+                &native,
+                400_000,
+                600_000,
+                None,
+                NOW + index as i64,
+                1,
+                index as u64 + 1,
+            ),
+        );
+        assert_eq!(outputs.len(), 1, "initial snapshot for {native} must emit");
+        let OutputMessage::Snapshot(snapshot) = &outputs[0] else {
+            panic!("expected an SBE snapshot for {native}");
+        };
+        assert_eq!(
+            snapshot.received_at.timestamp_micros(),
+            NOW + index as i64,
+            "receive time must survive into the emitted message"
+        );
+    }
+
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 10_000);
+    for index in 0..COUNT {
+        let native = format!("I{index:04}");
+        let state = &core.markets[&native];
+        assert!(
+            !state.books[&SOURCE_A].valid,
+            "{native} must be invalidated by the source disconnect"
+        );
+    }
+    assert!(
+        core.handle_event(
+            SOURCE_A,
+            snapshot_event_fenced(
+                "I0000",
+                400_000,
+                600_000,
+                None,
+                NOW + 10_001,
+                1,
+                COUNT as u64 + 1
+            ),
+        )
+        .is_empty(),
+        "an unfenced snapshot after source loss must not re-anchor a book"
+    );
+
+    let recoveries: Vec<_> = core
+        .drain_controls()
+        .into_iter()
+        .filter_map(|(source, control)| match control {
+            Control::Recover {
+                generation,
+                symbols,
+                ..
+            } if source == SOURCE_A => Some((generation, symbols)),
+            _ => None,
+        })
+        .collect();
+    let all_targets: std::collections::BTreeSet<_> = recoveries
+        .iter()
+        .flat_map(|(_, symbols)| symbols.iter().cloned())
+        .collect();
+    assert_eq!(
+        all_targets.len(),
+        COUNT,
+        "every invalidated instrument must appear in a recovery request"
+    );
+    for (generation, symbols) in &recoveries {
+        core.handle_recovery_ready(SOURCE_A, symbols, *generation, 1, COUNT as u64 + 1);
+    }
+    core.handle_status(connected_status(SOURCE_A, true), NOW + 20_000);
+
+    let mut anchored = 0usize;
+    for index in 0..COUNT {
+        let native = format!("I{index:04}");
+        let received_at = NOW + 20_000 + index as i64;
+        let outputs = core.handle_event(
+            SOURCE_A,
+            snapshot_event_fenced(
+                &native,
+                410_000,
+                590_000,
+                None,
+                received_at,
+                2,
+                index as u64 + 1,
+            ),
+        );
+        assert_eq!(
+            outputs.len(),
+            1,
+            "fenced recovery snapshot for {native} must emit"
+        );
+        let OutputMessage::Snapshot(snapshot) = &outputs[0] else {
+            panic!("expected an SBE recovery snapshot for {native}");
+        };
+        assert_eq!(snapshot.received_at.timestamp_micros(), received_at);
+        anchored += 1;
+    }
+    assert_eq!(anchored, COUNT, "all 3,000 books must be re-anchored");
+}
+
+#[test]
+fn blast_radius_independent_shards_do_not_share_a_failure() {
+    let mut settings = settings_for(ExchangeKind::Polymarket);
+    settings.collector.shards = 2;
+    let mut core = CollectorCore::new(
+        CoreConfig::from_settings(&settings, 2, ExchangeCapabilities::new(false)).unwrap(),
+    )
+    .unwrap();
+    core.apply_discovery(NOW, vec![market("A"), market("B")])
+        .unwrap();
+    core.drain_controls();
+    let other_source = SourceId::new(1, 0);
+    core.handle_status(connected_status(SOURCE_A, true), NOW);
+    core.handle_status(connected_status(other_source, true), NOW);
+
+    assert_ne!(
+        core.markets["A"].shard, core.markets["B"].shard,
+        "the fixture must place the two markets on different shards"
+    );
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("A", 400_000, 600_000, None, NOW, 1, 1),
+    );
+    core.handle_event(
+        other_source,
+        snapshot_event_fenced("B", 300_000, 700_000, None, NOW, 1, 1),
+    );
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 1);
+
+    assert!(!core.markets["A"].books[&SOURCE_A].valid);
+    assert!(
+        core.markets["B"].books[&other_source].valid,
+        "a failure on shard 0 must not invalidate shard 1's book"
+    );
+    assert_eq!(core.markets["B"].continuity, ContinuityState::Live);
+    assert!(
+        !core
+            .handle_event(
+                other_source,
+                delta_event_at("B", Side::Buy, 310_000, 10_000_000, 0, NOW + 2),
+            )
+            .is_empty(),
+        "the unaffected shard must keep producing SBE output"
+    );
+    assert!(
+        core.drain_controls()
+            .iter()
+            .all(|(source, _)| *source != other_source),
+        "no recovery request may be sent to the healthy shard"
+    );
+}
+
+#[test]
+fn blast_radius_backup_requires_a_fresh_snapshot_before_promotion() {
+    let mut core = core();
+    core.apply_discovery(NOW, vec![market("A")]).unwrap();
+    core.drain_controls();
+    connect_sources(&mut core);
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("A", 400_000, 600_000, None, NOW, 1, 1),
+    );
+    core.handle_event(
+        SOURCE_B,
+        snapshot_event_fenced("A", 405_000, 595_000, None, NOW + 1, 1, 2),
+    );
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 2);
+
+    // The backup existed before the failure, so its old snapshot is not proof
+    // of current state. It must not emit or become active.
+    let stale = core.handle_event(
+        SOURCE_B,
+        snapshot_event_fenced("A", 405_000, 595_000, None, NOW + 3, 1, 3),
+    );
+    assert!(
+        stale.is_empty(),
+        "a pre-fence backup snapshot must not be trusted"
+    );
+    assert!(core.markets["A"].active.is_none());
+
+    let (generation, symbols, _) = recovery_control(&mut core, SOURCE_B);
+    core.handle_recovery_ready(SOURCE_B, &symbols, generation, 1, 3);
+    let fresh = core.handle_event(
+        SOURCE_B,
+        snapshot_event_fenced("A", 410_000, 590_000, None, NOW + 4, 2, 1),
+    );
+    assert_eq!(
+        fresh.len(),
+        1,
+        "a fenced fresh snapshot must re-anchor the book"
+    );
+    assert_eq!(core.markets["A"].active, Some(SOURCE_B));
+    let OutputMessage::Snapshot(snapshot) = &fresh[0] else {
+        panic!("expected an SBE snapshot");
+    };
+    assert_eq!(snapshot.received_at.timestamp_micros(), NOW + 4);
+}

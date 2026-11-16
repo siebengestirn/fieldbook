@@ -378,6 +378,26 @@ Regression pins:
 `src/collector/state/tests.rs::batch_acknowledgement_enumerates_every_target`, and
 `src/recovery.rs::a_fence_is_bound_to_its_exact_instrument_and_generation`.
 
+#### M4 — Blast-radius evidence (implemented)
+
+Deterministic core tests now prove the consequences of the M3 contracts on
+emitted output, not only on state flags:
+
+- `src/collector/state/tests.rs::blast_radius_source_loss_invalidates_all_books_then_reanchors_3000_instruments`
+  — one source owns 3,000 instruments; its disconnect invalidates every book,
+  only fenced snapshots re-anchor them, and all 3,000 emitted SBE snapshots
+  carry their original receive timestamps.
+- `src/collector/state/tests.rs::blast_radius_independent_shards_do_not_share_a_failure`
+  — a failure on shard 0 leaves shard 1 valid and still producing deltas,
+  with no recovery control sent to the healthy shard.
+- `src/collector/state/tests.rs::blast_radius_backup_requires_a_fresh_snapshot_before_promotion`
+  — on a clockless venue a pre-fence backup snapshot cannot become active;
+  only a snapshot newer than the per-instrument acknowledgement fence does.
+
+Stale-epoch data, stale-generation acknowledgements, and old-fence snapshots
+are covered by the M3.3 regression pins above and by
+`tests/session_recovery.rs::reconnect_recovery_advances_epoch_and_resets_sequence`.
+
 Acceptance gates: A (state correctness), B (recovery scope), C (ordering —
 epoch/receive-seq/fence), D (accounting in manifests), E (mixed
 hot/quiet synthetic workload with injected failures), F (review package:
