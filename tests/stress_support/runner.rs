@@ -855,7 +855,14 @@ pub async fn run_cell(
 /// the body and in the index entry.
 fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
     if outcome.acceptance.valid {
-        return format!("seed-{:04x}-{}-uniform", config.seed, config.symbols);
+        let shape = if config.hot_fraction_ppm > 0 {
+            "hotquiet"
+        } else if config.hot_pair {
+            "zipf"
+        } else {
+            "uniform"
+        };
+        return format!("seed-{:04x}-{}-{shape}", config.seed, config.symbols);
     }
     let class = outcome
         .acceptance
