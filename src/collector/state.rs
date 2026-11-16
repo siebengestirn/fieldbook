@@ -712,6 +712,21 @@ impl CollectorCore {
 
     /// Consume one normalized event from a source.
     pub fn handle_event(&mut self, source: SourceId, event: ExchangeEvent) -> Vec<OutputMessage> {
+        // Core ingress evidence: every normalized event carrying a receive
+        // fence crossed the decode boundary, counted before any continuity
+        // decision so rejected frames remain observable.
+        let has_fence = match &event {
+            ExchangeEvent::Snapshot { meta, .. }
+            | ExchangeEvent::LevelChange { meta, .. }
+            | ExchangeEvent::Lifecycle { meta, .. } => meta.has_receive_fence(),
+            ExchangeEvent::StreamReset { .. } => false,
+        };
+        if has_fence {
+            self.stats.data_frames_received = self.stats.data_frames_received.saturating_add(1);
+        }
+        if matches!(event, ExchangeEvent::LevelChange { .. }) {
+            self.stats.delta_events_decoded = self.stats.delta_events_decoded.saturating_add(1);
+        }
         match event {
             ExchangeEvent::Snapshot {
                 native_symbol,

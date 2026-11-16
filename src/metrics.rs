@@ -56,6 +56,11 @@ pub struct CollectorStats {
     pub empty_snapshots: u64,
     pub deltas_emitted: u64,
     pub deltas_rejected: u64,
+    /// Monotonic ingress counters accumulated across source reconnects.
+    #[serde(default)]
+    pub data_frames_received: u64,
+    #[serde(default)]
+    pub delta_events_decoded: u64,
     /// Clockless recovery snapshots rejected because they preceded the
     /// acknowledged recovery fence or arrived without an active generation.
     #[serde(default)]
@@ -115,6 +120,13 @@ pub struct CollectorStats {
 #[derive(Debug, Default)]
 pub struct WriterCounters {
     pub messages: AtomicU64,
+    /// Messages admitted to the writer queue, split by output type.
+    pub queue_admissions: AtomicU64,
+    pub delta_admissions: AtomicU64,
+    pub snapshot_admissions: AtomicU64,
+    /// Successful SBE writes, split by output type.
+    pub delta_messages: AtomicU64,
+    pub snapshot_messages: AtomicU64,
     pub bytes: AtomicU64,
     pub flushes: AtomicU64,
     pub errors: AtomicU64,
@@ -128,16 +140,27 @@ pub struct WriterCounters {
 }
 
 impl WriterCounters {
-    /// Record one accepted message and update the high-water mark.
-    pub fn note_enqueued(&self) {
+    /// Record one admitted message and update the high-water mark.
+    pub fn note_enqueued(&self, is_delta: bool) {
         let depth = self.queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
         self.queue_high_water.fetch_max(depth, Ordering::Relaxed);
+        self.queue_admissions.fetch_add(1, Ordering::Relaxed);
+        if is_delta {
+            self.delta_admissions.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.snapshot_admissions.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[must_use]
     pub fn snapshot(&self) -> WriterStats {
         WriterStats {
             messages: self.messages.load(Ordering::Relaxed),
+            queue_admissions: self.queue_admissions.load(Ordering::Relaxed),
+            delta_admissions: self.delta_admissions.load(Ordering::Relaxed),
+            snapshot_admissions: self.snapshot_admissions.load(Ordering::Relaxed),
+            delta_messages: self.delta_messages.load(Ordering::Relaxed),
+            snapshot_messages: self.snapshot_messages.load(Ordering::Relaxed),
             bytes: self.bytes.load(Ordering::Relaxed),
             flushes: self.flushes.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
@@ -151,6 +174,16 @@ impl WriterCounters {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WriterStats {
     pub messages: u64,
+    #[serde(default)]
+    pub queue_admissions: u64,
+    #[serde(default)]
+    pub delta_admissions: u64,
+    #[serde(default)]
+    pub snapshot_admissions: u64,
+    #[serde(default)]
+    pub delta_messages: u64,
+    #[serde(default)]
+    pub snapshot_messages: u64,
     pub bytes: u64,
     pub flushes: u64,
     pub errors: u64,
@@ -712,6 +745,16 @@ impl MetricsRegistry {
             core.deltas_emitted
         );
         counter!(
+            "collector_data_frames_received_total",
+            "Data frames received at source ingress across reconnects",
+            core.data_frames_received
+        );
+        counter!(
+            "collector_delta_events_decoded_total",
+            "Order-book delta events decoded across reconnects",
+            core.delta_events_decoded
+        );
+        counter!(
             "collector_discontinuity_incidents_total",
             "Discontinuity incidents opened since process start",
             core.discontinuity_incidents
@@ -775,6 +818,31 @@ impl MetricsRegistry {
             "collector_writer_messages_total",
             "SBE messages written",
             snapshot.writer.messages
+        );
+        counter!(
+            "collector_writer_queue_admissions_total",
+            "Messages admitted to the writer queue",
+            snapshot.writer.queue_admissions
+        );
+        counter!(
+            "collector_writer_delta_admissions_total",
+            "Order-book deltas admitted to the writer queue",
+            snapshot.writer.delta_admissions
+        );
+        counter!(
+            "collector_writer_snapshot_admissions_total",
+            "Snapshots admitted to the writer queue",
+            snapshot.writer.snapshot_admissions
+        );
+        counter!(
+            "collector_writer_delta_messages_total",
+            "SBE order-book deltas written",
+            snapshot.writer.delta_messages
+        );
+        counter!(
+            "collector_writer_snapshot_messages_total",
+            "SBE snapshots written",
+            snapshot.writer.snapshot_messages
         );
         counter!(
             "collector_writer_bytes_total",
@@ -951,6 +1019,14 @@ impl MetricsRegistry {
             out.push_str(&format!(
                 "collector_source_messages{{source=\"{}\"}} {}\n",
                 source.source, source.messages
+            ));
+            out.push_str(&format!(
+                "collector_source_data_frames_received{{source=\"{}\"}} {}\n",
+                source.source, source.data_frames_received
+            ));
+            out.push_str(&format!(
+                "collector_source_delta_events_decoded{{source=\"{}\"}} {}\n",
+                source.source, source.delta_events_decoded
             ));
             out.push_str(&format!(
                 "collector_source_decode_errors{{source=\"{}\"}} {}\n",
