@@ -53,6 +53,10 @@ const METRICS_POLL: Duration = Duration::from_millis(25);
 /// deadline would only burn CI time. The hard deadline remains the backstop.
 const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
+/// Scenario schema version. Bumped when workload semantics change so a
+/// corrected generator never silently replaces an earlier manifest.
+const SCENARIO_VERSION: u32 = 3;
+
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -995,7 +999,12 @@ fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
         } else {
             "uniform"
         };
-        return format!("seed-{:04x}-{}-{shape}", config.seed, config.symbols);
+        let suffix = if SCENARIO_VERSION > 2 {
+            format!("{shape}-v{SCENARIO_VERSION}")
+        } else {
+            shape.to_owned()
+        };
+        return format!("seed-{:04x}-{}-{suffix}", config.seed, config.symbols);
     }
     let class = outcome
         .acceptance
@@ -1798,7 +1807,7 @@ pub fn build_cell_manifest(
         "prng_algorithm_version".to_owned(),
         json!(super::rng::PRNG_ALGORITHM_VERSION),
     );
-    document.insert("scenario_version".to_owned(), json!(3));
+    document.insert("scenario_version".to_owned(), json!(SCENARIO_VERSION));
     document.insert("build_profile".to_owned(), json!(build_profile()));
     document.insert("target_triple".to_owned(), json!(target_triple()));
     document.insert(
