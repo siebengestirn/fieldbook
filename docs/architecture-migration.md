@@ -20,15 +20,21 @@ live path sampled no RSS or memory-pressure telemetry).
 
 The migration order below is therefore amended: **M1.5 (connection health,
 subscription state, and recovery correctness) precedes all capacity and
-venue-expansion work.** The candidate mechanism under investigation is the
-coupling of instrument quietness to source-level recovery: a quiet market
-can exhaust a probe budget and escalate to a whole-shard reconnect, which
-invalidates every book on that source and demands a fresh snapshot burst.
-On Polymarket a quiet instrument is expected — the venue promises `book`
-events on subscription and on trades, `price_change` on order events, and a
-connection-level `PING`/`PONG` heartbeat; it promises no periodic per-token
-event. Connection health, instrument activity, and book continuity are
-three distinct facts and will be modeled as such.
+venue-expansion work.** The regression pin exposed an unsafe coupling between instrument quietness
+and source-level recovery: an exhausted per-symbol probe budget could upgrade
+a pending recovery to a whole-source reconnect, invalidating unrelated books.
+The current patch removes that escalation from the stale-probe path. It records
+a symbol continuity incident and reissues the symbol-scoped refresh while
+source transport and heartbeat state remain independently supervised. The
+live capture still does not prove that this was the cause of the historical
+connection errors; that requires host telemetry and a staged live experiment.
+This is a narrow branch-level correction, not the final recovery architecture:
+`PendingRecovery` is still keyed by source and merges the `reconnect` flag, so
+independent instrument/source queues and per-instrument generation fences
+remain required before claiming complete scope isolation (see ADR-0002 and
+M3.1–M3.3). On Polymarket a quiet instrument is expected — the venue does not
+promise a periodic per-token event. Connection health, instrument activity,
+and book continuity remain distinct facts.
 
 ## Objective
 

@@ -1813,8 +1813,8 @@ fn untracked_terminal_after_created_does_not_resurrect_market() {
     assert!(core.take_lifecycle_reconcile_request());
 }
 
-/// M1 pin (feed-continuity contracts): a quiet instrument on a healthy
-/// source must never escalate to a source-level reconnect.
+/// Feed-continuity regression: a quiet instrument on a healthy source must
+/// never escalate to a source-level reconnect.
 ///
 /// The live full-universe failure (measurements/live/
 /// 2026-11-14-universe-capture-failed/) showed 756 connection errors and
@@ -1823,11 +1823,10 @@ fn untracked_terminal_after_created_does_not_resurrect_market() {
 /// recovery request is upgraded to `reconnect: true`, invalidating every
 /// book on the source and demanding a snapshot burst.
 ///
-/// Required behavior (fed-continuity contracts, gate B): instrument
-/// quietness yields an instrument-scoped recovery with a refresh action;
-/// a source reconnect is a separate, explicit decision. This test is red
-/// against the current `reconnect |= reconnect` coalescing and defines
-/// the behavior the redesign must satisfy.
+/// Required behavior: instrument quietness yields an instrument-scoped
+/// refresh; a source reconnect is a separate, source-health decision. This
+/// pin protects the boundary even when thousands of neighboring instruments
+/// continue receiving real market events.
 #[test]
 fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
     let mut core = core();
@@ -1954,12 +1953,10 @@ fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
         .find(|(source, _, _, _)| *source == SOURCE_A)
         .expect("the active source must have a recovery request for the quiet instrument");
 
-    // The red pin: the current code escalates an exhausted instrument
-    // probe budget into `reconnect: true` for the whole source. The
-    // feed-continuity contract requires an instrument-scoped refresh; a
-    // source reconnect must be a separate, explicit decision (heartbeat
-    // timeout, transport close, or operator policy) — never an automatic
-    // consequence of one quiet market.
+    // The regression pin: exhausting this instrument's probe budget must
+    // leave the recovery action instrument-scoped. Source reconnects are
+    // decided by source health or an explicit operator policy, not by one
+    // quiet market.
     assert!(
         !active_request.3,
         "a single quiet instrument must not request a source reconnect; got {active_request:?}"

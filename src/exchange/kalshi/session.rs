@@ -22,6 +22,7 @@ use crate::{
     },
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
+    protocol::{ControlOpcode, HeartbeatMechanism, SendResult, TransportObservation},
     session::{
         HeartbeatRequest, HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure,
         SessionFrame, SessionSignal,
@@ -625,30 +626,36 @@ impl MarketDataSession for KalshiSession {
                 )));
             }
         }
-        let payload = ws::next_payload(self.stream_mut()?)
+        let read = ws::next_payload(self.stream_mut()?)
             .await
             .map_err(SessionFailure::Reconnect)?;
         let received_at_us = now_us().unwrap_or(0);
-        let (text, kind) = match payload {
-            WsPayload::Idle => return Ok(SessionFrame::idle(0)),
-            // A native WebSocket PONG is the venue's heartbeat
-            // acknowledgement for this protocol. It must reach the worker
-            // typed as HeartbeatAck with its control payload preserved, or
-            // the worker counts a healthy connection as missing heartbeats.
-            WsPayload::HeartbeatAck(control_payload) => {
-                return Ok(SessionFrame {
-                    events: Vec::new(),
-                    bytes: control_payload.len(),
-                    raw: Some(RawFrame {
-                        kind: FrameKind::Binary,
-                        payload: control_payload.clone(),
-                    }),
-                    decode: DecodeOutcome::ignored("native_pong"),
-                    received_at_us: Some(received_at_us),
-                    signal: SessionSignal::HeartbeatAck {
-                        correlation: Some(control_payload),
-                    },
-                });
+        let mechanism = self.heartbeat_spec().mechanism;
+        let (text, kind) = match read.payload {
+            // Native control frames are preserved as typed observations. A
+            // server Ping is evidence plus its Pong response; a native Pong
+            // acknowledges this venue's client heartbeat and keeps its
+            // correlation payload.
+            WsPayload::Ping(payload) => {
+                return Ok(SessionFrame::native_control(
+                    WsPayload::Ping(payload),
+                    read.response,
+                    mechanism,
+                    SessionSignal::HeartbeatAck { correlation: None },
+                    received_at_us,
+                ));
+            }
+            WsPayload::Pong(payload) => {
+                let signal = SessionSignal::HeartbeatAck {
+                    correlation: Some(payload.clone()),
+                };
+                return Ok(SessionFrame::native_control(
+                    WsPayload::Pong(payload),
+                    None,
+                    mechanism,
+                    signal,
+                    received_at_us,
+                ));
             }
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
@@ -978,7 +985,14 @@ impl MarketDataSession for KalshiSession {
             .await
             .map_err(SessionFailure::Reconnect)?;
         Ok(HeartbeatRequest {
-            correlation: Some(nonce),
+            correlation: Some(nonce.clone()),
+            observations: vec![TransportObservation::outbound_control(
+                ControlOpcode::Ping,
+                nonce,
+                SessionSignal::HeartbeatRequest,
+                HeartbeatMechanism::WebSocketControl,
+                SendResult::Sent,
+            )],
         })
     }
 
@@ -1079,6 +1093,7 @@ mod tests {
 
     use super::*;
     use crate::model::ExchangeEvent;
+    use crate::protocol::{FrameClassification, FrameDirection};
     use crate::session::SessionSignal;
 
     type ServerWs = WebSocketStream<tokio::net::TcpStream>;
@@ -2129,11 +2144,24 @@ mod tests {
             frame.events.is_empty(),
             "an acknowledgement carries no market data"
         );
-        let raw = frame
-            .raw
-            .as_ref()
-            .expect("the control payload is preserved");
-        assert_eq!(raw.payload, b"heartbeat-ack");
+        assert!(
+            frame.raw.is_none(),
+            "a native control frame is not an application data record"
+        );
+        let observation = frame
+            .observations
+            .first()
+            .expect("the control observation is preserved");
+        assert_eq!(observation.direction, FrameDirection::Inbound);
+        assert_eq!(
+            observation.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Pong
+            }
+        );
+        assert_eq!(observation.payload, b"heartbeat-ack");
+        assert_eq!(observation.mechanism, HeartbeatMechanism::WebSocketControl);
+        assert!(observation.send_result.is_none());
         assert!(frame.received_at_us.is_some(), "receive time is preserved");
         server.await.unwrap();
     }
@@ -2169,7 +2197,37 @@ mod tests {
         let mut session = test_session(address).await;
         // Drive the session so the transport layer processes the ping; the
         // tungstenite client answers it automatically during reads.
-        let _ = tokio::time::timeout(Duration::from_secs(5), session.next_frame()).await;
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_eq!(frame.signal, SessionSignal::PeerPing);
+        assert!(frame.events.is_empty());
+        assert!(frame.raw.is_none());
+        assert_eq!(frame.observations.len(), 2);
+        let inbound = &frame.observations[0];
+        assert_eq!(inbound.direction, FrameDirection::Inbound);
+        assert_eq!(
+            inbound.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Ping
+            }
+        );
+        assert_eq!(inbound.signal, SessionSignal::PeerPing);
+        assert_eq!(inbound.payload, b"server-probe");
+        assert_eq!(inbound.send_result, None);
+        let outbound = &frame.observations[1];
+        assert_eq!(outbound.direction, FrameDirection::Outbound);
+        assert_eq!(
+            outbound.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Pong
+            }
+        );
+        assert_eq!(outbound.signal, SessionSignal::PeerPong);
+        assert_eq!(outbound.payload, b"server-probe");
+        assert_eq!(outbound.send_result, Some(SendResult::Sent));
+        assert!(frame.transport_failure.is_none());
         server.await.unwrap();
     }
 }

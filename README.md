@@ -32,10 +32,14 @@ Three state domains are kept independent — connection health (per source,
 including typed heartbeat acknowledgements: application-text for Polymarket,
 native WebSocket control frames for Kalshi), instrument activity (per
 instrument), and book continuity (per instrument+source, with recovery
-fencing). Recovery actions are typed and scoped: an exhausted instrument
-refresh must never implicitly reconnect its source. Kalshi's margin (perps)
-API is a separate surface with its own wire contract and is not covered by
-these adapters.
+fencing). Exhausting a symbol's stale-probe budget records a symbol continuity
+incident and requests a symbol-scoped refresh; it does not reconnect the
+shared source. Source-level reconnects remain a separate transport/heartbeat
+or explicit recovery decision. The current control representation still
+contains a reconnect flag; a typed action/cause model and physically separate
+recovery queues are follow-on architecture work, not claimed as complete.
+Kalshi's margin (perps) API is a separate surface with its own wire contract
+and is not covered by these adapters.
 
 The current code supports prediction markets only. The target domain, adapter
 boundaries, numeric model, event model, and compatibility rules are in the
@@ -49,6 +53,8 @@ intent; it is not a claim that those capabilities are implemented.
 3. [Requirement-to-test matrix](docs/requirement-test-matrix.md) — exact test evidence per requirement.
 4. [Verification](docs/verification.md) — gate results, exact commits, limits.
 5. [Design decisions](docs/design-decisions.md) — why the boundaries exist.
+6. [ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md) — accepted journal observation contract; S1a/S1b implemented (journal v2 with typed data/control observations, v1 readers preserved).
+7. [PR #45 engineering review](docs/reviews/PR45-review-2026-11-16.md) and [file-by-file audit](docs/reviews/PR45-file-audit-2026-11-16.csv) — findings, scores, verification limits, and package inventory.
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
@@ -91,6 +97,13 @@ Add `--journal-dir captures/journal` to record raw frames, then verify:
 ```bash
 cargo run --release -- journal verify captures/journal/<run-id>
 ```
+
+The journal writes schema v2: application data frames and native WebSocket
+Ping/Pong controls are retained as typed observations with independent
+`receive_seq`, `control_seq`, and `observation_seq` domains per source and
+connection epoch. `journal::read_records()` remains the data-only compatibility
+API; `journal::read_observations()` returns the complete data/control stream.
+v1 journals remain readable, and controls never become market-data events.
 
 Other commands: `replay`, `inspect`, `verify`, `latency`, `discover`, `journal`,
 `network-probe`, `completeness`, `coverage`.
@@ -140,7 +153,7 @@ export KALSHI_PRIVATE_KEY_PATH="$HOME/.config/kalshi/private-key.pem"
 LIVE_DURATION_SECS=120 LIVE_MAX_MARKETS=5 scripts/run-live-evidence.sh
 ```
 
-The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails. It certifies per-symbol coverage: every expected symbol in `markets.json` must appear in the run report's acknowledged subscription set and must have its own snapshot in the capture. A five-market run emits `LIVE_SMOKE_OK`, never `LIVE_UNIVERSE_OK`. To claim the universe tier, run `LIVE_EVIDENCE_SCOPE=universe LIVE_MAX_MARKETS=0 LIVE_DURATION_SECS=900 scripts/run-live-evidence.sh` — pass `LIVE_CONFIG=config.live-universe.toml` for the reviewed full-universe capacity envelope (the measured live universe is ~387,000 symbols; the default envelope is refused fail-closed by the capacity planner). The script then requires the expected set to equal the full discovered universe. `LIVE_SOAK_OK` is reserved for a full-universe run held for the stated soak duration and is not emitted by this script. The manual live workflow runs the same script on the protected runner and uploads the complete `captures/` bundle as a retained artifact.
+The script refuses to claim a dual-venue success if either venue is skipped or a capture/journal verification fails. It certifies per-symbol coverage: every expected symbol in `markets.json` must appear in the run report's acknowledged subscription set and must have its own snapshot in the capture. A five-market run emits `LIVE_SMOKE_OK`, never `LIVE_UNIVERSE_OK`. To claim the universe tier, run `LIVE_EVIDENCE_SCOPE=universe LIVE_MAX_MARKETS=0 LIVE_DURATION_SECS=900 scripts/run-live-evidence.sh` — pass `LIVE_CONFIG=config.live-universe.toml` for the reviewed full-universe capacity envelope (capacity planning uses 548,942 discovered outcome tokens; the failed 2026-11-14 live capture expected 385,604 symbols. These are different runs and different evidence stages, not interchangeable counts; the default envelope is refused fail-closed by the capacity planner). The script then requires the expected set to equal the full discovered universe. `LIVE_SOAK_OK` is reserved for a full-universe run held for the stated soak duration and is not emitted by this script. The manual live workflow runs the same script on the protected runner and uploads the complete `captures/` bundle as a retained artifact.
 
 Evidence discipline: a failed run is preserved as a failure — raw captures are
 deleted only after hashing, with the hashes, reduced reports and logs checked

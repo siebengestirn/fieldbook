@@ -160,7 +160,8 @@ pub struct CollectorSettings {
     pub stale_probe_after_secs: u64,
     /// Minimum spacing between probes for one symbol.
     pub probe_interval_secs: u64,
-    /// Failed probes before failing over/reconnecting.
+    /// Failed probes before recording a symbol continuity incident and
+    /// issuing another symbol-scoped refresh.
     pub max_probes: u32,
     /// Emit final snapshots for live books during graceful shutdown.
     pub final_snapshots: bool,

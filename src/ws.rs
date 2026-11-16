@@ -21,19 +21,37 @@ use crate::egress::{self, EgressRoute, ProxyEndpoint, ProxyScheme};
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// One application payload read from a websocket.
+/// One websocket frame read from the transport.
+///
+/// Native control frames are surfaced with their original payload bytes
+/// instead of being collapsed into an idle marker: a control frame is
+/// evidence, not silence.
 #[derive(Debug)]
 pub enum WsPayload {
     Text(String),
     /// Binary data frame, preserved as received.
     Binary(Vec<u8>),
-    /// The peer acknowledged a client heartbeat (native WebSocket PONG).
-    /// Surfaced explicitly instead of being collapsed into an idle frame:
-    /// a heartbeat acknowledgement is evidence, not silence. The control
-    /// payload is preserved for the journal.
-    HeartbeatAck(Vec<u8>),
-    /// Control/heartbeat frame; the connection is still alive.
-    Idle,
+    /// Native WebSocket PING sent by the peer, payload preserved.
+    Ping(Vec<u8>),
+    /// Native WebSocket PONG sent by the peer, payload preserved.
+    Pong(Vec<u8>),
+}
+
+/// The automatic response the transport sent for an inbound native PING.
+#[derive(Debug)]
+pub struct WsResponse {
+    /// The PONG payload (the Ping payload echoed back).
+    pub payload: Vec<u8>,
+    /// Send outcome. A failed response never discards the inbound Ping.
+    pub result: Result<(), String>,
+}
+
+/// One read from the websocket: the frame plus any automatic transport
+/// response it produced.
+#[derive(Debug)]
+pub struct WsRead {
+    pub payload: WsPayload,
+    pub response: Option<WsResponse>,
 }
 
 /// Transport controls for a websocket connection.
@@ -560,18 +578,45 @@ pub fn http_status(error: &anyhow::Error) -> Option<u16> {
     })
 }
 
-/// Read the next data payload, transparently answering control-frame pings.
-pub async fn next_payload(stream: &mut WsStream) -> anyhow::Result<WsPayload> {
+/// Read the next frame, answering native control-frame pings.
+///
+/// An inbound Ping is returned with its payload together with the outbound
+/// Pong observation, including the send result. A failed Pong send is reported
+/// in [`WsResponse::result`] and never swallows the inbound Ping evidence; the
+/// caller decides that the connection is no longer usable.
+pub async fn next_payload(stream: &mut WsStream) -> anyhow::Result<WsRead> {
     loop {
         let message = stream.next().await.context("websocket stream ended")??;
         match message {
-            Message::Text(text) => return Ok(WsPayload::Text(text.to_string())),
-            Message::Binary(bytes) => return Ok(WsPayload::Binary(bytes.to_vec())),
-            Message::Ping(payload) => {
-                stream.send(Message::Pong(payload)).await?;
-                return Ok(WsPayload::Idle);
+            Message::Text(text) => {
+                return Ok(WsRead {
+                    payload: WsPayload::Text(text.to_string()),
+                    response: None,
+                });
             }
-            Message::Pong(payload) => return Ok(WsPayload::HeartbeatAck(payload.to_vec())),
+            Message::Binary(bytes) => {
+                return Ok(WsRead {
+                    payload: WsPayload::Binary(bytes.to_vec()),
+                    response: None,
+                });
+            }
+            Message::Ping(payload) => {
+                let payload = payload.to_vec();
+                let result = stream
+                    .send(Message::Pong(payload.clone().into()))
+                    .await
+                    .map_err(|error| error.to_string());
+                return Ok(WsRead {
+                    payload: WsPayload::Ping(payload.clone()),
+                    response: Some(WsResponse { payload, result }),
+                });
+            }
+            Message::Pong(payload) => {
+                return Ok(WsRead {
+                    payload: WsPayload::Pong(payload.to_vec()),
+                    response: None,
+                });
+            }
             Message::Close(frame) => {
                 let detail = frame.map_or_else(
                     || "without frame".to_owned(),
@@ -682,23 +727,19 @@ mod tests {
             _ = next_payload(&mut stream) => panic!("no frame should be ready yet"),
             _ = std::future::ready(()) => {}
         }
-        match next_payload(&mut stream).await.unwrap() {
+        match next_payload(&mut stream).await.unwrap().payload {
             WsPayload::Text(text) => assert_eq!(text, "first"),
-            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck(_) => {
-                panic!("expected a text frame")
-            }
+            _ => panic!("expected a text frame"),
         }
-        match next_payload(&mut stream).await.unwrap() {
+        match next_payload(&mut stream).await.unwrap().payload {
             WsPayload::Text(text) => assert_eq!(text, "second"),
-            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck(_) => {
-                panic!("expected a text frame")
-            }
+            _ => panic!("expected a text frame"),
         }
         server.await.unwrap();
     }
 
     #[tokio::test]
-    async fn websocket_ping_is_idle_and_pong_is_a_heartbeat_ack() {
+    async fn websocket_ping_is_surfaced_with_its_pong_response() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -721,26 +762,31 @@ mod tests {
         let mut stream = connect(&format!("ws://{address}"), &[], &ConnectOptions::default())
             .await
             .unwrap();
-        match next_payload(&mut stream).await.unwrap() {
-            WsPayload::Idle => {}
-            WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::HeartbeatAck(_) => {
-                panic!("a ping must be idle")
-            }
+        let read = next_payload(&mut stream).await.unwrap();
+        match read.payload {
+            WsPayload::Ping(payload) => assert_eq!(payload, b"keepalive".to_vec()),
+            _ => panic!("a native ping must be surfaced with its payload"),
         }
+        let response = read
+            .response
+            .expect("an inbound ping produces an outbound pong observation");
+        assert_eq!(response.payload, b"keepalive".to_vec());
+        assert!(
+            response.result.is_ok(),
+            "the automatic pong send must be reported: {:?}",
+            response.result
+        );
         // A native PONG acknowledges a client heartbeat: it is surfaced as
-        // evidence, never collapsed into idle silence, and its control
-        // payload is preserved.
-        match next_payload(&mut stream).await.unwrap() {
-            WsPayload::HeartbeatAck(payload) => assert_eq!(payload, b"ack".to_vec()),
-            WsPayload::Text(_) | WsPayload::Binary(_) | WsPayload::Idle => {
-                panic!("a pong must be a heartbeat acknowledgement")
-            }
+        // evidence with its control payload, never collapsed into silence.
+        let read = next_payload(&mut stream).await.unwrap();
+        match read.payload {
+            WsPayload::Pong(payload) => assert_eq!(payload, b"ack".to_vec()),
+            _ => panic!("a pong must be surfaced as a control frame"),
         }
-        match next_payload(&mut stream).await.unwrap() {
+        assert!(read.response.is_none());
+        match next_payload(&mut stream).await.unwrap().payload {
             WsPayload::Text(text) => assert_eq!(text, "after-control"),
-            WsPayload::Binary(_) | WsPayload::Idle | WsPayload::HeartbeatAck(_) => {
-                panic!("expected a text frame")
-            }
+            _ => panic!("expected a text frame"),
         }
         server.await.unwrap();
     }

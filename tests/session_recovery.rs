@@ -17,7 +17,8 @@ use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 use engineering_challenge::{
     journal::{
-        DecodeOutcome, JournalConfig, JournalHandle, JournalMeta, RawFrame, RunState, SyncMode,
+        DataRecord, DecodeOutcome, JournalConfig, JournalHandle, JournalMeta, RawFrame, RunState,
+        SyncMode,
     },
     model::{BookSnapshot, Control, EventMeta, ExchangeEvent, Level, SourceId},
     session::{
@@ -94,7 +95,7 @@ impl MarketDataSession for MockSession {
     async fn send_keepalive(
         &mut self,
     ) -> Result<engineering_challenge::session::HeartbeatRequest, SessionFailure> {
-        Ok(engineering_challenge::session::HeartbeatRequest { correlation: None })
+        Ok(engineering_challenge::session::HeartbeatRequest::default())
     }
 
     async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
@@ -446,14 +447,16 @@ async fn failed_journal_append_stops_worker_before_event_forwarding() {
     };
     let handle = JournalHandle::start(config, meta).expect("journal start");
     handle
-        .record(
-            source(),
-            1,
-            1,
-            1,
-            RawFrame::binary(b"first".to_vec()),
-            DecodeOutcome::decoded(1),
-        )
+        .record(DataRecord {
+            source: source(),
+            connection_epoch: 1,
+            receive_seq: 1,
+            received_at_us: 1,
+            frame: RawFrame::binary(b"first".to_vec()),
+            outcome: DecodeOutcome::decoded(1),
+            signal: engineering_challenge::protocol::SessionSignal::MarketData,
+            mechanism: engineering_challenge::protocol::HeartbeatMechanism::Disabled,
+        })
         .unwrap();
     let run_dir = {
         let status = handle.status();
@@ -474,14 +477,16 @@ async fn failed_journal_append_stops_worker_before_event_forwarding() {
     // Large payload forces rotation; the next segment cannot be created
     // under the old path.
     let large = vec![0x5a; 8192];
-    let _ = handle.record(
-        source(),
-        1,
-        2,
-        2,
-        RawFrame::binary(large),
-        DecodeOutcome::decoded(1),
-    );
+    let _ = handle.record(DataRecord {
+        source: source(),
+        connection_epoch: 1,
+        receive_seq: 2,
+        received_at_us: 2,
+        frame: RawFrame::binary(large),
+        outcome: DecodeOutcome::decoded(1),
+        signal: engineering_challenge::protocol::SessionSignal::MarketData,
+        mechanism: engineering_challenge::protocol::HeartbeatMechanism::Disabled,
+    });
     for _ in 0..200 {
         if handle.status().state == RunState::Failed {
             break;

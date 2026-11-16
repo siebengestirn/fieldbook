@@ -18,47 +18,44 @@ use crate::{
     model::{
         Control, ExchangeEvent, HeartbeatState, ResetReason, SourceId, SourceStatus, TransportState,
     },
+    protocol::{ControlOpcode, SendResult, TransportObservation},
     time::now_us,
 };
+
+/// The venue's heartbeat mechanism and the typed session signal are shared
+/// with the journal through `crate::protocol`; re-export them here so
+/// existing session-facing imports keep working.
+pub use crate::protocol::{HeartbeatMechanism, SessionSignal};
 
 /// A batch of normalized events decoded from one websocket payload.
 #[derive(Debug, Default)]
 pub struct SessionFrame {
     pub events: Vec<ExchangeEvent>,
     pub bytes: usize,
-    /// Exact payload, retained for the raw-frame journal. Transport heartbeat
-    /// frames that carry no application payload leave this empty.
+    /// Exact payload, retained for the raw-frame journal. Native transport
+    /// control frames carry no application payload and leave this empty.
     pub raw: Option<RawFrame>,
     pub decode: DecodeOutcome,
     pub received_at_us: Option<i64>,
     /// What kind of observation this frame carries, typed at the adapter or
     /// transport boundary. Never inferred from an empty event list.
     pub signal: SessionSignal,
+    /// The venue's heartbeat mechanism, assigned by the adapter.
+    pub mechanism: HeartbeatMechanism,
+    /// Every observation retained for this read, in worker observation order:
+    /// the inbound data frame, or the native control exchange (inbound Ping
+    /// followed by the outbound Pong response).
+    pub observations: Vec<TransportObservation>,
+    /// Set when an inbound control frame was observed but the outbound
+    /// response could not be sent. The worker journals the evidence first and
+    /// then treats the connection as unusable.
+    pub transport_failure: Option<String>,
 }
 
-/// One typed observation from a session. A heartbeat acknowledgement and a
-/// market event are different facts: a PONG must not update an instrument's
-/// market-data timestamp, and market data must never satisfy a heartbeat.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum SessionSignal {
-    /// Decoded market data (or an ignorable payload the adapter chose not to
-    /// decode). The only signal that may advance instrument activity.
-    #[default]
-    MarketData,
-    /// The venue acknowledged the client's heartbeat. The payload is the
-    /// correlation evidence: `Some(bytes)` for a native WebSocket PONG
-    /// (which echoes the client ping's payload), `None` for an
-    /// application-text PONG (Polymarket's text protocol carries no
-    /// nonce - correlation there is the single-outstanding-window
-    /// contract, an explicit venue limitation).
-    HeartbeatAck { correlation: Option<Vec<u8>> },
-    /// The venue sent its own heartbeat probe (server `PING`). A different
-    /// observation from an acknowledgement of a client ping.
-    PeerPing,
-    /// Session control the adapter handled (subscribe acknowledgements and
-    /// similar) that is neither market data nor a heartbeat exchange.
-    ProtocolControl,
-}
+// The typed observation vocabulary lives in [`crate::protocol`] so the journal
+// never depends on the session module. A heartbeat acknowledgement and a
+// market event are different facts: a PONG must not update an instrument's
+// market-data timestamp, and market data must never satisfy a heartbeat.
 
 impl SessionFrame {
     #[must_use]
@@ -70,25 +67,15 @@ impl SessionFrame {
             decode: DecodeOutcome::default(),
             received_at_us: None,
             signal: SessionSignal::ProtocolControl,
+            mechanism: HeartbeatMechanism::Disabled,
+            observations: Vec::new(),
+            transport_failure: None,
         }
     }
 
-    /// A heartbeat acknowledgement from the venue. Carries no market data:
-    /// it updates heartbeat state and nothing else. The correlation is the
-    /// pong payload when the venue echoes one, `None` for a nonce-less
-    /// text protocol.
-    #[must_use]
-    pub fn heartbeat_ack(correlation: Option<Vec<u8>>) -> Self {
-        Self {
-            events: Vec::new(),
-            bytes: correlation.as_deref().map_or(0, <[u8]>::len),
-            raw: None,
-            decode: DecodeOutcome::default(),
-            received_at_us: None,
-            signal: SessionSignal::HeartbeatAck { correlation },
-        }
-    }
-
+    /// A data (or ignorable application) payload. The typed inbound data
+    /// observation is derived here and can be reclassified with
+    /// [`SessionFrame::with_signal`] without losing the payload evidence.
     #[must_use]
     pub fn data(
         events: Vec<ExchangeEvent>,
@@ -97,13 +84,142 @@ impl SessionFrame {
         decode: DecodeOutcome,
         received_at_us: i64,
     ) -> Self {
+        let signal = SessionSignal::MarketData;
+        let observation = TransportObservation::inbound_data(
+            raw.kind,
+            raw.payload.clone(),
+            signal.clone(),
+            HeartbeatMechanism::Disabled,
+        );
         Self {
             events,
             bytes,
             raw: Some(raw),
             decode,
             received_at_us: Some(received_at_us),
-            signal: SessionSignal::MarketData,
+            signal,
+            mechanism: HeartbeatMechanism::Disabled,
+            observations: vec![observation],
+            transport_failure: None,
+        }
+    }
+
+    /// A native heartbeat acknowledgement as a control observation. Used by
+    /// session-level tests and adapters that model a PONG without a data
+    /// payload.
+    #[must_use]
+    pub fn heartbeat_ack(correlation: Option<Vec<u8>>) -> Self {
+        let payload = correlation.clone().unwrap_or_default();
+        let signal = SessionSignal::HeartbeatAck { correlation };
+        Self {
+            bytes: payload.len(),
+            observations: vec![TransportObservation::inbound_control(
+                ControlOpcode::Pong,
+                payload,
+                signal.clone(),
+                HeartbeatMechanism::WebSocketControl,
+            )],
+            signal,
+            mechanism: HeartbeatMechanism::WebSocketControl,
+            ..Self::idle(0)
+        }
+    }
+
+    /// Build a frame for a native WebSocket control read, preserving the
+    /// inbound evidence and (for a peer Ping) the outbound Pong result.
+    ///
+    /// `pong_signal` is the venue's interpretation of an inbound native Pong:
+    /// `HeartbeatAck` where native Pong acknowledges a client heartbeat
+    /// (Kalshi), `ProtocolControl` where it does not (Polymarket).
+    #[must_use]
+    pub fn native_control(
+        payload: crate::ws::WsPayload,
+        response: Option<crate::ws::WsResponse>,
+        mechanism: HeartbeatMechanism,
+        pong_signal: SessionSignal,
+        received_at_us: i64,
+    ) -> Self {
+        match payload {
+            crate::ws::WsPayload::Ping(payload) => {
+                let mut observations = vec![TransportObservation::inbound_control(
+                    ControlOpcode::Ping,
+                    payload.clone(),
+                    SessionSignal::PeerPing,
+                    mechanism,
+                )];
+                let mut bytes = payload.len();
+                let mut transport_failure = None;
+                if let Some(response) = response {
+                    bytes = bytes.saturating_add(response.payload.len());
+                    let send_result = match &response.result {
+                        Ok(()) => SendResult::Sent,
+                        Err(error) => {
+                            transport_failure =
+                                Some(format!("failed to answer a native ping: {error}"));
+                            SendResult::Failed {
+                                error: error.clone(),
+                            }
+                        }
+                    };
+                    observations.push(TransportObservation::outbound_control(
+                        ControlOpcode::Pong,
+                        response.payload,
+                        SessionSignal::PeerPong,
+                        mechanism,
+                        send_result,
+                    ));
+                }
+                Self {
+                    bytes,
+                    received_at_us: Some(received_at_us),
+                    signal: SessionSignal::PeerPing,
+                    mechanism,
+                    observations,
+                    transport_failure,
+                    ..Self::idle(0)
+                }
+            }
+            crate::ws::WsPayload::Pong(payload) => {
+                let bytes = payload.len();
+                Self {
+                    bytes,
+                    received_at_us: Some(received_at_us),
+                    signal: pong_signal.clone(),
+                    mechanism,
+                    observations: vec![TransportObservation::inbound_control(
+                        ControlOpcode::Pong,
+                        payload,
+                        pong_signal,
+                        mechanism,
+                    )],
+                    ..Self::idle(0)
+                }
+            }
+            // Data frames are decoded by the adapter, not here.
+            _ => Self {
+                received_at_us: Some(received_at_us),
+                ..Self::idle(0)
+            }
+            .with_signal(SessionSignal::MarketData),
+        }
+    }
+
+    /// Reclassify the frame signal, keeping data observations consistent.
+    #[must_use]
+    pub fn with_signal(mut self, signal: SessionSignal) -> Self {
+        self.signal = signal.clone();
+        for observation in &mut self.observations {
+            observation.signal = signal.clone();
+        }
+        self
+    }
+
+    /// Attach the venue heartbeat mechanism to the frame and its
+    /// observations.
+    pub fn set_mechanism(&mut self, mechanism: HeartbeatMechanism) {
+        self.mechanism = mechanism;
+        for observation in &mut self.observations {
+            observation.mechanism = mechanism;
         }
     }
 }
@@ -190,12 +306,15 @@ pub trait MarketDataSession: Send {
     async fn close(&mut self);
 }
 
-/// The correlation a successful heartbeat send established. `None` when
-/// the venue's mechanism carries no request nonce (application text), so
-/// the single-outstanding window is the correlation rule.
-#[derive(Debug, Clone)]
+/// The correlation a successful heartbeat send established, plus the
+/// outbound observation the worker must journal. `None` correlation means the
+/// venue's mechanism carries no request nonce (application text), so the
+/// single-outstanding window is the correlation rule.
+#[derive(Debug, Clone, Default)]
 pub struct HeartbeatRequest {
     pub correlation: Option<Vec<u8>>,
+    /// Outbound observations retained only after the send succeeds.
+    pub observations: Vec<TransportObservation>,
 }
 
 /// Creates sessions for a source. Implemented by each exchange adapter.
@@ -256,21 +375,6 @@ pub struct WorkerConfig {
     pub connect_permits: Arc<Semaphore>,
     /// Raw-frame journal shared by every source worker.
     pub journal: Option<JournalHandle>,
-}
-
-/// The heartbeat mechanism a venue uses. Adapter-owned: one venue's
-/// heartbeat assumptions must not leak into another's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeartbeatMechanism {
-    /// Application-level text `PING`/`PONG` (Polymarket): one outstanding
-    /// heartbeat, no request nonce, ack typed from the text frame.
-    ApplicationText,
-    /// Native WebSocket control frames (Kalshi): PONG payload correlates
-    /// with the client ping.
-    WebSocketControl,
-    /// The venue carries no client-driven heartbeat; liveness comes from
-    /// frame receipt and the idle timeout alone.
-    Disabled,
 }
 
 /// The complete heartbeat contract an adapter supplies for its session.
@@ -654,6 +758,22 @@ pub async fn run_worker(
                     if tracker.can_send() {
                         match active.send_keepalive().await {
                             Ok(request) => {
+                                // A successful send is evidence: retain the
+                                // outbound request observation (text or native
+                                // control) with its direction and send result.
+                                if !journal_observations(
+                                    source,
+                                    connection_epoch,
+                                    &mut status,
+                                    config.journal.as_ref(),
+                                    &events,
+                                    &request.observations,
+                                    now_us().unwrap_or(0),
+                                )
+                                .await
+                                {
+                                    should_stop = true;
+                                }
                                 // Only a successful send starts the response
                                 // window; a failed attempt is a transport
                                 // error and must not be recorded as a
@@ -715,8 +835,14 @@ pub async fn run_worker(
                             let received_at_us = frame.received_at_us.unwrap_or_else(|| {
                                 now_us().unwrap_or(0)
                             });
+                            // The adapter owns the venue mechanism; the worker
+                            // stamps it before journaling so every observation
+                            // carries typed evidence.
+                            frame.set_mechanism(spec.mechanism);
                             // One payload read, one fence advance, one journal
                             // record — before any decode or protocol decision.
+                            // Native controls are journaled as observations and
+                            // never advance the data fence.
                             if !journal_ingress(
                                 source,
                                 connection_epoch,
@@ -724,14 +850,21 @@ pub async fn run_worker(
                                 &mut status,
                                 config.journal.as_ref(),
                                 &events,
-                                frame.raw.take(),
+                                &mut frame,
                                 received_at_us,
-                                frame.decode.clone(),
                             )
                             .await
                             {
                                 should_stop = true;
                                 break;
+                            }
+                            if let Some(error) = frame.transport_failure.take() {
+                                // The inbound evidence was journaled; a failed
+                                // transport response still makes the
+                                // connection unusable.
+                                warn!(%source, error = %error, "transport response failed");
+                                status.last_error = Some(error);
+                                must_reconnect = true;
                             }
                             stamp_frame(&mut frame, connection_epoch, receive_seq);
                             status.messages = status.messages.saturating_add(1);
@@ -827,7 +960,7 @@ pub async fn run_worker(
                                     // The payload is journaled with its stable
                                     // rejection category even though decoding
                                     // failed.
-                                    if !journal_ingress(
+                                    if !journal_data(
                                         source,
                                         connection_epoch,
                                         &mut receive_seq,
@@ -837,6 +970,8 @@ pub async fn run_worker(
                                         frame,
                                         received_at_us,
                                         DecodeOutcome::rejected(decode_error_category(&error)),
+                                        SessionSignal::MarketData,
+                                        spec.mechanism,
                                     )
                                     .await
                                     {
@@ -856,7 +991,7 @@ pub async fn run_worker(
                                     // A protocol reject is still a payload the
                                     // exchange sent: it advances the fence and
                                     // is journaled with its exact bytes.
-                                    if !journal_ingress(
+                                    if !journal_data(
                                         source,
                                         connection_epoch,
                                         &mut receive_seq,
@@ -866,6 +1001,8 @@ pub async fn run_worker(
                                         frame,
                                         received_at_us,
                                         DecodeOutcome::rejected("protocol_violation"),
+                                        SessionSignal::MarketData,
+                                        spec.mechanism,
                                     )
                                     .await
                                     {
@@ -1386,18 +1523,61 @@ fn failure_message(failure: &SessionFailure) -> String {
     }
 }
 
-/// Account for one transport payload at the single ingress boundary.
+/// Account for one decoded session frame at the single ingress boundary.
 ///
-/// Advances the receive fence exactly once per payload read — before any
-/// decode or protocol decision is recorded — and enqueues the exact bytes with
-/// their decode outcome. Transport-level idle events carry no payload: they
-/// neither advance the fence nor produce a journal record. Returns `false`
-/// after a fatal journal error that must stop the worker.
+/// An application data payload advances the receive fence exactly once and is
+/// journaled with its exact bytes. Native controls are journaled as
+/// observations in the order the worker retained them and never advance the
+/// receive fence. Returns `false` after a fatal journal error that must stop
+/// the worker.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the ingress boundary is identified by source, epoch, and both sequence/timestamp domains"
+)]
+async fn journal_ingress(
+    source: SourceId,
+    connection_epoch: u64,
+    receive_seq: &mut u64,
+    status: &mut SourceStatus,
+    journal: Option<&JournalHandle>,
+    events: &mpsc::Sender<WorkerEvent>,
+    frame: &mut SessionFrame,
+    received_at_us: i64,
+) -> bool {
+    if let Some(payload) = frame.raw.take() {
+        return journal_data(
+            source,
+            connection_epoch,
+            receive_seq,
+            status,
+            journal,
+            events,
+            Some(payload),
+            received_at_us,
+            frame.decode.clone(),
+            frame.signal.clone(),
+            frame.mechanism,
+        )
+        .await;
+    }
+    journal_observations(
+        source,
+        connection_epoch,
+        status,
+        journal,
+        events,
+        &frame.observations,
+        received_at_us,
+    )
+    .await
+}
+
+/// Account for one application data payload.
 #[expect(
     clippy::too_many_arguments,
     reason = "an ingress journal record is identified by source, epoch and both timestamps"
 )]
-async fn journal_ingress(
+async fn journal_data(
     source: SourceId,
     connection_epoch: u64,
     receive_seq: &mut u64,
@@ -1407,6 +1587,8 @@ async fn journal_ingress(
     payload: Option<RawFrame>,
     received_at_us: i64,
     decode: DecodeOutcome,
+    signal: SessionSignal,
+    mechanism: HeartbeatMechanism,
 ) -> bool {
     let Some(payload) = payload else {
         return true;
@@ -1418,26 +1600,77 @@ async fn journal_ingress(
     let Some(journal) = journal else {
         return true;
     };
-    if let Err(error) = journal.record(
+    if let Err(error) = journal.record(crate::journal::DataRecord {
         source,
         connection_epoch,
-        *receive_seq,
+        receive_seq: *receive_seq,
         received_at_us,
-        payload,
-        decode,
-    ) {
-        let message = format!("raw-frame journal rejected a frame: {error:#}");
-        warn!(%source, error = %message, "journal write failed");
-        status.last_error = Some(truncate_error(&error));
-        let _ = events
-            .send(WorkerEvent::Fatal {
-                source,
-                error: message,
-            })
-            .await;
-        return false;
+        frame: payload,
+        outcome: decode,
+        signal,
+        mechanism,
+    }) {
+        return journal_failure(source, status, events, error).await;
     }
     true
+}
+
+/// Account for the native control observations of one read. These advance
+/// `control_seq`/`observation_seq` only, never the data fence.
+async fn journal_observations(
+    source: SourceId,
+    connection_epoch: u64,
+    status: &mut SourceStatus,
+    journal: Option<&JournalHandle>,
+    events: &mpsc::Sender<WorkerEvent>,
+    observations: &[TransportObservation],
+    received_at_us: i64,
+) -> bool {
+    if observations.is_empty() {
+        return true;
+    }
+    for observation in observations {
+        status.bytes_received = status
+            .bytes_received
+            .saturating_add(observation.payload.len() as u64);
+    }
+    let Some(journal) = journal else {
+        return true;
+    };
+    for observation in observations {
+        if let Err(error) = journal.observe(crate::journal::ObservationRecord {
+            source,
+            connection_epoch,
+            received_at_us,
+            direction: observation.direction,
+            classification: observation.classification,
+            signal: observation.signal.clone(),
+            mechanism: observation.mechanism,
+            payload: observation.payload.clone(),
+            send_result: observation.send_result.clone(),
+        }) {
+            return journal_failure(source, status, events, error).await;
+        }
+    }
+    true
+}
+
+async fn journal_failure(
+    source: SourceId,
+    status: &mut SourceStatus,
+    events: &mpsc::Sender<WorkerEvent>,
+    error: anyhow::Error,
+) -> bool {
+    let message = format!("raw-frame journal rejected a frame: {error:#}");
+    warn!(%source, error = %message, "journal write failed");
+    status.last_error = Some(truncate_error(&error));
+    let _ = events
+        .send(WorkerEvent::Fatal {
+            source,
+            error: message,
+        })
+        .await;
+    false
 }
 
 /// Stable classification for a rejected frame, recorded in the journal.
@@ -1470,6 +1703,7 @@ fn truncate_error(error: &anyhow::Error) -> String {
 mod tests {
     use super::*;
     use crate::exchange::Exchange as _;
+    use crate::protocol::{FrameClassification, FrameDirection};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1508,8 +1742,62 @@ mod tests {
         .expect("journal start")
     }
 
+    #[test]
+    fn failed_pong_response_preserves_the_inbound_ping_observation() {
+        use crate::ws::{WsPayload, WsResponse};
+
+        let frame = SessionFrame::native_control(
+            WsPayload::Ping(b"probe".to_vec()),
+            Some(WsResponse {
+                payload: b"probe".to_vec(),
+                result: Err("write failed".to_owned()),
+            }),
+            HeartbeatMechanism::WebSocketControl,
+            SessionSignal::HeartbeatAck { correlation: None },
+            7,
+        );
+
+        assert!(frame.raw.is_none(), "a control frame is not a data record");
+        assert!(frame.events.is_empty(), "a control frame is not an event");
+        assert_eq!(frame.signal, SessionSignal::PeerPing);
+        assert_eq!(
+            frame.transport_failure.as_deref(),
+            Some("failed to answer a native ping: write failed")
+        );
+        assert_eq!(frame.observations.len(), 2);
+
+        let inbound = &frame.observations[0];
+        assert_eq!(inbound.direction, FrameDirection::Inbound);
+        assert_eq!(
+            inbound.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Ping
+            }
+        );
+        assert_eq!(inbound.signal, SessionSignal::PeerPing);
+        assert_eq!(inbound.payload, b"probe");
+        assert_eq!(inbound.send_result, None);
+
+        let outbound = &frame.observations[1];
+        assert_eq!(outbound.direction, FrameDirection::Outbound);
+        assert_eq!(
+            outbound.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Pong
+            }
+        );
+        assert_eq!(outbound.signal, SessionSignal::PeerPong);
+        assert_eq!(outbound.payload, b"probe");
+        assert_eq!(
+            outbound.send_result,
+            Some(SendResult::Failed {
+                error: "write failed".to_owned()
+            })
+        );
+    }
+
     #[tokio::test]
-    async fn transport_idle_and_payloadless_protocol_failures_do_not_advance_the_fence() {
+    async fn transport_controls_are_observed_without_advancing_the_data_fence() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let handle = test_journal(&temp.path().join("journal"));
         let source = SourceId::new(0, 0);
@@ -1517,8 +1805,9 @@ mod tests {
         let mut status = SourceStatus::new(source);
         let mut receive_seq = 0u64;
 
-        // A transport ping/pong produces an idle session frame with no raw
-        // payload. It must not consume a journal sequence number.
+        // A frame with no payload and no observation (for example a protocol
+        // failure raised before any payload was read) consumes nothing.
+        let mut empty = SessionFrame::idle(0);
         assert!(
             journal_ingress(
                 source,
@@ -1527,16 +1816,16 @@ mod tests {
                 &mut status,
                 Some(&handle),
                 &events,
-                None,
+                &mut empty,
                 1,
-                DecodeOutcome::default(),
             )
             .await
         );
         assert_eq!(receive_seq, 0);
 
-        // A protocol failure observed before any payload was read has no
-        // associated record and must not advance the fence either.
+        // A native control is evidence: it becomes an observation but never
+        // consumes the application receive fence.
+        let mut control = SessionFrame::heartbeat_ack(Some(b"journal-pong".to_vec()));
         assert!(
             journal_ingress(
                 source,
@@ -1545,32 +1834,21 @@ mod tests {
                 &mut status,
                 Some(&handle),
                 &events,
-                None,
+                &mut control,
                 2,
-                DecodeOutcome::rejected("protocol_violation"),
             )
             .await
         );
         assert_eq!(receive_seq, 0);
 
         // The first actual payload takes sequence 1, not 3.
-        assert!(
-            journal_ingress(
-                source,
-                1,
-                &mut receive_seq,
-                &mut status,
-                Some(&handle),
-                &events,
-                Some(RawFrame::text("payload".to_owned())),
-                3,
-                DecodeOutcome::decoded(1),
-            )
-            .await
+        let mut data = SessionFrame::data(
+            Vec::new(),
+            7,
+            RawFrame::text("payload".to_owned()),
+            DecodeOutcome::decoded(1),
+            3,
         );
-        assert_eq!(receive_seq, 1);
-
-        // An idle frame after a payload leaves the fence where it was.
         assert!(
             journal_ingress(
                 source,
@@ -1579,9 +1857,8 @@ mod tests {
                 &mut status,
                 Some(&handle),
                 &events,
-                None,
-                4,
-                DecodeOutcome::default(),
+                &mut data,
+                3,
             )
             .await
         );
@@ -1590,12 +1867,18 @@ mod tests {
         let summary = handle
             .shutdown(Duration::from_secs(2))
             .expect("journal shutdown");
-        assert_eq!(summary.record_count, 1);
-        let records = crate::journal::read_records(std::path::Path::new(&summary.run_directory))
-            .expect("read records");
+        assert_eq!(summary.record_count, 2);
+        let run_directory = std::path::Path::new(&summary.run_directory);
+        let records = crate::journal::read_records(run_directory).expect("read records");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].receive_seq, 1);
         assert_eq!(records[0].payload, b"payload");
+        let observations =
+            crate::journal::read_observations(run_directory).expect("read observations");
+        assert_eq!(observations.len(), 2);
+        assert_eq!(observations[0].control_seq, Some(1));
+        assert_eq!(observations[0].receive_seq, None);
+        assert_eq!(observations[1].receive_seq, Some(1));
     }
 
     #[tokio::test]
@@ -1700,7 +1983,7 @@ mod tests {
         }
 
         async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
-            Ok(HeartbeatRequest { correlation: None })
+            Ok(HeartbeatRequest::default())
         }
 
         async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
@@ -1863,7 +2146,7 @@ mod heartbeat_pin_tests {
 
         async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
             self.pings.fetch_add(1, Ordering::Relaxed);
-            Ok(HeartbeatRequest { correlation: None })
+            Ok(HeartbeatRequest::default())
         }
 
         async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
@@ -2377,7 +2660,7 @@ mod first_ack_pin_tests {
             }
 
             async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
-                Ok(HeartbeatRequest { correlation: None })
+                Ok(HeartbeatRequest::default())
             }
 
             async fn request_snapshot(
@@ -2671,6 +2954,7 @@ mod first_ack_pin_tests {
             async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
                 Ok(HeartbeatRequest {
                     correlation: Some(NONCE.to_vec()),
+                    observations: Vec::new(),
                 })
             }
 

@@ -1445,7 +1445,6 @@ impl CollectorCore {
         let quantifiable = self.config.capabilities.has_sequence_clock;
         let mut outputs = Vec::new();
         let mut probes: Vec<(SourceId, String)> = Vec::new();
-        let mut reconnects: Vec<(SourceId, String)> = Vec::new();
         let mut reseats: Vec<String> = Vec::new();
         let mut periodic_count = 0u64;
         let mut crossed_count = 0u64;
@@ -1537,8 +1536,12 @@ impl CollectorCore {
                         record_incident(&mut self.stats, started, quantifiable);
                         state.probes = 0;
                         state.last_probe_us = now_us;
-                        reconnects.push((active, native.clone()));
-                        reseats.push(native.clone());
+                        // Probe-budget exhaustion is an instrument-continuity
+                        // incident, not evidence that the shared source is
+                        // unhealthy. Keep the refresh scoped to this symbol on
+                        // the active connection. Transport/heartbeat failure
+                        // has its own source-level reconnect path.
+                        probes.push((active, native.clone()));
                         probe_count = probe_count.saturating_add(1);
                     }
                 }
@@ -1549,9 +1552,6 @@ impl CollectorCore {
 
         for (source, native) in probes {
             self.request_recovery(source, &native, false);
-        }
-        for (source, native) in reconnects {
-            self.request_recovery(source, &native, true);
         }
         self.stats.stale_probes = self.stats.stale_probes.saturating_add(probe_count);
         self.stats.periodic_snapshots =
