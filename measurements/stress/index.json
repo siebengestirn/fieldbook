@@ -9,7 +9,7 @@
       "symbols": 1000
     },
     "failed-seed-000b-200-coverage_set_mismatch": {
-      "body_sha256": "d34e62e552c09b267100293453aa49dffa8cee23da0853325fbd239b97ae2acc",
+      "body_sha256": "ac2edeb5e834ec31bddd980dafe4071713bed8f970be1a572e70c7252ba1e4d0",
       "path": "failed-seed-000b-200-coverage_set_mismatch.json",
       "publication_state": "published",
       "run_status": "failed",
@@ -38,6 +38,14 @@
       "publication_state": "published",
       "run_status": "success",
       "seed": 7,
+      "symbols": 4000
+    },
+    "seed-0017-4000-hotquiet": {
+      "body_sha256": "b3440eab67f6e4b1b818fd9bb1aaf26aa17f9d44eeca1135b01773bb311855f7",
+      "path": "seed-0017-4000-hotquiet.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 23,
       "symbols": 4000
     }
   },

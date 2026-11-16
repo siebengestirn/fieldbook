@@ -38,8 +38,8 @@
     },
     "in_process": true
   },
-  "collector_binary_sha256": "d9293265c9cd58dc82ca9841c839148ae3962811078e45410b87353bab3407d0",
-  "configuration_sha256": "7e180580902e0a5a639f2312598dfa7e4633ccc05929d5f7aa0dff0059e5b03a",
+  "collector_binary_sha256": "3fcefd8a956e545df546eb9c9f5038d72e21bbe4679c9049caf3d6e3cd9bac4e",
+  "configuration_sha256": "fbc350dab1c85cc0f4721969b48195dd7ab0e1804d9d7768cdfd0178cef282b6",
   "counts": {
     "applied_events": 30,
     "generated_events": 30,
@@ -73,7 +73,7 @@
   },
   "delivery": {
     "anchor_completed": false,
-    "anchor_ms": 4063,
+    "anchor_ms": 4040,
     "capacity_connections": 3,
     "drain_completed": true,
     "drain_detail": null
@@ -85,7 +85,7 @@
       "value": null
     },
     "disk_ceiling_reached": false,
-    "free_bytes_before_start": 97739202560
+    "free_bytes_before_start": 126241628160
   },
   "event_ledger": {
     "application_shortfall": 0,
@@ -105,7 +105,7 @@
   "evidence_class": "synthetic-loopback",
   "execution_mode": "stress",
   "failure_class": "coverage_set_mismatch",
-  "generator_version": 1,
+  "generator_version": 2,
   "harness": {
     "mock_queue_capacity": 4096,
     "mock_queue_high_water": 200,
@@ -117,7 +117,7 @@
     "clock_source": "std::time::Instant (monotonic)",
     "cpu_count": 8,
     "cpu_model": "Apple M1",
-    "disk_free_bytes": 97739251712,
+    "disk_free_bytes": 126241636352,
     "fd_limit": 1048576,
     "kernel": "27.0.0",
     "os": "Darwin 27.0.0",
@@ -149,7 +149,7 @@
       "reason": "cpu_seconds not measured (no libc dependency)",
       "value": null
     },
-    "harness_process_rss_sample_bytes": 23658496,
+    "harness_process_rss_sample_bytes": 17563648,
     "msgs_per_sec_max": {
       "reason": "binned throughput lands with the reference matrix",
       "value": null
@@ -166,25 +166,28 @@
       "reason": "binned throughput lands with the reference matrix",
       "value": null
     },
-    "snapshot_anchor_ms": 4063,
+    "snapshot_anchor_ms": 4040,
     "writer_queue_high_water_mark": 198
   },
   "prng_algorithm_version": 1,
   "provenance": {
     "clean_run_required": false,
-    "commit": "5e4ab28081d01eb38f1a6d0343f6bae0927afc10",
+    "commit": "2cb5ef3ec1dfccf5d2fa676c357c250a87d9ace5",
     "tracked_clean": true,
     "tracked_diff_sha256": null,
     "tracked_modified_files": [],
     "untracked_file_count": 0
   },
-  "run_id": "stress-1794693247065-79205",
+  "run_id": "stress-1794862448973-70437",
   "run_status": "failed",
   "scenario": {
     "distribution": "uniform",
     "eligible_count": 200,
     "events_published": 30,
     "failure_injection": "MissingSnapshot { skip_one: 1 }",
+    "hot_event_share_pct": 0,
+    "hot_fraction_ppm": 0,
+    "hot_tickers": 0,
     "journal": true,
     "lifecycle_replicas": 1,
     "replicas_actual": 2,
@@ -192,12 +195,13 @@
     "seed": 11,
     "shards_actual": 1,
     "shards_requested": 1,
-    "symbols": 200
+    "symbols": 200,
+    "uniform_spread": true
   },
-  "scenario_version": 1,
+  "scenario_version": 2,
   "schema_version": 1,
-  "source_commit": "5e4ab28081d01eb38f1a6d0343f6bae0927afc10",
-  "stress_harness_binary_sha256": "d9293265c9cd58dc82ca9841c839148ae3962811078e45410b87353bab3407d0",
+  "source_commit": "2cb5ef3ec1dfccf5d2fa676c357c250a87d9ace5",
+  "stress_harness_binary_sha256": "3fcefd8a956e545df546eb9c9f5038d72e21bbe4679c9049caf3d6e3cd9bac4e",
   "target_triple": "aarch64-apple-darwin",
   "verify": {
     "completeness_error": null,
