@@ -39,15 +39,19 @@ pub struct SessionFrame {
 /// One typed observation from a session. A heartbeat acknowledgement and a
 /// market event are different facts: a PONG must not update an instrument's
 /// market-data timestamp, and market data must never satisfy a heartbeat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SessionSignal {
     /// Decoded market data (or an ignorable payload the adapter chose not to
     /// decode). The only signal that may advance instrument activity.
     #[default]
     MarketData,
-    /// The venue acknowledged the client's heartbeat (application-level text
-    /// `PONG` on Polymarket, native WebSocket PONG elsewhere).
-    HeartbeatAck,
+    /// The venue acknowledged the client's heartbeat. The payload is the
+    /// correlation evidence: `Some(bytes)` for a native WebSocket PONG
+    /// (which echoes the client ping's payload), `None` for an
+    /// application-text PONG (Polymarket's text protocol carries no
+    /// nonce - correlation there is the single-outstanding-window
+    /// contract, an explicit venue limitation).
+    HeartbeatAck { correlation: Option<Vec<u8>> },
     /// The venue sent its own heartbeat probe (server `PING`). A different
     /// observation from an acknowledgement of a client ping.
     PeerPing,
@@ -69,17 +73,19 @@ impl SessionFrame {
         }
     }
 
-    /// A heartbeat acknowledgement from the venue. Carries no market data
-    /// and no journal payload: it updates heartbeat state and nothing else.
+    /// A heartbeat acknowledgement from the venue. Carries no market data:
+    /// it updates heartbeat state and nothing else. The correlation is the
+    /// pong payload when the venue echoes one, `None` for a nonce-less
+    /// text protocol.
     #[must_use]
-    pub fn heartbeat_ack(bytes: usize) -> Self {
+    pub fn heartbeat_ack(correlation: Option<Vec<u8>>) -> Self {
         Self {
             events: Vec::new(),
-            bytes,
+            bytes: correlation.as_deref().map_or(0, <[u8]>::len),
             raw: None,
             decode: DecodeOutcome::default(),
             received_at_us: None,
-            signal: SessionSignal::HeartbeatAck,
+            signal: SessionSignal::HeartbeatAck { correlation },
         }
     }
 
@@ -174,11 +180,22 @@ pub trait MarketDataSession: Send {
     ) -> Result<(), SessionFailure>;
     /// Read exactly one websocket payload (or a control frame) and decode it.
     async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure>;
-    async fn send_keepalive(&mut self) -> Result<(), SessionFailure>;
+    /// Send the venue's heartbeat and return the correlation the
+    /// acknowledgement must carry (the PING payload for native control
+    /// frames, `None` for a nonce-less text protocol).
+    async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure>;
     /// Ask the exchange for fresh snapshots without changing membership when
     /// supported; otherwise resubscribe the symbols.
     async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure>;
     async fn close(&mut self);
+}
+
+/// The correlation a successful heartbeat send established. `None` when
+/// the venue's mechanism carries no request nonce (application text), so
+/// the single-outstanding window is the correlation rule.
+#[derive(Debug, Clone)]
+pub struct HeartbeatRequest {
+    pub correlation: Option<Vec<u8>>,
 }
 
 /// Creates sessions for a source. Implemented by each exchange adapter.
@@ -636,12 +653,13 @@ pub async fn run_worker(
                     // verdict, not the next send's.
                     if tracker.can_send() {
                         match active.send_keepalive().await {
-                            Ok(()) => {
+                            Ok(request) => {
                                 // Only a successful send starts the response
                                 // window; a failed attempt is a transport
                                 // error and must not be recorded as a
-                                // heartbeat send.
-                                if tracker.on_ping_sent(now) {
+                                // heartbeat send. The adapter supplies the
+                                // correlation its venue's mechanism supports.
+                                if tracker.on_ping_sent(now, request.correlation) {
                                     status.last_ping_sent_us = now_us().ok();
                                 }
                             }
@@ -729,12 +747,17 @@ pub async fn run_worker(
                             // deadline; unsolicited, duplicate and late PONGs
                             // are recorded as unmatched and never restore
                             // health or clear a miss.
-                            if frame.signal == SessionSignal::HeartbeatAck {
+                            if let SessionSignal::HeartbeatAck { correlation } =
+                                &frame.signal
+                            {
                                 // Wall-clock receipt from the frame itself
                                 // (the transport stamped it on read), not the
                                 // post-journal processing time.
                                 status.last_pong_received_us = Some(received_at_us);
-                                match tracker.on_ack_received(frame_received_at) {
+                                match tracker.on_ack_received(
+                                    frame_received_at,
+                                    correlation.as_deref(),
+                                ) {
                                     HeartbeatAck::Matched { rtt_us } => {
                                         status.heartbeat_rtt_us = Some(rtt_us);
                                         // The heartbeat state itself is
@@ -753,6 +776,15 @@ pub async fn run_worker(
                                             .saturating_add(1);
                                     }
                                     HeartbeatAck::Unsolicited => {
+                                        status.unmatched_heartbeats = status
+                                            .unmatched_heartbeats
+                                            .saturating_add(1);
+                                    }
+                                    HeartbeatAck::Mismatched => {
+                                        // A response with the wrong
+                                        // correlation is not this request's
+                                        // acknowledgement: unmatched, and the
+                                        // window stays open.
                                         status.unmatched_heartbeats = status
                                             .unmatched_heartbeats
                                             .saturating_add(1);
@@ -1111,13 +1143,17 @@ fn next_backoff(current: Duration, maximum: Duration) -> Duration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeartbeatAck {
     /// An eligible acknowledgement of the outstanding heartbeat inside the
-    /// response deadline.
+    /// response deadline, correlated where the mechanism supplies it.
     Matched { rtt_us: i64 },
     /// An acknowledgement that arrived past the response deadline. The
     /// deadline accounting owns the miss; this response stays unmatched.
     Late,
     /// No heartbeat was outstanding (unsolicited or duplicate response).
     Unsolicited,
+    /// A response whose payload does not match the outstanding request's
+    /// correlation. The window stays open; the real acknowledgement may
+    /// still arrive inside the deadline.
+    Mismatched,
 }
 
 /// The deterministic heartbeat state machine. No networking, tasks, logging
@@ -1128,10 +1164,20 @@ pub enum HeartbeatAck {
 #[derive(Debug)]
 pub struct HeartbeatTracker {
     spec: HeartbeatSpec,
-    outstanding: Option<Instant>,
+    outstanding: Option<OutstandingHeartbeat>,
     missed: u64,
     unmatched: u64,
     state: HeartbeatState,
+}
+
+/// One sent heartbeat awaiting its acknowledgement. The correlation payload
+/// is what the venue must echo back when the mechanism supports it
+/// (native WebSocket control frames); `None` for a nonce-less text
+/// protocol, where the single-outstanding window is the correlation rule.
+#[derive(Debug)]
+pub struct OutstandingHeartbeat {
+    sent_at: Instant,
+    correlation: Option<Vec<u8>>,
 }
 
 impl HeartbeatTracker {
@@ -1171,7 +1217,8 @@ impl HeartbeatTracker {
     #[must_use]
     pub fn next_deadline(&self) -> Option<Instant> {
         self.outstanding
-            .map(|sent| sent + self.spec.response_deadline)
+            .as_ref()
+            .map(|sent| sent.sent_at + self.spec.response_deadline)
     }
 
     /// Whether a new heartbeat may be sent: only when no heartbeat is
@@ -1183,12 +1230,16 @@ impl HeartbeatTracker {
 
     /// Record a successful heartbeat send. Returns `true` when the send
     /// started a response window (a send is suppressed while one is
-    /// outstanding).
-    pub fn on_ping_sent(&mut self, now: Instant) -> bool {
+    /// outstanding). The correlation is what the acknowledgement must echo
+    /// when the mechanism supports it.
+    pub fn on_ping_sent(&mut self, now: Instant, correlation: Option<Vec<u8>>) -> bool {
         if !self.can_send() {
             return false;
         }
-        self.outstanding = Some(now);
+        self.outstanding = Some(OutstandingHeartbeat {
+            sent_at: now,
+            correlation,
+        });
         true
     }
 
@@ -1196,10 +1247,10 @@ impl HeartbeatTracker {
     /// policy's reconnect action fires. A miss is counted exactly once per
     /// expired heartbeat: the outstanding window is cleared when counted.
     pub fn on_deadline_check(&mut self, now: Instant) -> bool {
-        let Some(sent_at) = self.outstanding else {
+        let Some(outstanding) = self.outstanding.as_ref() else {
             return false;
         };
-        if now.duration_since(sent_at) < self.spec.response_deadline {
+        if now.duration_since(outstanding.sent_at) < self.spec.response_deadline {
             return false;
         }
         self.outstanding = None;
@@ -1214,18 +1265,30 @@ impl HeartbeatTracker {
         false
     }
 
-    /// Classify an acknowledgement against the outstanding heartbeat.
-    pub fn on_ack_received(&mut self, now: Instant) -> HeartbeatAck {
-        let Some(sent_at) = self.outstanding else {
+    /// Classify an acknowledgement against the outstanding heartbeat. A
+    /// native control-frame response must echo the outstanding request's
+    /// correlation payload; a nonce-less text protocol accepts any response
+    /// inside the outstanding window (the venue's stated contract).
+    pub fn on_ack_received(&mut self, now: Instant, correlation: Option<&[u8]>) -> HeartbeatAck {
+        let Some(outstanding) = self.outstanding.as_ref() else {
             self.unmatched = self.unmatched.saturating_add(1);
             return HeartbeatAck::Unsolicited;
         };
-        let elapsed = now.duration_since(sent_at);
+        let elapsed = now.duration_since(outstanding.sent_at);
         if elapsed >= self.spec.response_deadline {
             // Late: the deadline accounting owns the miss; this response
             // stays unmatched and must not restore health.
             self.unmatched = self.unmatched.saturating_add(1);
             return HeartbeatAck::Late;
+        }
+        // Correlation is enforced only where the venue supplies it.
+        if let Some(expected) = &outstanding.correlation {
+            if correlation != Some(expected.as_slice()) {
+                // A response with the wrong payload is not this request's
+                // acknowledgement: unmatched, and the window stays open.
+                self.unmatched = self.unmatched.saturating_add(1);
+                return HeartbeatAck::Mismatched;
+            }
         }
         self.outstanding = None;
         self.missed = 0;
@@ -1636,8 +1699,8 @@ mod tests {
             Err(SessionFailure::Fatal(anyhow::anyhow!("unused")))
         }
 
-        async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
-            Ok(())
+        async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+            Ok(HeartbeatRequest { correlation: None })
         }
 
         async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
@@ -1793,14 +1856,14 @@ mod heartbeat_pin_tests {
             if let Some(after) = self.ack_after_frames
                 && self.frames_served.load(Ordering::Relaxed) == after
             {
-                return Ok(SessionFrame::heartbeat_ack(0));
+                return Ok(SessionFrame::heartbeat_ack(None));
             }
             Ok(self.market_frame())
         }
 
-        async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
+        async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
             self.pings.fetch_add(1, Ordering::Relaxed);
-            Ok(())
+            Ok(HeartbeatRequest { correlation: None })
         }
 
         async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
@@ -1973,7 +2036,7 @@ mod heartbeat_tracker_tests {
     fn no_ack_before_the_deadline_is_no_miss() {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(49)));
         assert_eq!(tracker.missed(), 0);
         assert_eq!(tracker.state(), Hs::AwaitingFirstAck);
@@ -1983,7 +2046,7 @@ mod heartbeat_tracker_tests {
     fn deadline_expiry_advances_the_miss_exactly_once() {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         // The return value is the reconnect action, not the miss itself:
         // with reconnect_after_misses = 3, the first miss returns false but
         // is counted, and the state leaves AwaitingFirstAck.
@@ -2001,9 +2064,9 @@ mod heartbeat_tracker_tests {
     fn an_eligible_ack_returns_the_monotonic_rtt_and_resets_the_streak() {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         assert_eq!(
-            tracker.on_ack_received(t0 + Duration::from_millis(20)),
+            tracker.on_ack_received(t0 + Duration::from_millis(20), None),
             HeartbeatAck::Matched { rtt_us: 20_000 }
         );
         assert_eq!(tracker.missed(), 0);
@@ -2016,18 +2079,18 @@ mod heartbeat_tracker_tests {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
         // No ping was ever sent.
-        assert_eq!(tracker.on_ack_received(t0), HeartbeatAck::Unsolicited);
+        assert_eq!(tracker.on_ack_received(t0, None), HeartbeatAck::Unsolicited);
         assert_eq!(tracker.unmatched(), 1);
         assert_eq!(tracker.state(), Hs::AwaitingFirstAck);
         // After a real exchange, a duplicate PONG is unsolicited too: the
         // outstanding window already closed with the first ack.
-        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(10)));
+        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(10), None));
         assert_eq!(
-            tracker.on_ack_received(t0 + Duration::from_millis(15)),
+            tracker.on_ack_received(t0 + Duration::from_millis(15), None),
             HeartbeatAck::Matched { rtt_us: 5_000 }
         );
         assert_eq!(
-            tracker.on_ack_received(t0 + Duration::from_millis(16)),
+            tracker.on_ack_received(t0 + Duration::from_millis(16), None),
             HeartbeatAck::Unsolicited
         );
         assert_eq!(tracker.unmatched(), 2);
@@ -2038,12 +2101,12 @@ mod heartbeat_tracker_tests {
     fn a_late_pong_is_unmatched_and_the_miss_remains() {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         // Real delivery order: the worker's biased select hands the frame
         // to the ack path before the next loop top reaps the deadline, so
         // the late response is classified as late - not as unsolicited.
         assert_eq!(
-            tracker.on_ack_received(t0 + Duration::from_millis(51)),
+            tracker.on_ack_received(t0 + Duration::from_millis(51), None),
             HeartbeatAck::Late
         );
         assert_eq!(tracker.unmatched(), 1);
@@ -2059,11 +2122,11 @@ mod heartbeat_tracker_tests {
     fn a_pong_from_a_previous_connection_cannot_ack_the_current_heartbeat() {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         // Reconnect: the tracker resets with the connection.
         tracker.reset();
         assert_eq!(
-            tracker.on_ack_received(t0 + Duration::from_millis(10)),
+            tracker.on_ack_received(t0 + Duration::from_millis(10), None),
             HeartbeatAck::Unsolicited,
             "an old epoch's acknowledgement is not this connection's evidence"
         );
@@ -2075,18 +2138,18 @@ mod heartbeat_tracker_tests {
     fn only_one_heartbeat_is_outstanding_at_a_time() {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(spec());
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         assert!(
             !tracker.can_send(),
             "a second in-flight ping cannot be correlated without a nonce"
         );
         assert!(
-            !tracker.on_ping_sent(t0 + Duration::from_millis(10)),
+            !tracker.on_ping_sent(t0 + Duration::from_millis(10), None),
             "a superseding send is suppressed, never a miss"
         );
         // The window closes via ack or deadline - then a send is possible.
         assert_eq!(
-            tracker.on_ack_received(t0 + Duration::from_millis(20)),
+            tracker.on_ack_received(t0 + Duration::from_millis(20), None),
             HeartbeatAck::Matched { rtt_us: 20_000 }
         );
         assert!(tracker.can_send());
@@ -2099,11 +2162,11 @@ mod heartbeat_tracker_tests {
             reconnect_after_misses: 3,
             ..spec()
         });
-        assert!(tracker.on_ping_sent(t0));
+        assert!(tracker.on_ping_sent(t0, None));
         assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(50)));
-        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(60)));
+        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(60), None));
         assert!(!tracker.on_deadline_check(t0 + Duration::from_millis(110)));
-        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(120)));
+        assert!(tracker.on_ping_sent(t0 + Duration::from_millis(120), None));
         assert!(
             tracker.on_deadline_check(t0 + Duration::from_millis(170)),
             "the third consecutive miss applies the reconnect action"
@@ -2116,9 +2179,57 @@ mod heartbeat_tracker_tests {
         let t0 = base();
         let mut tracker = HeartbeatTracker::new(HeartbeatSpec::disabled());
         assert!(!tracker.can_send());
-        assert!(!tracker.on_ping_sent(t0));
+        assert!(!tracker.on_ping_sent(t0, None));
         assert!(!tracker.on_deadline_check(t0 + Duration::from_secs(60)));
         assert_eq!(tracker.state(), Hs::Disabled);
+    }
+
+    #[test]
+    fn a_mismatched_pong_is_unmatched_and_the_window_stays_open() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(spec());
+        assert!(tracker.on_ping_sent(t0, Some(b"nonce-1".to_vec())));
+        // A response with the wrong correlation payload is not this
+        // request's acknowledgement: unmatched, no health restore, and the
+        // window stays open so the real echo can still arrive in time.
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(20), Some(b"other".as_slice())),
+            HeartbeatAck::Mismatched
+        );
+        assert_eq!(tracker.unmatched(), 1);
+        assert_eq!(tracker.missed(), 0);
+        assert_eq!(tracker.state(), Hs::AwaitingFirstAck);
+        assert!(
+            !tracker.can_send(),
+            "the outstanding request is still awaiting its echo"
+        );
+        // The real echo inside the deadline matches.
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(30), Some(b"nonce-1".as_slice())),
+            HeartbeatAck::Matched { rtt_us: 30_000 }
+        );
+        assert_eq!(tracker.state(), Hs::Healthy);
+    }
+
+    #[test]
+    fn a_native_pong_which_fails_to_echo_the_nonce_is_matched_only_by_payload() {
+        let t0 = base();
+        let mut tracker = HeartbeatTracker::new(HeartbeatSpec::ten_second_websocket_control());
+        assert!(tracker.on_ping_sent(t0, Some(0x1234u64.to_be_bytes().to_vec())));
+        // An empty-payload PONG does not correlate with the nonce request.
+        assert_eq!(
+            tracker.on_ack_received(t0 + Duration::from_millis(100), Some(&[])),
+            HeartbeatAck::Mismatched
+        );
+        // The echoed nonce does.
+        assert_eq!(
+            tracker.on_ack_received(
+                t0 + Duration::from_millis(200),
+                Some(&0x1234u64.to_be_bytes())
+            ),
+            HeartbeatAck::Matched { rtt_us: 200_000 }
+        );
+        assert_eq!(tracker.state(), Hs::Healthy);
     }
 }
 
@@ -2265,8 +2376,8 @@ mod first_ack_pin_tests {
                 Ok(self.next_frame_from_queue().await)
             }
 
-            async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
-                Ok(())
+            async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+                Ok(HeartbeatRequest { correlation: None })
             }
 
             async fn request_snapshot(
@@ -2322,7 +2433,7 @@ mod first_ack_pin_tests {
             push_queue
                 .lock()
                 .unwrap()
-                .push_back(SessionFrame::heartbeat_ack(0));
+                .push_back(SessionFrame::heartbeat_ack(None));
         });
 
         let worker = tokio::spawn(run_worker(
@@ -2500,6 +2611,189 @@ mod first_ack_pin_tests {
             pings.load(Ordering::Relaxed),
             0,
             "no heartbeat may be sent under an invalid policy"
+        );
+    }
+
+    /// M2.1 pin (Finding 3): a native control-frame acknowledgement must
+    /// echo the correlation payload the adapter sent. A PONG with the wrong
+    /// payload is unmatched and leaves the window open; only the correctly
+    /// correlated PONG acknowledges the request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_pong_with_a_mismatched_payload_is_never_matched() {
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        const NONCE: &[u8] = &[0x5a, 0xa5, 0x5a, 0xa5, 0x01, 0x02, 0x03, 0x04];
+
+        struct CorrelatedSession {
+            queue: Arc<Mutex<VecDeque<SessionFrame>>>,
+        }
+
+        impl CorrelatedSession {
+            async fn next_frame_from_queue(&mut self) -> SessionFrame {
+                loop {
+                    if let Some(frame) = self.queue.lock().unwrap().pop_front() {
+                        return frame;
+                    }
+                    // Keep the worker cycling while the queue is empty: an
+                    // idle transport frame carries no payload and no market
+                    // data.
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    return SessionFrame::idle(0);
+                }
+            }
+        }
+
+        #[async_trait]
+        impl MarketDataSession for CorrelatedSession {
+            fn heartbeat_spec(&self) -> HeartbeatSpec {
+                HeartbeatSpec {
+                    mechanism: HeartbeatMechanism::WebSocketControl,
+                    send_interval: Duration::from_millis(10),
+                    response_deadline: Duration::from_millis(5_000),
+                    miss_threshold: 1,
+                    reconnect_after_misses: u32::MAX,
+                }
+            }
+
+            async fn connect(&mut self) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn apply_subscriptions(
+                &mut self,
+                _desired: &BTreeSet<String>,
+            ) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure> {
+                Ok(self.next_frame_from_queue().await)
+            }
+
+            async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+                Ok(HeartbeatRequest {
+                    correlation: Some(NONCE.to_vec()),
+                })
+            }
+
+            async fn request_snapshot(
+                &mut self,
+                _symbols: &[String],
+            ) -> Result<(), SessionFailure> {
+                Ok(())
+            }
+
+            async fn close(&mut self) {}
+        }
+
+        struct CorrelatedFactory {
+            queue: Arc<Mutex<VecDeque<SessionFrame>>>,
+        }
+
+        #[async_trait]
+        impl SessionFactory for CorrelatedFactory {
+            async fn create_session(
+                &self,
+                _source: SourceId,
+            ) -> anyhow::Result<Box<dyn MarketDataSession>> {
+                Ok(Box::new(CorrelatedSession {
+                    queue: self.queue.clone(),
+                }))
+            }
+        }
+
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let factory = Arc::new(CorrelatedFactory {
+            queue: queue.clone(),
+        });
+        // The server answers with the wrong payload first, then the
+        // correctly correlated echo.
+        queue
+            .lock()
+            .unwrap()
+            .push_back(SessionFrame::heartbeat_ack(Some(b"not-my-nonce".to_vec())));
+        queue
+            .lock()
+            .unwrap()
+            .push_back(SessionFrame::heartbeat_ack(Some(NONCE.to_vec())));
+
+        let source = SourceId::new(0, 0);
+        let (_commands_tx, commands_rx) = mpsc::channel(8);
+        let (events, mut events_rx) = mpsc::channel(256);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let config = WorkerConfig {
+            status_interval: Duration::from_millis(10),
+            idle_timeout: Duration::from_secs(60),
+            reconnect_after: Duration::from_secs(3_600),
+            reconnect_base_backoff: Duration::from_millis(10),
+            reconnect_max_backoff: Duration::from_millis(20),
+            connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            journal: None,
+        };
+
+        let worker = tokio::spawn(run_worker(
+            factory,
+            source,
+            commands_rx,
+            events.clone(),
+            config,
+            shutdown_rx,
+        ));
+        drop(events);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(2_000);
+        let mut statuses: Vec<SourceStatus> = Vec::new();
+        let mut ping_seen = false;
+        let mut echoed = false;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+                Ok(Some(WorkerEvent::Status(status))) => {
+                    if !ping_seen && status.last_ping_sent_us.is_some() {
+                        // The nonce-carrying PING is outstanding (5s
+                        // deadline): deliver the correctly correlated echo.
+                        ping_seen = true;
+                        queue
+                            .lock()
+                            .unwrap()
+                            .push_back(SessionFrame::heartbeat_ack(Some(NONCE.to_vec())));
+                    }
+                    if ping_seen && echoed && status.heartbeat_state == HeartbeatState::Healthy {
+                        statuses.push(status);
+                        break;
+                    }
+                    if ping_seen {
+                        echoed = true;
+                    }
+                    statuses.push(status);
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = shutdown_tx.send(());
+        let _ = worker.await;
+
+        let last = statuses
+            .last()
+            .expect("the worker must publish periodic status");
+        assert!(ping_seen, "the nonce-carrying ping must have been sent");
+        assert_eq!(
+            last.heartbeat_state,
+            HeartbeatState::Healthy,
+            "the correlated echo must acknowledge the request; \
+             statuses={} last={:?}",
+            statuses.len(),
+            last
+        );
+        assert!(
+            last.unmatched_heartbeats >= 1,
+            "the mismatched PONG must be recorded as unmatched"
+        );
+        assert_eq!(last.missed_heartbeats, 0, "no deadline expired");
+        assert!(
+            last.heartbeat_rtt_us.is_some(),
+            "the matched ack has an RTT"
         );
     }
 }

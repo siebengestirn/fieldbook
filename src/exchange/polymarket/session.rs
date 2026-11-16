@@ -17,8 +17,8 @@ use crate::{
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
     session::{
-        HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure, SessionFrame,
-        SessionSignal,
+        HeartbeatRequest, HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure,
+        SessionFrame, SessionSignal,
     },
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
@@ -260,7 +260,7 @@ impl MarketDataSession for PolymarketSession {
                 DecodeOutcome::ignored("control_frame"),
                 received_at_us,
             );
-            frame.signal = SessionSignal::HeartbeatAck;
+            frame.signal = SessionSignal::HeartbeatAck { correlation: None };
             return Ok(frame);
         }
         match decode_polymarket_message(&text, received_at_us) {
@@ -298,10 +298,14 @@ impl MarketDataSession for PolymarketSession {
         }
     }
 
-    async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
+    async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+        // The venue's text PING carries no request nonce: correlation is the
+        // single-outstanding-window contract, an explicit protocol
+        // limitation recorded in the heartbeat spec.
         ws::send_text(self.stream_mut()?, "PING".to_owned())
             .await
-            .map_err(SessionFailure::Reconnect)
+            .map_err(SessionFailure::Reconnect)?;
+        Ok(HeartbeatRequest { correlation: None })
     }
 
     async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure> {
@@ -581,7 +585,7 @@ mod tests {
             .expect("client frame failed");
         assert_ne!(
             frame.signal,
-            SessionSignal::HeartbeatAck,
+            SessionSignal::HeartbeatAck { correlation: None },
             "a native WebSocket PONG must not acknowledge the application heartbeat"
         );
         session.close().await;
@@ -623,7 +627,7 @@ mod tests {
             .expect("client frame failed");
         assert_eq!(
             frame.signal,
-            SessionSignal::HeartbeatAck,
+            SessionSignal::HeartbeatAck { correlation: None },
             "the text PONG must be typed as a heartbeat acknowledgement"
         );
         session.close().await;

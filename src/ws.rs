@@ -589,8 +589,11 @@ pub async fn send_text(stream: &mut WsStream, text: String) -> anyhow::Result<()
     Ok(())
 }
 
-pub async fn send_ping(stream: &mut WsStream) -> anyhow::Result<()> {
-    stream.send(Message::Ping(Vec::new().into())).await?;
+/// Send a native WebSocket PING carrying the heartbeat correlation
+/// payload. The venue is expected to echo the payload in its PONG, which
+/// is how the adapter correlates the acknowledgement with this request.
+pub async fn send_ping_with_payload(stream: &mut WsStream, payload: Vec<u8>) -> anyhow::Result<()> {
+    stream.send(Message::Ping(payload.into())).await?;
     Ok(())
 }
 

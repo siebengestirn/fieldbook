@@ -23,8 +23,8 @@ use crate::{
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
     session::{
-        HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure, SessionFrame,
-        SessionSignal,
+        HeartbeatRequest, HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure,
+        SessionFrame, SessionSignal,
     },
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
@@ -215,6 +215,9 @@ pub struct KalshiSession {
     stream: Option<WsStream>,
     mode: SessionMode,
     next_id: u64,
+    /// Monotonic counter whose big-endian encoding is the PING payload; the
+    /// venue's PONG must echo it for the acknowledgement to correlate.
+    heartbeat_nonce: u64,
     desired: BTreeSet<String>,
     orderbook_subs: Vec<OrderbookSubscription>,
     pending_subscribes: BTreeMap<u64, BTreeSet<String>>,
@@ -253,6 +256,7 @@ impl KalshiSession {
             .clone()
             .unwrap_or_else(|| settings.environment.ws_url().to_owned());
         Self {
+            heartbeat_nonce: 0,
             settings,
             auth,
             stream: None,
@@ -571,6 +575,7 @@ impl MarketDataSession for KalshiSession {
             })?;
         self.stream = Some(stream);
         self.next_id = 1;
+        self.heartbeat_nonce = 0;
         self.orderbook_subs.clear();
         self.pending_subscribes.clear();
         self.pending_updates.clear();
@@ -636,11 +641,13 @@ impl MarketDataSession for KalshiSession {
                     bytes: control_payload.len(),
                     raw: Some(RawFrame {
                         kind: FrameKind::Binary,
-                        payload: control_payload,
+                        payload: control_payload.clone(),
                     }),
                     decode: DecodeOutcome::ignored("native_pong"),
                     received_at_us: Some(received_at_us),
-                    signal: SessionSignal::HeartbeatAck,
+                    signal: SessionSignal::HeartbeatAck {
+                        correlation: Some(control_payload),
+                    },
                 });
             }
             WsPayload::Text(text) => (text, FrameKind::Text),
@@ -961,10 +968,18 @@ impl MarketDataSession for KalshiSession {
         }
     }
 
-    async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
-        ws::send_ping(self.stream_mut()?)
+    async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+        // The nonce is the correlation: the venue's PONG must echo it, and
+        // only a PONG carrying this exact payload acknowledges this
+        // request.
+        self.heartbeat_nonce = self.heartbeat_nonce.wrapping_add(1);
+        let nonce = self.heartbeat_nonce.to_be_bytes().to_vec();
+        ws::send_ping_with_payload(self.stream_mut()?, nonce.clone())
             .await
-            .map_err(SessionFailure::Reconnect)
+            .map_err(SessionFailure::Reconnect)?;
+        Ok(HeartbeatRequest {
+            correlation: Some(nonce),
+        })
     }
 
     async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure> {
@@ -2105,7 +2120,9 @@ mod tests {
             .expect("client frame failed");
         assert_eq!(
             frame.signal,
-            SessionSignal::HeartbeatAck,
+            SessionSignal::HeartbeatAck {
+                correlation: Some(b"heartbeat-ack".to_vec()),
+            },
             "a native PONG must be classified as a heartbeat acknowledgement"
         );
         assert!(
