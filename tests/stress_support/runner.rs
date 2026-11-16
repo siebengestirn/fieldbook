@@ -236,14 +236,16 @@ pub struct EventLedger {
     pub enqueued_deltas: Option<u64>,
     /// Delta frames whose websocket send completed.
     pub transmitted_deltas: Option<u64>,
-    /// All source frames read by the collector during the workload window.
-    /// This includes snapshots and acks, so it is informational rather than
-    /// directly comparable with the logical delta count.
+    /// Data frames read at the ingress boundary (snapshots and deltas).
     pub received_frames: Option<u64>,
+    /// Order-book delta frames successfully decoded at the source boundary.
+    pub delta_events_decoded: Option<u64>,
     /// Decode failures reported by production source metrics.
     pub decode_errors: Option<u64>,
-    /// Messages accepted by the writer during the workload window.
-    pub writer_accepted: Option<u64>,
+    /// Order-book deltas admitted to the writer queue.
+    pub writer_delta_admissions: Option<u64>,
+    /// Order-book deltas successfully written to SBE.
+    pub writer_delta_writes: Option<u64>,
     /// Journal record count when the journal is enabled.
     pub journaled_records: Option<u64>,
     /// Frames the mock dropped before the wire (injected fixture).
@@ -266,12 +268,46 @@ pub struct EventLedger {
     /// `sbe_deltas - applied`: persistence cannot contain more records than
     /// were applied. `Some(0)` is the only acceptable value.
     pub persistence_excess: Option<u64>,
-    /// Harness enqueue minus transmit. `Some(0)` is the only acceptable value.
-    pub enqueue_transmit_gap: Option<u64>,
-    /// Applied minus writer-accepted. `Some(0)` is the only acceptable value.
-    pub writer_acceptance_gap: Option<u64>,
+    /// `enqueued - transmitted`; nonzero means pre-wire loss.
+    pub enqueue_transmit_shortfall: Option<u64>,
+    /// `transmitted - enqueued`; nonzero means an over-count or reset.
+    pub enqueue_transmit_excess: Option<u64>,
+    /// `decoded_deltas - applied`; nonzero means decoded data never applied.
+    pub decode_transmit_shortfall: Option<u64>,
+    /// `applied - decoded_deltas`; nonzero means application without decoding.
+    pub decode_transmit_excess: Option<u64>,
+    /// `applied - writer_delta_admissions`; nonzero means writer rejection.
+    pub writer_admission_shortfall: Option<u64>,
+    /// `writer_delta_admissions - applied`; nonzero means extra admissions.
+    pub writer_admission_excess: Option<u64>,
+    /// `writer_delta_admissions - writer_delta_writes`; nonzero means a write failure.
+    pub writer_write_shortfall: Option<u64>,
+    /// `writer_delta_writes - writer_delta_admissions`; nonzero means extra writes.
+    pub writer_write_excess: Option<u64>,
     /// Decode errors observed during the window. `Some(0)` is clean.
     pub decode_failure_count: Option<u64>,
+}
+
+/// Compute both directional discrepancies for independently sourced counts.
+/// `None` on either side stays `None`: unavailable evidence is never zero.
+pub fn two_sided(expected: Option<u64>, observed: Option<u64>) -> (Option<u64>, Option<u64>) {
+    match (expected, observed) {
+        (Some(expected), Some(observed)) => (
+            Some(expected.saturating_sub(observed)),
+            Some(observed.saturating_sub(expected)),
+        ),
+        _ => (None, None),
+    }
+}
+
+/// Difference of one metric between two scrapes. Missing evidence stays
+/// `None`; a decreasing counter is treated as an explicit reset failure by the
+/// caller rather than silently clamped to zero.
+pub fn metric_window_delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
+    match (before, after) {
+        (Some(before), Some(after)) if after >= before => Some(after - before),
+        _ => None,
+    }
 }
 
 impl EventLedger {
@@ -286,9 +322,129 @@ impl EventLedger {
             && self.over_applied == Some(0)
             && self.persistence_gap == Some(0)
             && self.persistence_excess == Some(0)
-            && self.enqueue_transmit_gap == Some(0)
-            && self.writer_acceptance_gap == Some(0)
+            && self.enqueue_transmit_shortfall == Some(0)
+            && self.enqueue_transmit_excess == Some(0)
+            && self.decode_transmit_shortfall == Some(0)
+            && self.decode_transmit_excess == Some(0)
+            && self.writer_admission_shortfall == Some(0)
+            && self.writer_admission_excess == Some(0)
+            && self.writer_write_shortfall == Some(0)
+            && self.writer_write_excess == Some(0)
+            && self.decode_failure_count == Some(0)
+            && self.received_frames.is_some_and(|count| count > 0)
+            && self.delta_events_decoded.is_some_and(|count| count > 0)
+            && self.writer_delta_admissions.is_some()
+            && self.writer_delta_writes.is_some()
     }
+}
+
+/// Translate every ledger condition into an attributable acceptance reason.
+/// This is the certification path used by the runner, not a helper used only
+/// by unit tests.
+pub fn ledger_acceptance_reasons(ledger: &EventLedger, queue_saturated: u64) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if ledger.unexplained_drops.is_none() {
+        reasons.push("event_accounting_unavailable".to_owned());
+    }
+    if let Some(value) = ledger.unexplained_drops
+        && value > 0
+    {
+        reasons.push("unexplained_drops".to_owned());
+    }
+    if let Some(value) = ledger.application_shortfall
+        && value > 0
+    {
+        reasons.push("application_shortfall".to_owned());
+    }
+    if let Some(value) = ledger.over_applied
+        && value > 0
+    {
+        reasons.push("over_application".to_owned());
+        reasons.push("duplicate_application".to_owned());
+    }
+    if let Some(value) = ledger.persistence_gap
+        && value > 0
+    {
+        reasons.push("persistence_gap".to_owned());
+    }
+    if let Some(value) = ledger.persistence_excess
+        && value > 0
+    {
+        reasons.push("persistence_excess".to_owned());
+    }
+    if ledger.received_frames.is_none() || ledger.received_frames == Some(0) {
+        reasons.push("receive_evidence_missing".to_owned());
+    }
+    if ledger.delta_events_decoded.is_none() {
+        reasons.push("decode_evidence_missing".to_owned());
+    }
+    if ledger.suppressed_replica_duplicates.is_none() {
+        reasons.push("replica_duplicate_evidence_missing".to_owned());
+    }
+    if ledger.writer_delta_admissions.is_none() {
+        reasons.push("writer_admission_evidence_missing".to_owned());
+    }
+    if ledger.writer_delta_writes.is_none() {
+        reasons.push("writer_write_evidence_missing".to_owned());
+    }
+    if ledger.decode_errors.is_none() {
+        reasons.push("decode_error_evidence_missing".to_owned());
+    }
+    if let Some(value) = ledger.decode_failure_count
+        && value > 0
+    {
+        reasons.push("decode_failures".to_owned());
+    }
+    for (shortfall, excess, shortfall_class, excess_class, missing_class) in [
+        (
+            ledger.enqueue_transmit_shortfall,
+            ledger.enqueue_transmit_excess,
+            "pre_wire_loss",
+            "enqueue_excess",
+            "enqueue_transmit_evidence_missing",
+        ),
+        (
+            ledger.decode_transmit_shortfall,
+            ledger.decode_transmit_excess,
+            "decode_transmit_shortfall",
+            "decode_transmit_excess",
+            "decode_transmit_evidence_missing",
+        ),
+        (
+            ledger.writer_admission_shortfall,
+            ledger.writer_admission_excess,
+            "writer_admission_shortfall",
+            "writer_admission_excess",
+            "writer_admission_evidence_missing",
+        ),
+        (
+            ledger.writer_write_shortfall,
+            ledger.writer_write_excess,
+            "writer_write_shortfall",
+            "writer_write_excess",
+            "writer_write_evidence_missing",
+        ),
+    ] {
+        match (shortfall, excess) {
+            (None, _) | (_, None) => reasons.push(missing_class.to_owned()),
+            (Some(s), Some(e)) => {
+                if s > 0 {
+                    reasons.push(shortfall_class.to_owned());
+                }
+                if e > 0 {
+                    reasons.push(excess_class.to_owned());
+                }
+            }
+        }
+    }
+    if !ledger.reconciled() && reasons.is_empty() {
+        reasons.push("event_ledger_unreconciled".to_owned());
+    }
+    if queue_saturated > 0 {
+        reasons.push("mock_throughput_limited".to_owned());
+        reasons.push("mock_queue_saturation".to_owned());
+    }
+    reasons
 }
 
 /// Full result of one cell run — raw verifier digests included for the manifest.
@@ -862,11 +1018,12 @@ struct DrainBaselines {
     deltas_emitted: f64,
     writer_messages: f64,
     writer_errors: f64,
-    /// Sum of `collector_source_messages` across all sources. `None` when
-    /// the labelled series could not be scraped.
-    source_messages: Option<u64>,
     /// Sum of `collector_source_decode_errors` across all sources.
     source_decode_errors: Option<u64>,
+    data_frames_received: Option<u64>,
+    delta_events_decoded: Option<u64>,
+    writer_delta_admissions: Option<u64>,
+    writer_delta_writes: Option<u64>,
 }
 
 /// The fixed set of metrics the drain barrier requires. Every field is read
@@ -955,9 +1112,16 @@ async fn capture_baseline_until(
                             deltas_emitted: required.deltas_emitted,
                             writer_messages: required.writer_messages,
                             writer_errors: required.writer_errors,
-                            source_messages: sample.count_sum("collector_source_messages"),
                             source_decode_errors: sample
                                 .count_sum("collector_source_decode_errors"),
+                            data_frames_received: sample
+                                .count_sum("collector_data_frames_received_total"),
+                            delta_events_decoded: sample
+                                .count_sum("collector_delta_events_decoded_total"),
+                            writer_delta_admissions: sample
+                                .count_sum("collector_writer_delta_admissions_total"),
+                            writer_delta_writes: sample
+                                .count_sum("collector_writer_delta_messages_total"),
                         });
                     }
                     previous = Some((required.writer_messages, required.writer_queue_depth));
@@ -1454,35 +1618,59 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         _ => None,
     };
     let sbe_deltas_observed = if sbe_scan_ok { Some(sbe_deltas) } else { None };
-    let received_frames = match (&baseline, &final_sample) {
-        (Some(base), Some(sample)) => match (
-            base.source_messages,
-            sample.count_sum("collector_source_messages"),
-        ) {
-            (Some(before), Some(after)) => Some(after.saturating_sub(before)),
-            _ => None,
-        },
-        _ => None,
+    let final_count = |name: &str| -> Option<u64> {
+        final_sample
+            .as_ref()
+            .and_then(|sample| sample.count_sum(name))
     };
-    let decode_errors = match (&baseline, &final_sample) {
-        (Some(base), Some(sample)) => match (
+    let received_frames = match &baseline {
+        Some(base) => metric_window_delta(
+            base.data_frames_received,
+            final_count("collector_data_frames_received_total"),
+        ),
+        None => None,
+    };
+    let delta_events_decoded = match &baseline {
+        Some(base) => metric_window_delta(
+            base.delta_events_decoded,
+            final_count("collector_delta_events_decoded_total"),
+        ),
+        None => None,
+    };
+    let decode_errors = match &baseline {
+        Some(base) => metric_window_delta(
             base.source_decode_errors,
-            sample.count_sum("collector_source_decode_errors"),
-        ) {
-            (Some(before), Some(after)) => Some(after.saturating_sub(before)),
-            _ => None,
-        },
-        _ => None,
+            final_count("collector_source_decode_errors"),
+        ),
+        None => None,
     };
-    let writer_accepted = match (&baseline, &final_sample) {
-        (Some(base), Some(sample)) => match sample.read("collector_writer_messages_total") {
-            MetricRead::Present(after) => Some(((after - base.writer_messages).max(0.0)) as u64),
-            _ => None,
-        },
-        _ => None,
+    let writer_delta_admissions = match &baseline {
+        Some(base) => metric_window_delta(
+            base.writer_delta_admissions,
+            final_count("collector_writer_delta_admissions_total"),
+        ),
+        None => None,
+    };
+    let writer_delta_writes = match &baseline {
+        Some(base) => metric_window_delta(
+            base.writer_delta_writes,
+            final_count("collector_writer_delta_messages_total"),
+        ),
+        None => None,
     };
     let enqueued_deltas = Some(transmit.enqueued_deltas);
     let transmitted_deltas = Some(transmit.deltas_sent);
+    let (enqueue_transmit_shortfall, enqueue_transmit_excess) =
+        two_sided(enqueued_deltas, transmitted_deltas);
+    // One delta on the wire yields one decoded LevelChange event. Replica
+    // fan-out is present on both sides, so this comparison needs no dedup
+    // arithmetic; duplicate suppression is accounted downstream instead.
+    let (decode_transmit_shortfall, decode_transmit_excess) =
+        two_sided(delta_events_decoded, transmitted_deltas);
+    let (writer_admission_shortfall, writer_admission_excess) =
+        two_sided(applied_events, writer_delta_admissions);
+    let (writer_write_shortfall, writer_write_excess) =
+        two_sided(writer_delta_admissions, writer_delta_writes);
     let ledger = EventLedger {
         generated_events: plan.generated as u64,
         expected_applied: plan.expected_applied,
@@ -1490,8 +1678,10 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         enqueued_deltas,
         transmitted_deltas,
         received_frames,
+        delta_events_decoded,
         decode_errors,
-        writer_accepted,
+        writer_delta_admissions,
+        writer_delta_writes,
         sbe_deltas: sbe_deltas_observed,
         journaled_records,
         injected_pre_wire_drops: transmit.injected_pre_wire_drops,
@@ -1509,14 +1699,14 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             (Some(applied), Some(sbe)) => Some(sbe.saturating_sub(applied)),
             _ => None,
         },
-        enqueue_transmit_gap: match (enqueued_deltas, transmitted_deltas) {
-            (Some(enqueued), Some(transmitted)) => Some(enqueued.saturating_sub(transmitted)),
-            _ => None,
-        },
-        writer_acceptance_gap: match (applied_events, writer_accepted) {
-            (Some(applied), Some(written)) => Some(applied.saturating_sub(written)),
-            _ => None,
-        },
+        enqueue_transmit_shortfall,
+        enqueue_transmit_excess,
+        decode_transmit_shortfall,
+        decode_transmit_excess,
+        writer_admission_shortfall,
+        writer_admission_excess,
+        writer_write_shortfall,
+        writer_write_excess,
         decode_failure_count: decode_errors,
     };
 
@@ -1561,43 +1751,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     if !journal_complete {
         reasons.push("journal_incomplete".to_owned());
     }
-    if let Some(unexplained) = ledger.unexplained_drops
-        && unexplained > 0
-    {
-        reasons.push("unexplained_drops".to_owned());
-    }
-    if ledger.unexplained_drops.is_none() {
-        reasons.push("event_accounting_unavailable".to_owned());
-    }
-    if let Some(shortfall) = ledger.application_shortfall
-        && shortfall > 0
-    {
-        reasons.push("application_shortfall".to_owned());
-    }
-    if let Some(excess) = ledger.over_applied
-        && excess > 0
-    {
-        // Every logical event is published once, so an applied count above
-        // the expected ledger is a duplicate application. Both names are
-        // recorded: `over_application` states the accounting defect and
-        // `duplicate_application` states the mechanism the audit names.
-        reasons.push("over_application".to_owned());
-        reasons.push("duplicate_application".to_owned());
-    }
-    if let Some(gap) = ledger.persistence_gap
-        && gap > 0
-    {
-        reasons.push("persistence_gap".to_owned());
-    }
-    if let Some(excess) = ledger.persistence_excess
-        && excess > 0
-    {
-        reasons.push("persistence_excess".to_owned());
-    }
-    if transmit.queue_saturated > 0 {
-        reasons.push("mock_throughput_limited".to_owned());
-        reasons.push("mock_queue_saturation".to_owned());
-    }
+    reasons.extend(ledger_acceptance_reasons(&ledger, transmit.queue_saturated));
     if let Some(error) = &sbe_scan_error {
         reasons.push(format!("sbe_scan_error: {error}"));
     }
@@ -1981,8 +2135,14 @@ pub fn build_cell_manifest(
             .unwrap_or_else(|| super::manifest::unavailable("source message metric unavailable")),
         "decode_errors": output.and_then(|o| o.ledger.decode_errors).map(Value::from)
             .unwrap_or_else(|| super::manifest::unavailable("decode error metric unavailable")),
-        "writer_accepted": output.and_then(|o| o.ledger.writer_accepted).map(Value::from)
-            .unwrap_or_else(|| super::manifest::unavailable("writer acceptance metric unavailable")),
+        "data_frames_received": output.and_then(|o| o.ledger.received_frames).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("ingress frame metric unavailable")),
+        "delta_events_decoded": output.and_then(|o| o.ledger.delta_events_decoded).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("decode metric unavailable")),
+        "writer_delta_admissions": output.and_then(|o| o.ledger.writer_delta_admissions).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("writer admission metric unavailable")),
+        "writer_delta_writes": output.and_then(|o| o.ledger.writer_delta_writes).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("writer write metric unavailable")),
         "sbe_deltas": output.and_then(|o| o.ledger.sbe_deltas),
         "journaled_records": match (config.journal, output.and_then(|o| o.ledger.journaled_records)) {
             (false, _) => Value::Null,
@@ -1998,8 +2158,14 @@ pub fn build_cell_manifest(
         "over_applied": output.and_then(|o| o.ledger.over_applied),
         "persistence_gap": output.and_then(|o| o.ledger.persistence_gap),
         "persistence_excess": output.and_then(|o| o.ledger.persistence_excess),
-        "enqueue_transmit_gap": output.and_then(|o| o.ledger.enqueue_transmit_gap),
-        "writer_acceptance_gap": output.and_then(|o| o.ledger.writer_acceptance_gap),
+        "enqueue_transmit_shortfall": output.and_then(|o| o.ledger.enqueue_transmit_shortfall),
+        "enqueue_transmit_excess": output.and_then(|o| o.ledger.enqueue_transmit_excess),
+        "decode_transmit_shortfall": output.and_then(|o| o.ledger.decode_transmit_shortfall),
+        "decode_transmit_excess": output.and_then(|o| o.ledger.decode_transmit_excess),
+        "writer_admission_shortfall": output.and_then(|o| o.ledger.writer_admission_shortfall),
+        "writer_admission_excess": output.and_then(|o| o.ledger.writer_admission_excess),
+        "writer_write_shortfall": output.and_then(|o| o.ledger.writer_write_shortfall),
+        "writer_write_excess": output.and_then(|o| o.ledger.writer_write_excess),
         "decode_failure_count": output.and_then(|o| o.ledger.decode_failure_count),
         "reconciled": output.map(|o| o.ledger.reconciled()).unwrap_or(false),
     }));
@@ -2156,8 +2322,11 @@ mod tests {
             deltas_emitted: 0.0,
             writer_messages: 0.0,
             writer_errors: 0.0,
-            source_messages: Some(0),
             source_decode_errors: Some(0),
+            data_frames_received: Some(0),
+            delta_events_decoded: Some(0),
+            writer_delta_admissions: Some(0),
+            writer_delta_writes: Some(0),
         }
     }
 
@@ -2234,8 +2403,11 @@ mod tests {
             deltas_emitted: 100.0,
             writer_messages: 100.0,
             writer_errors: 0.0,
-            source_messages: Some(0),
             source_decode_errors: Some(0),
+            data_frames_received: Some(0),
+            delta_events_decoded: Some(0),
+            writer_delta_admissions: Some(0),
+            writer_delta_writes: Some(0),
         };
         let sample = parse_metrics(
             "collector_deltas_emitted_total 5\n\
