@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 
 use stress_support::{
     rng::SplitMix64,
-    runner::{CellConfig, FailInject, canonical_set_sha256, worktree_provenance},
+    runner::{CellConfig, FailInject, HotSelection, canonical_set_sha256, worktree_provenance},
     universe::{GENERATOR_VERSION, SyntheticUniverse},
 };
 
@@ -79,6 +79,7 @@ fn headless_cell_config(seed: u64, symbols: usize) -> CellConfig {
         uniform_spread: true,
         hot_fraction_ppm: 0,
         hot_event_share_pct: 0,
+        hot_selection: HotSelection::Weighted,
         journal: true,
         limits: Some((20, 2)),
         force_capacity_reject: false,
@@ -108,6 +109,7 @@ async fn smoke_cell_anchors_applies_and_certifies() {
         uniform_spread: true,
         hot_fraction_ppm: 0,
         hot_event_share_pct: 0,
+        hot_selection: HotSelection::Weighted,
         journal: true,
         limits: Some((45, 10)),
         force_capacity_reject: false,
@@ -434,6 +436,7 @@ async fn malformed_index_fixture_fails_closed() {
         uniform_spread: true,
         hot_fraction_ppm: 0,
         hot_event_share_pct: 0,
+        hot_selection: HotSelection::Weighted,
         journal: false,
         limits: Some((20, 2)),
         force_capacity_reject: false,
@@ -678,6 +681,7 @@ async fn reference_success_manifest_is_reproducible() {
         uniform_spread: true,
         hot_fraction_ppm: 0,
         hot_event_share_pct: 0,
+        hot_selection: HotSelection::Weighted,
         journal: true,
         limits: Some((45, 10)),
         force_capacity_reject: false,
@@ -960,6 +964,14 @@ fn ledger_reconciliation_is_two_sided() {
             over_applied: Some(applied.saturating_sub(100)),
             persistence_gap: Some(applied.saturating_sub(sbe)),
             persistence_excess: Some(sbe.saturating_sub(applied)),
+            enqueued_deltas: Some(100),
+            transmitted_deltas: Some(100),
+            writer_accepted: Some(applied),
+            received_frames: Some(100),
+            decode_errors: Some(0),
+            enqueue_transmit_gap: Some(0),
+            writer_acceptance_gap: Some(0),
+            decode_failure_count: Some(0),
             ..Default::default()
         }
     }
@@ -981,6 +993,28 @@ fn ledger_reconciliation_is_two_sided() {
         !ledger(101, 100).reconciled(),
         "persistence gap must not reconcile"
     );
+
+    let mut bad_enqueue = ledger(100, 100);
+    bad_enqueue.enqueue_transmit_gap = Some(1);
+    assert!(
+        !bad_enqueue.reconciled(),
+        "enqueue/transmit loss must not reconcile"
+    );
+
+    let mut bad_writer = ledger(100, 100);
+    bad_writer.writer_acceptance_gap = Some(1);
+    assert!(
+        !bad_writer.reconciled(),
+        "writer rejection must not reconcile"
+    );
+
+    let mut unavailable = ledger(100, 100);
+    unavailable.writer_accepted = None;
+    unavailable.writer_acceptance_gap = None;
+    assert!(
+        !unavailable.reconciled(),
+        "unavailable instrumentation must block certification, not become zero"
+    );
 }
 
 /// M5 profile: 4,000 instruments with exactly 5% designated hot instruments
@@ -1001,6 +1035,7 @@ async fn mixed_hot_quiet_4000_cell_reconciles_and_certifies() {
         uniform_spread: false,
         hot_fraction_ppm: 50_000,
         hot_event_share_pct: 80,
+        hot_selection: HotSelection::Weighted,
         journal: true,
         limits: Some((45, 10)),
         force_capacity_reject: false,
@@ -1021,6 +1056,12 @@ async fn mixed_hot_quiet_4000_cell_reconciles_and_certifies() {
         "5% of 4,000 instruments must be hot"
     );
     assert_eq!(output.events_published, 400);
+    assert_eq!(
+        output.hot_events + output.cold_events,
+        output.events_published,
+        "weighted draws must split the workload into disjoint hot/cold sets"
+    );
+    assert!(output.hot_events > 0 && output.cold_events > 0);
     assert_eq!(output.sbe_deltas, 400);
     assert!(
         output.ledger.reconciled(),
@@ -1056,6 +1097,7 @@ async fn reference_mixed_hot_quiet_manifest_is_reproducible() {
         uniform_spread: false,
         hot_fraction_ppm: 50_000,
         hot_event_share_pct: 80,
+        hot_selection: HotSelection::Weighted,
         journal: true,
         limits: Some((45, 10)),
         force_capacity_reject: false,
@@ -1075,4 +1117,94 @@ async fn reference_mixed_hot_quiet_manifest_is_reproducible() {
     let output = outcome.output.expect("valid cell must carry output");
     assert_eq!(output.hot_tickers, 200);
     assert!(output.ledger.reconciled());
+}
+
+/// M5 exact-quota profile: the same 4,000-instrument universe receives exactly
+/// 320 hot and 80 cold logical deltas. Event assignment, not just membership,
+/// is pinned by the seed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mixed_hot_quiet_exact_4000_cell_assigns_320_hot_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = CellConfig {
+        seed: 29,
+        symbols: 4_000,
+        decoy_fraction_ppm: 20_000,
+        shards: Some(2),
+        replicas: 2,
+        lifecycle_replicas: 1,
+        events: 400,
+        hot_pair: false,
+        uniform_spread: false,
+        hot_fraction_ppm: 50_000,
+        hot_event_share_pct: 80,
+        hot_selection: HotSelection::ExactQuota,
+        journal: true,
+        limits: Some((45, 10)),
+        force_capacity_reject: false,
+        fail_inject: None,
+        writer_queue: None,
+        worktree_dir: None,
+        require_clean_worktree: None,
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "exact-quota cell failed acceptance: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    assert_eq!(output.hot_tickers, 200);
+    assert_eq!(
+        output.hot_events, 320,
+        "exactly 80% of 400 events must be hot"
+    );
+    assert_eq!(output.cold_events, 80);
+    assert_eq!(
+        output.hot_events + output.cold_events,
+        output.events_published
+    );
+    assert!(output.ledger.reconciled(), "ledger: {:?}", output.ledger);
+    let universe = SyntheticUniverse::generate(29, 4_000, 20_000);
+    let hot = universe.hot_tickers(50_000);
+    assert_eq!(hot.len(), 200);
+    assert!(hot.iter().all(|ticker| ticker.starts_with("STRESS-")));
+}
+
+/// Reference generator for the exact-quota M5 profile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "reference artifact generator; run explicitly"]
+async fn reference_exact_hot_quiet_manifest_is_reproducible() {
+    assert!(
+        std::env::var("STRESS_MANIFEST_OUT").is_ok(),
+        "set STRESS_MANIFEST_OUT to produce the artifact"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let config = CellConfig {
+        seed: 29,
+        symbols: 4_000,
+        decoy_fraction_ppm: 20_000,
+        shards: Some(2),
+        replicas: 2,
+        lifecycle_replicas: 1,
+        events: 400,
+        hot_pair: false,
+        uniform_spread: false,
+        hot_fraction_ppm: 50_000,
+        hot_event_share_pct: 80,
+        hot_selection: HotSelection::ExactQuota,
+        journal: true,
+        limits: Some((45, 10)),
+        force_capacity_reject: false,
+        fail_inject: None,
+        writer_queue: None,
+        worktree_dir: None,
+        require_clean_worktree: None,
+    };
+    let outcome =
+        stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
+            .await;
+    assert!(outcome.acceptance.valid, "{:?}", outcome.acceptance.reasons);
+    let output = outcome.output.expect("valid cell must carry output");
+    assert_eq!(output.hot_events, 320);
+    assert_eq!(output.cold_events, 80);
 }

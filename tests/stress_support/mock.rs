@@ -66,6 +66,9 @@ pub enum FrameKind {
 pub struct MockLedger {
     /// Frames accepted into a connection's bounded outbound queue.
     pub enqueued: u64,
+    /// Order-book delta frames accepted into an outbound queue. This is the
+    /// harness-side enqueue boundary for event accounting.
+    pub enqueued_deltas: u64,
     /// Frames whose websocket `sink.send()` completed (socket-written).
     pub sent: u64,
     /// Enqueued frames whose send has not completed yet.
@@ -124,6 +127,7 @@ pub struct MockState {
     ticker_index: HashMap<String, u32>,
     /// Frames accepted into a bounded outbound queue.
     enqueued_count: AtomicU64,
+    enqueued_delta_count: AtomicU64,
     /// Frames awaiting completion of `sink.send()`. Drained when the
     /// forwarding task finishes each send.
     in_flight: AtomicU64,
@@ -180,6 +184,7 @@ impl MockState {
             stall_forwarder: std::sync::atomic::AtomicBool::new(false),
             ticker_index,
             enqueued_count: AtomicU64::new(0),
+            enqueued_delta_count: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
             sent_count: AtomicU64::new(0),
             sent_snapshots: AtomicU64::new(0),
@@ -275,6 +280,7 @@ impl MockState {
     pub fn ledger_snapshot(&self) -> MockLedger {
         MockLedger {
             enqueued: self.enqueued_count.load(Ordering::SeqCst),
+            enqueued_deltas: self.enqueued_delta_count.load(Ordering::SeqCst),
             sent: self.sent_count.load(Ordering::SeqCst),
             in_flight: self.in_flight.load(Ordering::SeqCst),
             snapshots_sent: self.sent_snapshots.load(Ordering::SeqCst),
@@ -341,6 +347,9 @@ impl MockState {
         match entry.outbound.try_send(Message::Text(text.into())) {
             Ok(()) => {
                 self.enqueued_count.fetch_add(1, Ordering::SeqCst);
+                if value.get("type").and_then(|kind| kind.as_str()) == Some("orderbook_delta") {
+                    self.enqueued_delta_count.fetch_add(1, Ordering::SeqCst);
+                }
                 self.in_flight.fetch_add(1, Ordering::SeqCst);
                 let queued_after = queued_before.saturating_add(1);
                 self.queue_high_water

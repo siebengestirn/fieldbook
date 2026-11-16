@@ -76,6 +76,18 @@ pub enum FailInject {
     ShutdownBeforeDrain,
 }
 
+/// How hot instruments are selected for each published delta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotSelection {
+    /// Each draw independently chooses the hot/cold branch with the configured
+    /// share; the realized proportion varies within a finite run.
+    Weighted,
+    /// The run contains an exact integer quota of hot and cold events, with a
+    /// deterministic order derived from the workload seed. Used for the
+    /// frozen reference profiles so event assignment itself is reproducible.
+    ExactQuota,
+}
+
 /// One experiment cell.
 #[derive(Debug, Clone)]
 pub struct CellConfig {
@@ -97,6 +109,8 @@ pub struct CellConfig {
     pub hot_fraction_ppm: u32,
     /// Share of published deltas routed to designated hot instruments.
     pub hot_event_share_pct: u32,
+    /// Weighted stochastic selection or exact deterministic quota.
+    pub hot_selection: HotSelection,
     pub journal: bool,
     /// Overrides `ANCHOR_LIMIT`/`DRAIN_LIMIT` for fast failure tests.
     pub limits: Option<(u64, u64)>,
@@ -128,6 +142,7 @@ impl Default for CellConfig {
             uniform_spread: true,
             hot_fraction_ppm: 0,
             hot_event_share_pct: 0,
+            hot_selection: HotSelection::Weighted,
             journal: true,
             limits: None,
             force_capacity_reject: false,
@@ -213,6 +228,18 @@ pub struct EventLedger {
     pub applied_events: Option<u64>,
     /// Delta messages in the decoded SBE capture. `None` on scan failure.
     pub sbe_deltas: Option<u64>,
+    /// Delta frames accepted into the mock's outbound queue.
+    pub enqueued_deltas: Option<u64>,
+    /// Delta frames whose websocket send completed.
+    pub transmitted_deltas: Option<u64>,
+    /// All source frames read by the collector during the workload window.
+    /// This includes snapshots and acks, so it is informational rather than
+    /// directly comparable with the logical delta count.
+    pub received_frames: Option<u64>,
+    /// Decode failures reported by production source metrics.
+    pub decode_errors: Option<u64>,
+    /// Messages accepted by the writer during the workload window.
+    pub writer_accepted: Option<u64>,
     /// Journal record count when the journal is enabled.
     pub journaled_records: Option<u64>,
     /// Frames the mock dropped before the wire (injected fixture).
@@ -235,6 +262,12 @@ pub struct EventLedger {
     /// `sbe_deltas - applied`: persistence cannot contain more records than
     /// were applied. `Some(0)` is the only acceptable value.
     pub persistence_excess: Option<u64>,
+    /// Harness enqueue minus transmit. `Some(0)` is the only acceptable value.
+    pub enqueue_transmit_gap: Option<u64>,
+    /// Applied minus writer-accepted. `Some(0)` is the only acceptable value.
+    pub writer_acceptance_gap: Option<u64>,
+    /// Decode errors observed during the window. `Some(0)` is clean.
+    pub decode_failure_count: Option<u64>,
 }
 
 impl EventLedger {
@@ -249,6 +282,8 @@ impl EventLedger {
             && self.over_applied == Some(0)
             && self.persistence_gap == Some(0)
             && self.persistence_excess == Some(0)
+            && self.enqueue_transmit_gap == Some(0)
+            && self.writer_acceptance_gap == Some(0)
     }
 }
 
@@ -274,6 +309,10 @@ pub struct CellOutput {
     pub eligible_count: usize,
     /// Number of eligible instruments assigned the hot workload role.
     pub hot_tickers: usize,
+    /// Logical deltas assigned to hot instruments.
+    pub hot_events: usize,
+    /// Logical deltas assigned to the disjoint cold instruments.
+    pub cold_events: usize,
     pub decoy_absent: bool,
     pub journal_complete: bool,
     pub journaled_records: Option<u64>,
@@ -484,6 +523,9 @@ enum MetricRead {
 struct MetricSample {
     values: HashMap<String, f64>,
     malformed: BTreeSet<String>,
+    /// Raw body, retained so labelled series of the same metric (one per
+    /// source) can be summed independently of the collapsed lookup map.
+    raw: String,
 }
 
 impl MetricSample {
@@ -506,6 +548,33 @@ impl MetricSample {
             MetricRead::Absent => Err(format!("required metric `{name}` is absent")),
             MetricRead::Malformed => Err(format!("required metric `{name}` is malformed")),
         }
+    }
+
+    /// Sum every labelled series of `name`. `None` when any series is absent
+    /// or malformed, so a partial scrape can never be mistaken for a count.
+    fn count_sum(&self, name: &str) -> Option<u64> {
+        let mut total = 0.0f64;
+        let mut seen = 0usize;
+        for line in self.raw.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((series, value)) = line.split_once(' ') else {
+                continue;
+            };
+            let base = series.split('{').next().unwrap_or(series);
+            if base != name {
+                continue;
+            }
+            let parsed = value.trim().parse::<f64>().ok()?;
+            if !parsed.is_finite() || parsed < 0.0 || parsed.fract() != 0.0 {
+                return None;
+            }
+            total += parsed;
+            seen += 1;
+        }
+        (seen > 0).then_some(total as u64)
     }
 
     /// An exact non-negative count, or `None` when the sample is not one.
@@ -552,7 +621,9 @@ async fn scrape_metrics(address: SocketAddr) -> Option<MetricSample> {
     let mut response = String::new();
     stream.read_to_string(&mut response).await.ok()?;
     let body = response.split_once("\r\n\r\n")?.1;
-    Some(parse_metrics(body))
+    let mut sample = parse_metrics(body);
+    sample.raw = body.to_owned();
+    Some(sample)
 }
 
 async fn scrape_metric(address: SocketAddr, metric: &str) -> Option<f64> {
@@ -632,12 +703,45 @@ fn publish_delta_event(mock: &MockKalshi, ticker: &str, rng: &mut SplitMix64) {
 ///   stays correct while a dedup regression applies more than expected.
 struct PublishPlan {
     generated: usize,
+    /// Logical deltas assigned to designated hot instruments.
+    hot_events: usize,
+    /// Logical deltas assigned to the disjoint cold set.
+    cold_events: usize,
     /// The count a dedup-correct collector must apply. This is the ledger
     /// baseline, not the number of wire frames.
     expected_applied: u64,
     /// The count the drain barrier waits for. It exceeds `expected_applied`
     /// only for a fixture that deliberately publishes extra frames.
     drain_target: u64,
+}
+
+/// Partition publishable indices into disjoint hot and cold collections.
+/// Every publishable index appears in exactly one collection, so a cold draw
+/// can never select a hot instrument.
+fn workload_partition(tickers: &[&str], hot: &BTreeSet<String>) -> (Vec<usize>, Vec<usize>) {
+    let mut hot_indices = Vec::new();
+    let mut cold_indices = Vec::new();
+    for (index, ticker) in tickers.iter().enumerate() {
+        if hot.contains(*ticker) {
+            hot_indices.push(index);
+        } else {
+            cold_indices.push(index);
+        }
+    }
+    (hot_indices, cold_indices)
+}
+
+/// Deterministically place an exact quota of hot events in a shuffled order.
+fn exact_event_targets(events: usize, hot_share_pct: u32, rng: &mut SplitMix64) -> Vec<bool> {
+    let hot_count =
+        ((events as u64).saturating_mul(u64::from(hot_share_pct.min(100))) / 100) as usize;
+    let mut targets = vec![true; hot_count];
+    targets.resize(events, false);
+    for index in (1..targets.len()).rev() {
+        let other = rng.below_usize(index + 1);
+        targets.swap(index, other);
+    }
+    targets
 }
 
 fn publish_events(
@@ -661,17 +765,31 @@ fn publish_events(
         .filter(|ticker| Some(*ticker) != skip_ticker)
         .collect();
     let hot_cut = (publishable.len() / 10).max(2);
-    let hot_indices: Vec<usize> = publishable
-        .iter()
-        .enumerate()
-        .filter_map(|(index, ticker)| hot.contains(*ticker).then_some(index))
-        .collect();
+    let (hot_indices, cold_indices) = workload_partition(&publishable, hot);
+    let role_based =
+        config.hot_fraction_ppm > 0 && !hot_indices.is_empty() && !cold_indices.is_empty();
+    let exact_targets = (role_based && config.hot_selection == HotSelection::ExactQuota)
+        .then(|| exact_event_targets(config.events, config.hot_event_share_pct, rng));
+    let initial_generated = generated;
+    let mut hot_events = 0usize;
+    let mut cold_events: usize =
+        if matches!(config.fail_inject, Some(FailInject::UpdateOnly { .. }))
+            && skip_ticker.is_some()
+        {
+            1
+        } else {
+            0
+        };
     while generated < config.events {
-        let index = if config.hot_fraction_ppm > 0 && !hot_indices.is_empty() {
-            if rng.below(100) < u64::from(config.hot_event_share_pct.min(100)) {
+        let draw = generated - initial_generated;
+        let index = if role_based {
+            let use_hot = exact_targets.as_ref().is_some_and(|targets| targets[draw])
+                || exact_targets.is_none()
+                    && rng.below(100) < u64::from(config.hot_event_share_pct.min(100));
+            if use_hot {
                 hot_indices[rng.below_usize(hot_indices.len())]
             } else {
-                rng.below_usize(publishable.len())
+                cold_indices[rng.below_usize(cold_indices.len())]
             }
         } else if config.hot_pair {
             if rng.below(100) < 80 {
@@ -682,6 +800,11 @@ fn publish_events(
         } else {
             rng.below_usize(publishable.len())
         };
+        if hot.contains(publishable[index]) {
+            hot_events = hot_events.saturating_add(1);
+        } else {
+            cold_events = cold_events.saturating_add(1);
+        }
         publish_delta_event(mock, publishable[index], rng);
         generated += 1;
     }
@@ -715,6 +838,8 @@ fn publish_events(
     };
     PublishPlan {
         generated,
+        hot_events,
+        cold_events,
         expected_applied,
         // The barrier waits for every frame the fixture actually put on the
         // wire. For an over-application fixture this is deliberately greater
@@ -733,6 +858,11 @@ struct DrainBaselines {
     deltas_emitted: f64,
     writer_messages: f64,
     writer_errors: f64,
+    /// Sum of `collector_source_messages` across all sources. `None` when
+    /// the labelled series could not be scraped.
+    source_messages: Option<u64>,
+    /// Sum of `collector_source_decode_errors` across all sources.
+    source_decode_errors: Option<u64>,
 }
 
 /// The fixed set of metrics the drain barrier requires. Every field is read
@@ -821,6 +951,9 @@ async fn capture_baseline_until(
                             deltas_emitted: required.deltas_emitted,
                             writer_messages: required.writer_messages,
                             writer_errors: required.writer_errors,
+                            source_messages: sample.count_sum("collector_source_messages"),
+                            source_decode_errors: sample
+                                .count_sum("collector_source_decode_errors"),
                         });
                     }
                     previous = Some((required.writer_messages, required.writer_queue_depth));
@@ -1310,10 +1443,44 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         _ => None,
     };
     let sbe_deltas_observed = if sbe_scan_ok { Some(sbe_deltas) } else { None };
+    let received_frames = match (&baseline, &final_sample) {
+        (Some(base), Some(sample)) => match (
+            base.source_messages,
+            sample.count_sum("collector_source_messages"),
+        ) {
+            (Some(before), Some(after)) => Some(after.saturating_sub(before)),
+            _ => None,
+        },
+        _ => None,
+    };
+    let decode_errors = match (&baseline, &final_sample) {
+        (Some(base), Some(sample)) => match (
+            base.source_decode_errors,
+            sample.count_sum("collector_source_decode_errors"),
+        ) {
+            (Some(before), Some(after)) => Some(after.saturating_sub(before)),
+            _ => None,
+        },
+        _ => None,
+    };
+    let writer_accepted = match (&baseline, &final_sample) {
+        (Some(base), Some(sample)) => match sample.read("collector_writer_messages_total") {
+            MetricRead::Present(after) => Some(((after - base.writer_messages).max(0.0)) as u64),
+            _ => None,
+        },
+        _ => None,
+    };
+    let enqueued_deltas = Some(transmit.enqueued_deltas);
+    let transmitted_deltas = Some(transmit.deltas_sent);
     let ledger = EventLedger {
         generated_events: plan.generated as u64,
         expected_applied: plan.expected_applied,
         applied_events,
+        enqueued_deltas,
+        transmitted_deltas,
+        received_frames,
+        decode_errors,
+        writer_accepted,
         sbe_deltas: sbe_deltas_observed,
         journaled_records,
         injected_pre_wire_drops: transmit.injected_pre_wire_drops,
@@ -1331,6 +1498,15 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             (Some(applied), Some(sbe)) => Some(sbe.saturating_sub(applied)),
             _ => None,
         },
+        enqueue_transmit_gap: match (enqueued_deltas, transmitted_deltas) {
+            (Some(enqueued), Some(transmitted)) => Some(enqueued.saturating_sub(transmitted)),
+            _ => None,
+        },
+        writer_acceptance_gap: match (applied_events, writer_accepted) {
+            (Some(applied), Some(written)) => Some(applied.saturating_sub(written)),
+            _ => None,
+        },
+        decode_failure_count: decode_errors,
     };
 
     // Exact three-way set comparison against the independently generated
@@ -1457,6 +1633,8 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             journaled_records,
             transmitted_frames: transmit.sent,
             events_published: plan.generated,
+            hot_events: plan.hot_events,
+            cold_events: plan.cold_events,
             applied_events,
             capacity_connections,
             anchor_wait_expired,
@@ -1620,7 +1798,7 @@ pub fn build_cell_manifest(
         "prng_algorithm_version".to_owned(),
         json!(super::rng::PRNG_ALGORITHM_VERSION),
     );
-    document.insert("scenario_version".to_owned(), json!(2));
+    document.insert("scenario_version".to_owned(), json!(3));
     document.insert("build_profile".to_owned(), json!(build_profile()));
     document.insert("target_triple".to_owned(), json!(target_triple()));
     document.insert(
@@ -1670,7 +1848,13 @@ pub fn build_cell_manifest(
         },
         "hot_fraction_ppm": config.hot_fraction_ppm,
         "hot_event_share_pct": config.hot_event_share_pct,
+        "hot_selection": match config.hot_selection {
+            HotSelection::Weighted => "weighted",
+            HotSelection::ExactQuota => "exact_quota",
+        },
         "hot_tickers": output.map(|o| o.hot_tickers).unwrap_or(0),
+        "hot_events": output.map(|o| o.hot_events).unwrap_or(0),
+        "cold_events": output.map(|o| o.cold_events).unwrap_or(0),
         "uniform_spread": config.uniform_spread,
         "journal": config.journal,
         "failure_injection": config.fail_inject.map(|f| format!("{f:?}")),
@@ -1778,6 +1962,16 @@ pub fn build_cell_manifest(
         "generated_events": output.map(|o| o.ledger.generated_events).unwrap_or(0),
         "expected_applied": output.map(|o| o.ledger.expected_applied).unwrap_or(0),
         "applied_events": output.and_then(|o| o.ledger.applied_events),
+        "enqueued_deltas": output.and_then(|o| o.ledger.enqueued_deltas).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("mock enqueue counter unavailable")),
+        "transmitted_deltas": output.and_then(|o| o.ledger.transmitted_deltas).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("mock transmit counter unavailable")),
+        "received_frames": output.and_then(|o| o.ledger.received_frames).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("source message metric unavailable")),
+        "decode_errors": output.and_then(|o| o.ledger.decode_errors).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("decode error metric unavailable")),
+        "writer_accepted": output.and_then(|o| o.ledger.writer_accepted).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("writer acceptance metric unavailable")),
         "sbe_deltas": output.and_then(|o| o.ledger.sbe_deltas),
         "journaled_records": match (config.journal, output.and_then(|o| o.ledger.journaled_records)) {
             (false, _) => Value::Null,
@@ -1793,6 +1987,9 @@ pub fn build_cell_manifest(
         "over_applied": output.and_then(|o| o.ledger.over_applied),
         "persistence_gap": output.and_then(|o| o.ledger.persistence_gap),
         "persistence_excess": output.and_then(|o| o.ledger.persistence_excess),
+        "enqueue_transmit_gap": output.and_then(|o| o.ledger.enqueue_transmit_gap),
+        "writer_acceptance_gap": output.and_then(|o| o.ledger.writer_acceptance_gap),
+        "decode_failure_count": output.and_then(|o| o.ledger.decode_failure_count),
         "reconciled": output.map(|o| o.ledger.reconciled()).unwrap_or(false),
     }));
 
@@ -1915,11 +2112,41 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn hot_cold_partition_is_exhaustive_and_disjoint() {
+        let tickers: Vec<String> = (0..100).map(|i| format!("I{i:03}")).collect();
+        let hot: BTreeSet<String> = tickers.iter().take(5).cloned().collect();
+        let refs: Vec<&str> = tickers.iter().map(String::as_str).collect();
+        let (hot_indices, cold_indices) = workload_partition(&refs, &hot);
+        assert_eq!(hot_indices.len(), 5);
+        assert_eq!(cold_indices.len(), 95);
+        let hot_set: BTreeSet<usize> = hot_indices.iter().copied().collect();
+        let cold_set: BTreeSet<usize> = cold_indices.iter().copied().collect();
+        assert!(hot_set.is_disjoint(&cold_set));
+        let union: BTreeSet<usize> = hot_set.union(&cold_set).copied().collect();
+        assert_eq!(union, (0..100).collect());
+    }
+
+    #[test]
+    fn exact_event_targets_have_an_exact_quota_and_are_reproducible() {
+        let first = exact_event_targets(400, 80, &mut SplitMix64::new(23));
+        assert_eq!(first.iter().filter(|hot| **hot).count(), 320);
+        assert_eq!(first.iter().filter(|hot| !**hot).count(), 80);
+        let again = exact_event_targets(400, 80, &mut SplitMix64::new(23));
+        assert_eq!(first, again);
+        assert_ne!(
+            first,
+            exact_event_targets(400, 80, &mut SplitMix64::new(24))
+        );
+    }
+
     fn base() -> DrainBaselines {
         DrainBaselines {
             deltas_emitted: 0.0,
             writer_messages: 0.0,
             writer_errors: 0.0,
+            source_messages: Some(0),
+            source_decode_errors: Some(0),
         }
     }
 
@@ -1996,6 +2223,8 @@ mod tests {
             deltas_emitted: 100.0,
             writer_messages: 100.0,
             writer_errors: 0.0,
+            source_messages: Some(0),
+            source_decode_errors: Some(0),
         };
         let sample = parse_metrics(
             "collector_deltas_emitted_total 5\n\
