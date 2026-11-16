@@ -35,9 +35,17 @@ instrument), and book continuity (per instrument+source, with recovery
 fencing). Exhausting a symbol's stale-probe budget records a symbol continuity
 incident and requests a symbol-scoped refresh; it does not reconnect the
 shared source. Source-level reconnects remain a separate transport/heartbeat
-or explicit recovery decision. The current control representation still
-contains a reconnect flag; a typed action/cause model and physically separate
-recovery queues are follow-on architecture work, not claimed as complete.
+or explicit recovery decision.
+
+Recovery decisions are now typed (`RecoveryAction`, `RecoveryCause`) and
+bounded by an explicit attempt policy. Instrument-scoped refreshes and
+source-scoped reconnects are owned by independent bounded queues keyed by
+exact `(source, instrument, generation)` and `(source, generation)` targets.
+Recovery acknowledgements enumerate the instruments they cover and are fenced
+to those exact targets; stale generations, old connection epochs, and unknown
+targets fence nothing. See the
+[architecture migration status](docs/architecture-migration.md) for the
+milestone map and blast-radius evidence.
 Kalshi's margin (perps) API is a separate surface with its own wire contract
 and is not covered by these adapters.
 

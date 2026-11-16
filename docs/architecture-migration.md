@@ -1,9 +1,35 @@
 # Market-data architecture migration
 
-**Status:** Adopted in part (M1.5 active on `feat/feed-continuity-contracts`)  
+**Status:** Adopted in part; recovery M3.1–M3.4 implemented and pushed on
+`feat/feed-continuity-contracts` (through `34befa4`). The platform migration
+labels below predate that work and are retained for historical traceability —
+see the versioned programme status table immediately below.
 **Base:** `6610edc` (`main`; PR #42 merged as `abd7971`, PR #44 as `6610edc`)  
 **Origin:** carried from `architecture/market-data-contracts` (`dda6f81`); that branch is retired after this reconciliation.  
 **Scope:** Architecture contracts and migration sequence. No production code or venue adapter changes are authorized by this document.
+
+## Programme status (versioned, supersedes the legacy milestone labels)
+
+The repository now contains two milestone sequences with the same numbers.
+"Recovery M3/M4" below refers to the typed recovery work; "Platform M2–M8"
+refers to the older generalized-architecture roadmap later in this document.
+Completing recovery M4 does **not** imply that platform M4 (canonical events
+and normalized persistence) is complete.
+
+| Programme | Status |
+|---|---|
+| S1a/S1b — observation preservation and journal v2 | Complete (`966bcaf`); v1/v2 fixtures and data-only `read_records()` preserved |
+| Recovery M3.1 — typed recovery decisions | Complete (`5f1c7fc`) |
+| Recovery M3.2 — independent instrument/source queues | Complete (`6975ae3`) |
+| Recovery M3.3 — per-instrument acknowledgement fences | Complete (`b6ffd80`) |
+| Recovery M4 — blast-radius evidence | Complete (`34befa4`); 3,000-instrument, independent-shard, and backup-freshness tests assert emitted output |
+| Stress M5 — mixed workload characterization | Next; stress-lab design frozen in `docs/stress-lab-design.md` |
+| Platform M2 — persistent instrument identity | Unresolved; ADR 0001 is design-only |
+| Platform M3 — subscription and feed capability contracts | Unresolved |
+| Platform M4 — canonical events and normalized persistence | Unresolved |
+| Venue M6 — Hyperliquid adapter and venue certification | Planned after M5 evidence gates |
+| Research M7 — immutable datasets and experiment registry | Design only |
+| Execution M8 | Deferred |
 
 ## Reconciliation with the failed full-universe run (2026-11-14)
 
@@ -28,11 +54,14 @@ a symbol continuity incident and reissues the symbol-scoped refresh while
 source transport and heartbeat state remain independently supervised. The
 live capture still does not prove that this was the cause of the historical
 connection errors; that requires host telemetry and a staged live experiment.
-This is a narrow branch-level correction, not the final recovery architecture:
-`PendingRecovery` is still keyed by source and merges the `reconnect` flag, so
-independent instrument/source queues and per-instrument generation fences
-remain required before claiming complete scope isolation (see ADR-0002 and
-M3.1–M3.3). On Polymarket a quiet instrument is expected — the venue does not
+That branch-level correction has since been superseded by the implemented
+recovery M3.1–M3.3 increments: typed causes and actions, disjoint bounded
+instrument/source queues, and per-instrument acknowledgement fences now provide
+the complete scope isolation the earlier note listed as outstanding (see the
+versioned status table above and ADR-0002). The transitional
+`PendingRecovery` structure still exists inside `CollectorCore`, but its
+acknowledgements are now fenced to exact `(source, instrument, generation)`
+targets. On Polymarket a quiet instrument is expected — the venue does not
 promise a periodic per-token event. Connection health, instrument activity,
 and book continuity remain distinct facts.
 
