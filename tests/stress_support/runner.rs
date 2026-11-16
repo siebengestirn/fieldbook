@@ -1021,12 +1021,14 @@ fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
             }
         })
         .collect();
+    let status = if SCENARIO_VERSION > 2 {
+        format!("{}-v{}", outcome.acceptance.status(), SCENARIO_VERSION)
+    } else {
+        outcome.acceptance.status().to_owned()
+    };
     format!(
-        "{}-seed-{:04x}-{}-{}",
-        outcome.acceptance.status(),
-        config.seed,
-        config.symbols,
-        summary
+        "{status}-seed-{:04x}-{}-{summary}",
+        config.seed, config.symbols
     )
 }
 
