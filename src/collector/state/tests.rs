@@ -586,7 +586,7 @@ fn kalshi_without_clock_requires_clockless_recovery() {
         snapshot_event_fenced("A", 425_000, 575_000, None, NOW + 11, 2, 1),
     );
     assert!(before.is_empty());
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 7);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 7);
     let after = core.handle_event(
         SOURCE_B,
         snapshot_event_fenced("A", 425_000, 575_000, None, NOW + 12, 2, 8),
@@ -957,7 +957,7 @@ fn clockless_full_recovery_requires_acknowledged_fence_and_fresh_snapshot() {
     assert!(core.markets["A"].active.is_none());
     assert_eq!(core.stats().rejected_recovery_snapshots, 1);
 
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 7);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 7);
 
     // Equal to the acknowledgement fence is not newer.
     let equal_fence = core.handle_event(
@@ -1052,7 +1052,7 @@ fn disconnected_replica_reconnect_is_fenced_by_a_requested_recovery() {
     // The worker acknowledges while backing off, then opens a new
     // connection. That connection's first snapshot must be eligible even
     // though the source was disconnected when the incident started.
-    core.handle_recovery_ready(SOURCE_A, generation, 1, 5);
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 5);
     core.handle_event(
         SOURCE_A,
         ExchangeEvent::StreamReset {
@@ -1135,7 +1135,7 @@ fn delayed_pre_incident_frame_is_rejected_by_receive_fence() {
     );
     core.handle_status(connected_status(SOURCE_A, false), NOW + 1);
     let (generation, _symbols, _reconnect) = recovery_control(&mut core, SOURCE_B);
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 5);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 5);
 
     let before_book = core.markets["A"].books[&SOURCE_B].book.clone();
     let before_received = core.markets["A"].books[&SOURCE_B].last_received_at_us;
@@ -1188,7 +1188,7 @@ fn shadow_snapshot_does_not_consume_recovery_token() {
         },
     );
     let (generation, _symbols, _reconnect) = recovery_control(&mut core, SOURCE_B);
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 3);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 3);
 
     // A fresh shadow snapshot is applied but must not resolve the active
     // symbol's incident or consume the token needed for a later failover.
@@ -1320,7 +1320,7 @@ fn fresh_active_repair_requires_acknowledged_recovery_fence() {
     assert!(before_ack.is_empty());
     assert_eq!(core.markets["A"].continuity, ContinuityState::Stale);
 
-    core.handle_recovery_ready(SOURCE_A, generation, 1, 1);
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 1);
     let repaired = core.handle_event(
         SOURCE_A,
         snapshot_event_fenced("A", 410_000, 590_000, None, NOW + 2_000_002, 1, 2),
@@ -1811,4 +1811,469 @@ fn untracked_terminal_after_created_does_not_resurrect_market() {
     assert!(!core.markets.contains_key("A"));
     assert_eq!(core.stats().lifecycle_unknown_symbols, 2);
     assert!(core.take_lifecycle_reconcile_request());
+}
+
+/// Feed-continuity regression: a quiet instrument on a healthy source must
+/// never escalate to a source-level reconnect.
+///
+/// The live full-universe failure (measurements/live/
+/// 2026-11-14-universe-capture-failed/) showed 756 connection errors and
+/// 10M failover snapshots; the suspected mechanism is exactly this
+/// escalation — one quiet market exhausts its probe budget and the
+/// recovery request is upgraded to `reconnect: true`, invalidating every
+/// book on the source and demanding a snapshot burst.
+///
+/// Required behavior: instrument quietness yields an instrument-scoped
+/// refresh; a source reconnect is a separate, source-health decision. This
+/// pin protects the boundary even when thousands of neighboring instruments
+/// continue receiving real market events.
+#[test]
+fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
+    let mut core = core();
+    connect_sources(&mut core);
+
+    // 3,000 instruments on one source; the last one stays quiet.
+    const INSTRUMENTS: usize = 3_000;
+    let names: Vec<String> = (0..INSTRUMENTS)
+        .map(|index| format!("Q{index:04}"))
+        .collect();
+    let infos: Vec<MarketInfo> = names.iter().map(|name| market(name)).collect();
+    core.apply_discovery(NOW, infos).unwrap();
+    core.drain_controls();
+    for name in &names {
+        let outputs = core.handle_event(SOURCE_A, snapshot_event(name, 400_000, 600_000, 0));
+        assert!(!outputs.is_empty(), "{name} must anchor on its snapshot");
+    }
+    core.drain_controls();
+    assert_eq!(
+        core.markets[&names[0]].continuity,
+        ContinuityState::Live,
+        "every anchored instrument starts Live"
+    );
+
+    let stale_after_us = 120_000_000;
+    let probe_spacing_us = 30_000_000;
+    // Per step: every active instrument receives a real incoming
+    // `LevelChange` stamped with the current synthetic receive time
+    // (quantities vary per step so each event is an actual change), then
+    // the tick runs. `Q2999` receives nothing. This matters: the tick
+    // loop's local periodic snapshots do NOT advance
+    // `last_received_at_us`, so without these events every instrument —
+    // not one — would go stale, and the fixture would prove nothing about
+    // a single quiet instrument. Controls are drained once, after the
+    // probe budget is exhausted, so the assertions observe the complete
+    // escalation in one place.
+    for step in 1..=4u32 {
+        let now = NOW + stale_after_us + i64::from(step) * probe_spacing_us;
+        let quantity = 10_000_000 + i64::from(step) * 250_000;
+        for name in &names[..INSTRUMENTS - 1] {
+            let _ = core.handle_event(
+                SOURCE_A,
+                delta_event(name, Side::Buy, 400_000, quantity, now),
+            );
+        }
+        let _ = core.tick(now);
+    }
+    let final_now = NOW + stale_after_us + 4 * probe_spacing_us;
+
+    // The 2,999 active instruments stayed active: Live, anchored on the
+    // same source, with receive times advanced to the final step. The core
+    // has only *issued* recovery controls at this point — no worker has
+    // executed them — so their books must not be asserted Resyncing.
+    for name in &names[..INSTRUMENTS - 1] {
+        let state = &core.markets[name];
+        assert_eq!(
+            state.continuity,
+            ContinuityState::Live,
+            "{name} must be untouched by its neighbor's quietness"
+        );
+        assert_eq!(state.active, Some(SOURCE_A));
+        let book = state.books.get(&SOURCE_A).expect("active book");
+        assert_eq!(
+            book.last_received_at_us,
+            Some(final_now),
+            "{name} receive time must have advanced with its market events"
+        );
+    }
+
+    // The quiet instrument: receive time unchanged, continuity left Live,
+    // and its recovery request recorded against its source.
+    let quiet = &core.markets["Q2999"];
+    let quiet_book = quiet.books.get(&SOURCE_A).expect("quiet book");
+    assert_eq!(
+        quiet_book.last_received_at_us,
+        Some(NOW),
+        "the quiet instrument must not inherit any other instrument's activity"
+    );
+    assert_ne!(
+        quiet.continuity,
+        ContinuityState::Live,
+        "an instrument past its freshness window must enter recovery"
+    );
+    assert!(
+        quiet.recovery_requests.contains_key(&SOURCE_A),
+        "the quiet instrument must have a recorded recovery request"
+    );
+
+    // Recovery scope: every request names only the quiet instrument. The
+    // failover attempt against the backup replica (SOURCE_B) is legitimate
+    // instrument-scoped behavior; the active source's request is the one
+    // under contract.
+    let recoveries: Vec<(SourceId, u64, Vec<String>, bool)> = core
+        .drain_controls()
+        .into_iter()
+        .filter_map(|(source, control)| match control {
+            Control::Recover {
+                generation,
+                symbols,
+                reconnect,
+            } => Some((source, generation, symbols, reconnect)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !recoveries.is_empty(),
+        "an exhausted instrument must produce a recovery request"
+    );
+    for (source, _, symbols, reconnect) in &recoveries {
+        assert_eq!(
+            symbols.as_slice(),
+            ["Q2999".to_owned()],
+            "every recovery request must name only the quiet instrument (source {source:?})"
+        );
+        if *source != SOURCE_A {
+            assert!(
+                !reconnect,
+                "a failover refresh to a backup source must be instrument-scoped"
+            );
+        }
+    }
+    let active_request = recoveries
+        .iter()
+        .find(|(source, _, _, _)| *source == SOURCE_A)
+        .expect("the active source must have a recovery request for the quiet instrument");
+
+    // The regression pin: exhausting this instrument's probe budget must
+    // leave the recovery action instrument-scoped. Source reconnects are
+    // decided by source health or an explicit operator policy, not by one
+    // quiet market.
+    assert!(
+        !active_request.3,
+        "a single quiet instrument must not request a source reconnect; got {active_request:?}"
+    );
+}
+
+fn two_market_recovery_fixture() -> (CollectorCore, u64) {
+    let mut core = core();
+    core.apply_discovery(NOW, vec![market("A"), market("B")])
+        .unwrap();
+    core.drain_controls();
+    connect_sources(&mut core);
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("A", 400_000, 600_000, None, NOW, 1, 1),
+    );
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("B", 410_000, 590_000, None, NOW, 1, 2),
+    );
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 1);
+    let (generation, _, _) = recovery_control(&mut core, SOURCE_A);
+    (core, generation)
+}
+
+#[test]
+fn recovery_acknowledgement_fences_only_the_named_instrument() {
+    let (mut core, generation) = two_market_recovery_fixture();
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 5);
+
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some(),
+        "the named instrument must be fenced"
+    );
+    assert!(
+        core.markets["B"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_none(),
+        "an acknowledgement for A must never fence B"
+    );
+
+    let outputs = core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("B", 410_000, 590_000, None, NOW + 3, 1, 6),
+    );
+    assert!(
+        outputs.is_empty(),
+        "B has no acknowledgement fence, so its snapshot must be rejected"
+    );
+}
+
+#[test]
+fn stale_generation_epoch_and_unknown_target_acks_are_rejected() {
+    let (mut core, generation) = two_market_recovery_fixture();
+
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation + 99, 1, 5);
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 0, 999);
+    core.handle_recovery_ready(SOURCE_A, &["MISSING".to_owned()], generation, 1, 5);
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_none(),
+        "no stale or unknown acknowledgement may fence a book"
+    );
+
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 5);
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some(),
+        "the exact target, generation and epoch must fence the book"
+    );
+}
+
+#[test]
+fn batch_acknowledgement_enumerates_every_target() {
+    let (mut core, generation) = two_market_recovery_fixture();
+    core.handle_recovery_ready(
+        SOURCE_A,
+        &["A".to_owned(), "B".to_owned()],
+        generation,
+        1,
+        5,
+    );
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some()
+    );
+    assert!(
+        core.markets["B"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some()
+    );
+    assert!(
+        !core.pending_recovery.contains_key(&SOURCE_A),
+        "a complete batch acknowledgement clears the pending entry"
+    );
+}
+
+/// M4 centerpiece: a single source disconnect invalidates all 3,000 books it
+/// owned, and every book is re-anchored by a fenced, fresh snapshot with its
+/// original receive timestamp preserved in the emitted SBE messages.
+#[test]
+fn blast_radius_source_loss_invalidates_all_books_then_reanchors_3000_instruments() {
+    const COUNT: usize = 3_000;
+    let mut core = core();
+    let markets: Vec<_> = (0..COUNT)
+        .map(|index| market(&format!("I{index:04}")))
+        .collect();
+    core.apply_discovery(NOW, markets).unwrap();
+    core.drain_controls();
+    core.handle_status(connected_status(SOURCE_A, true), NOW);
+
+    for index in 0..COUNT {
+        let native = format!("I{index:04}");
+        let outputs = core.handle_event(
+            SOURCE_A,
+            snapshot_event_fenced(
+                &native,
+                400_000,
+                600_000,
+                None,
+                NOW + index as i64,
+                1,
+                index as u64 + 1,
+            ),
+        );
+        assert_eq!(outputs.len(), 1, "initial snapshot for {native} must emit");
+        let OutputMessage::Snapshot(snapshot) = &outputs[0] else {
+            panic!("expected an SBE snapshot for {native}");
+        };
+        assert_eq!(
+            snapshot.received_at.timestamp_micros(),
+            NOW + index as i64,
+            "receive time must survive into the emitted message"
+        );
+    }
+
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 10_000);
+    for index in 0..COUNT {
+        let native = format!("I{index:04}");
+        let state = &core.markets[&native];
+        assert!(
+            !state.books[&SOURCE_A].valid,
+            "{native} must be invalidated by the source disconnect"
+        );
+    }
+    assert!(
+        core.handle_event(
+            SOURCE_A,
+            snapshot_event_fenced(
+                "I0000",
+                400_000,
+                600_000,
+                None,
+                NOW + 10_001,
+                1,
+                COUNT as u64 + 1
+            ),
+        )
+        .is_empty(),
+        "an unfenced snapshot after source loss must not re-anchor a book"
+    );
+
+    let recoveries: Vec<_> = core
+        .drain_controls()
+        .into_iter()
+        .filter_map(|(source, control)| match control {
+            Control::Recover {
+                generation,
+                symbols,
+                ..
+            } if source == SOURCE_A => Some((generation, symbols)),
+            _ => None,
+        })
+        .collect();
+    let all_targets: std::collections::BTreeSet<_> = recoveries
+        .iter()
+        .flat_map(|(_, symbols)| symbols.iter().cloned())
+        .collect();
+    assert_eq!(
+        all_targets.len(),
+        COUNT,
+        "every invalidated instrument must appear in a recovery request"
+    );
+    for (generation, symbols) in &recoveries {
+        core.handle_recovery_ready(SOURCE_A, symbols, *generation, 1, COUNT as u64 + 1);
+    }
+    core.handle_status(connected_status(SOURCE_A, true), NOW + 20_000);
+
+    let mut anchored = 0usize;
+    for index in 0..COUNT {
+        let native = format!("I{index:04}");
+        let received_at = NOW + 20_000 + index as i64;
+        let outputs = core.handle_event(
+            SOURCE_A,
+            snapshot_event_fenced(
+                &native,
+                410_000,
+                590_000,
+                None,
+                received_at,
+                2,
+                index as u64 + 1,
+            ),
+        );
+        assert_eq!(
+            outputs.len(),
+            1,
+            "fenced recovery snapshot for {native} must emit"
+        );
+        let OutputMessage::Snapshot(snapshot) = &outputs[0] else {
+            panic!("expected an SBE recovery snapshot for {native}");
+        };
+        assert_eq!(snapshot.received_at.timestamp_micros(), received_at);
+        anchored += 1;
+    }
+    assert_eq!(anchored, COUNT, "all 3,000 books must be re-anchored");
+}
+
+#[test]
+fn blast_radius_independent_shards_do_not_share_a_failure() {
+    let mut settings = settings_for(ExchangeKind::Polymarket);
+    settings.collector.shards = 2;
+    let mut core = CollectorCore::new(
+        CoreConfig::from_settings(&settings, 2, ExchangeCapabilities::new(false)).unwrap(),
+    )
+    .unwrap();
+    core.apply_discovery(NOW, vec![market("A"), market("B")])
+        .unwrap();
+    core.drain_controls();
+    let other_source = SourceId::new(1, 0);
+    core.handle_status(connected_status(SOURCE_A, true), NOW);
+    core.handle_status(connected_status(other_source, true), NOW);
+
+    assert_ne!(
+        core.markets["A"].shard, core.markets["B"].shard,
+        "the fixture must place the two markets on different shards"
+    );
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("A", 400_000, 600_000, None, NOW, 1, 1),
+    );
+    core.handle_event(
+        other_source,
+        snapshot_event_fenced("B", 300_000, 700_000, None, NOW, 1, 1),
+    );
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 1);
+
+    assert!(!core.markets["A"].books[&SOURCE_A].valid);
+    assert!(
+        core.markets["B"].books[&other_source].valid,
+        "a failure on shard 0 must not invalidate shard 1's book"
+    );
+    assert_eq!(core.markets["B"].continuity, ContinuityState::Live);
+    assert!(
+        !core
+            .handle_event(
+                other_source,
+                delta_event_at("B", Side::Buy, 310_000, 10_000_000, 0, NOW + 2),
+            )
+            .is_empty(),
+        "the unaffected shard must keep producing SBE output"
+    );
+    assert!(
+        core.drain_controls()
+            .iter()
+            .all(|(source, _)| *source != other_source),
+        "no recovery request may be sent to the healthy shard"
+    );
+}
+
+#[test]
+fn blast_radius_backup_requires_a_fresh_snapshot_before_promotion() {
+    let mut core = core();
+    core.apply_discovery(NOW, vec![market("A")]).unwrap();
+    core.drain_controls();
+    connect_sources(&mut core);
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("A", 400_000, 600_000, None, NOW, 1, 1),
+    );
+    core.handle_event(
+        SOURCE_B,
+        snapshot_event_fenced("A", 405_000, 595_000, None, NOW + 1, 1, 2),
+    );
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 2);
+
+    // The backup existed before the failure, so its old snapshot is not proof
+    // of current state. It must not emit or become active.
+    let stale = core.handle_event(
+        SOURCE_B,
+        snapshot_event_fenced("A", 405_000, 595_000, None, NOW + 3, 1, 3),
+    );
+    assert!(
+        stale.is_empty(),
+        "a pre-fence backup snapshot must not be trusted"
+    );
+    assert!(core.markets["A"].active.is_none());
+
+    let (generation, symbols, _) = recovery_control(&mut core, SOURCE_B);
+    core.handle_recovery_ready(SOURCE_B, &symbols, generation, 1, 3);
+    let fresh = core.handle_event(
+        SOURCE_B,
+        snapshot_event_fenced("A", 410_000, 590_000, None, NOW + 4, 2, 1),
+    );
+    assert_eq!(
+        fresh.len(),
+        1,
+        "a fenced fresh snapshot must re-anchor the book"
+    );
+    assert_eq!(core.markets["A"].active, Some(SOURCE_B));
+    let OutputMessage::Snapshot(snapshot) = &fresh[0] else {
+        panic!("expected an SBE snapshot");
+    };
+    assert_eq!(snapshot.received_at.timestamp_micros(), NOW + 4);
 }

@@ -432,10 +432,16 @@ fn drain_controls(core: &mut CollectorCore) {
         );
     }
     // Replay acks recovery controls immediately, as a live worker would.
-    // Snapshots/deltas use epoch 1 so they are strictly after the (0,0) fence.
+    // Fixture frames use epoch 1, so the acknowledgement sits at the start of
+    // that epoch (seq 0) and later frames are strictly after the fence.
     for (source, control) in controls {
-        if let Control::Recover { generation, .. } = control {
-            core.handle_recovery_ready(source, generation, 0, 0);
+        if let Control::Recover {
+            generation,
+            symbols,
+            ..
+        } = control
+        {
+            core.handle_recovery_ready(source, &symbols, generation, 1, 0);
         }
     }
 }

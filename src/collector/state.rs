@@ -23,6 +23,7 @@ use crate::{
         ResetReason, SourceId, SourceStatus,
     },
     orderbook::OrderBook,
+    recovery::{RecoveryFence, RecoveryTarget},
     time::utc_from_us,
     util::{
         dtos::challenge_orderbook::{
@@ -119,9 +120,10 @@ impl FrameOrder {
 #[derive(Debug, Clone)]
 struct RecoveryRequest {
     generation: u64,
-    /// Set when the worker confirms the recovery control was applied. A
-    /// snapshot is eligible only when its receive fence is strictly newer.
-    fence: Option<FrameOrder>,
+    /// Set when the worker confirms the recovery control was applied. The
+    /// fence names the exact instrument it covers, so an acknowledgement for
+    /// one instrument can never authorize another instrument's snapshot.
+    fence: Option<RecoveryFence>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +146,9 @@ struct SourceBook {
     last_observed_clock: Option<i64>,
     last_exchange_ts_us: Option<i64>,
     last_received_at_us: Option<i64>,
+    /// Fence of the last accepted frame from this source. Used to reject a
+    /// recovery acknowledgement carrying a stale connection epoch.
+    last_fence: Option<FrameOrder>,
 }
 
 impl SourceBook {
@@ -835,8 +840,13 @@ impl CollectorCore {
         let recovery_request = state.recovery_requests.get(&source);
         let recovery = recovery_request.is_some();
         let recovery_generation = recovery_request.map(|request| request.generation);
-        let recovery_fence_ok = recovery_request
-            .is_some_and(|request| request.fence.is_some_and(|fence| fenced && order > fence));
+        let recovery_fence_ok = recovery_request.is_some_and(|request| {
+            request.fence.as_ref().is_some_and(|fence| {
+                fenced
+                    && request.generation == fence.target.generation
+                    && fence.is_before(order.connection_epoch, order.receive_seq)
+            })
+        });
         let clock_regression = clock_regressed(state.emitted_clock, meta.clock);
 
         // A clockless venue has no exchange ordering that proves a shadow book
@@ -942,6 +952,10 @@ impl CollectorCore {
             }
             source_book.last_exchange_ts_us = Some(exchange_ts);
             source_book.last_received_at_us = Some(meta.received_at_us);
+            if meta.has_receive_fence() {
+                source_book.last_fence =
+                    Some(FrameOrder::new(meta.connection_epoch, meta.receive_seq));
+            }
         }
 
         let should_emit = was_active.is_none() || was_active == Some(source);
@@ -1073,6 +1087,10 @@ impl CollectorCore {
             }
             source_book.last_exchange_ts_us = Some(exchange_ts);
             source_book.last_received_at_us = Some(meta.received_at_us);
+            if meta.has_receive_fence() {
+                source_book.last_fence =
+                    Some(FrameOrder::new(meta.connection_epoch, meta.receive_seq));
+            }
             (
                 source_book.book.quantity(side, price).unwrap_or_default(),
                 source_book.book.is_crossed(),
@@ -1445,7 +1463,6 @@ impl CollectorCore {
         let quantifiable = self.config.capabilities.has_sequence_clock;
         let mut outputs = Vec::new();
         let mut probes: Vec<(SourceId, String)> = Vec::new();
-        let mut reconnects: Vec<(SourceId, String)> = Vec::new();
         let mut reseats: Vec<String> = Vec::new();
         let mut periodic_count = 0u64;
         let mut crossed_count = 0u64;
@@ -1537,8 +1554,12 @@ impl CollectorCore {
                         record_incident(&mut self.stats, started, quantifiable);
                         state.probes = 0;
                         state.last_probe_us = now_us;
-                        reconnects.push((active, native.clone()));
-                        reseats.push(native.clone());
+                        // Probe-budget exhaustion is an instrument-continuity
+                        // incident, not evidence that the shared source is
+                        // unhealthy. Keep the refresh scoped to this symbol on
+                        // the active connection. Transport/heartbeat failure
+                        // has its own source-level reconnect path.
+                        probes.push((active, native.clone()));
                         probe_count = probe_count.saturating_add(1);
                     }
                 }
@@ -1549,9 +1570,6 @@ impl CollectorCore {
 
         for (source, native) in probes {
             self.request_recovery(source, &native, false);
-        }
-        for (source, native) in reconnects {
-            self.request_recovery(source, &native, true);
         }
         self.stats.stale_probes = self.stats.stale_probes.saturating_add(probe_count);
         self.stats.periodic_snapshots =
@@ -1642,28 +1660,58 @@ impl CollectorCore {
 
     /// Record the worker's acknowledgement of a recovery control.
     ///
-    /// The acknowledgement carries the receive fence of the last frame the
-    /// worker had read when it applied the control. Only snapshots read after
-    /// that point are eligible to repair a clockless gap.
+    /// The acknowledgement names the exact instruments it covers, and carries
+    /// the receive fence of the last frame the worker had read when it applied
+    /// the control. Only snapshots read after that point are eligible to repair
+    /// a clockless gap. An acknowledgement with an unknown target, an unknown
+    /// or stale generation, or a stale connection epoch fences nothing.
     pub fn handle_recovery_ready(
         &mut self,
         source: SourceId,
+        targets: &[String],
         generation: u64,
         connection_epoch: u64,
         receive_seq: u64,
     ) {
-        let fence = FrameOrder::new(connection_epoch, receive_seq);
-        for state in self.markets.values_mut() {
+        if targets.is_empty() {
+            return;
+        }
+        let mut fenced = 0usize;
+        for target in targets {
+            let Some(state) = self.markets.get_mut(target) else {
+                continue;
+            };
+            let stale_epoch = state
+                .books
+                .get(&source)
+                .and_then(|book| book.last_fence)
+                .is_some_and(|last| connection_epoch < last.connection_epoch);
+            if stale_epoch {
+                continue;
+            }
             if let Some(request) = state.recovery_requests.get_mut(&source)
                 && request.generation == generation
             {
-                request.fence = Some(fence);
+                request.fence = Some(RecoveryFence {
+                    target: RecoveryTarget {
+                        source,
+                        instrument: target.clone(),
+                        generation,
+                    },
+                    connection_epoch,
+                    receive_seq,
+                });
+                fenced = fenced.saturating_add(1);
             }
         }
-        if self
-            .pending_recovery
-            .get(&source)
-            .is_some_and(|pending| pending.generation == generation)
+        // Only a batch that covered every named target may clear the pending
+        // entry. A partial acknowledgement leaves the remaining instruments
+        // independently recoverable.
+        if fenced == targets.len()
+            && self
+                .pending_recovery
+                .get(&source)
+                .is_some_and(|pending| pending.generation == generation)
         {
             self.pending_recovery.remove(&source);
         }

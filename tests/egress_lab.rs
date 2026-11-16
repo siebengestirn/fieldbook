@@ -425,7 +425,11 @@ async fn direct_connection_reaches_a_loopback_venue() {
     let mut stream = ws::connect(&format!("ws://{}", venue.addr), &[], &options)
         .await
         .expect("direct connect must succeed against the loopback venue");
-    match ws::next_payload(&mut stream).await.expect("venue frames") {
+    match ws::next_payload(&mut stream)
+        .await
+        .expect("venue frames")
+        .payload
+    {
         ws::WsPayload::Text(text) => assert_eq!(text, "venue-ok"),
         other => panic!("unexpected payload: {other:?}"),
     }
@@ -442,7 +446,11 @@ async fn http_connect_tunnel_carries_the_websocket_handshake() {
     let mut stream = ws::connect(&format!("ws://{}", venue.addr), &[], &options)
         .await
         .expect("CONNECT tunnel must carry the websocket handshake");
-    match ws::next_payload(&mut stream).await.expect("venue frames") {
+    match ws::next_payload(&mut stream)
+        .await
+        .expect("venue frames")
+        .payload
+    {
         ws::WsPayload::Text(text) => assert_eq!(text, "venue-ok"),
         other => panic!("unexpected payload: {other:?}"),
     }
@@ -554,7 +562,11 @@ async fn socks5_tunnel_carries_the_websocket_handshake_with_remote_dns() {
     )
     .await
     .expect("SOCKS5 with remote DNS must carry the websocket handshake");
-    match ws::next_payload(&mut stream).await.expect("venue frames") {
+    match ws::next_payload(&mut stream)
+        .await
+        .expect("venue frames")
+        .payload
+    {
         ws::WsPayload::Text(text) => assert_eq!(text, "venue-ok"),
         other => panic!("unexpected payload: {other:?}"),
     }
@@ -586,7 +598,11 @@ async fn socks5_local_dns_sends_an_ip_literal_target() {
     )
     .await
     .expect("SOCKS5 with local DNS must carry the websocket handshake");
-    match ws::next_payload(&mut stream).await.expect("venue frames") {
+    match ws::next_payload(&mut stream)
+        .await
+        .expect("venue frames")
+        .payload
+    {
         ws::WsPayload::Text(text) => assert_eq!(text, "venue-ok"),
         other => panic!("unexpected payload: {other:?}"),
     }
@@ -686,7 +702,11 @@ async fn rest_and_websocket_share_the_same_egress_route() {
     let mut stream = ws::connect(&format!("ws://{}", venue.addr), &[], &ws_options)
         .await
         .expect("websocket through the shared proxy must work");
-    match ws::next_payload(&mut stream).await.expect("venue frames") {
+    match ws::next_payload(&mut stream)
+        .await
+        .expect("venue frames")
+        .payload
+    {
         ws::WsPayload::Text(text) => assert_eq!(text, "venue-ok"),
         other => panic!("unexpected payload: {other:?}"),
     }
@@ -753,17 +773,19 @@ async fn journal_manifest_records_route_provenance_without_credentials() {
     .expect("journal start");
 
     handle
-        .record(
-            SourceId::new(0, 0),
-            1,
-            1,
-            1_000_000,
-            RawFrame {
+        .record(journal::DataRecord {
+            source: SourceId::new(0, 0),
+            connection_epoch: 1,
+            receive_seq: 1,
+            received_at_us: 1_000_000,
+            frame: RawFrame {
                 kind: FrameKind::Text,
                 payload: b"{}".to_vec(),
             },
-            DecodeOutcome::decoded(1),
-        )
+            outcome: DecodeOutcome::decoded(1),
+            signal: engineering_challenge::protocol::SessionSignal::MarketData,
+            mechanism: engineering_challenge::protocol::HeartbeatMechanism::Disabled,
+        })
         .expect("record accepted");
     let summary = handle
         .shutdown(Duration::from_secs(5))

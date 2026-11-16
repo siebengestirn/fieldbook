@@ -133,6 +133,12 @@ Ownership and dependency direction are deliberate:
   a websocket library;
 - the coordinator owns composition and lifecycle;
 - the writer owns the output file and the journal owns the journal directory;
+- the journal writes schema v2 and stores both application data frames and
+  native transport controls as typed observations with independent
+  `receive_seq`, `control_seq`, and `observation_seq` domains. ADR-0002 is
+  implemented: controls never advance the application receive fence and are
+  visible only through `read_observations()`, while `read_records()` stays
+  data-only and v1 journals remain readable;
 - `replay` drives the same `CollectorCore` with fixture timestamps, so the
   deterministic path does not depend on the live coordinator.
 
@@ -195,7 +201,7 @@ flowchart LR
 | Composition | `main.rs`, `coordinator.rs`, `cli.rs`, `config.rs` | CLI, settings precedence, adapter construction, lifecycle |
 | Discovery | `exchange/*/discovery.rs`, `capacity.rs`, `catalog.rs` | Venue discovery, eligibility, capacity admission, checkpoint |
 | State | `collector/state.rs`, `orderbook.rs`, `model.rs`, `fixed.rs` | Serialized books, failover, fixed-point values, output model |
-| Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs` | Protocol handling, supervised workers, connection options; egress policy: direct or explicit fail-closed proxy, route provenance |
+| Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance |
 | Control plane | `exchange/kalshi/session.rs` (`SessionMode::Lifecycle`), `coordinator.rs`, `collector/state.rs` | Dedicated Kalshi `market_lifecycle_v2` subscription, cross-connection dedup, reconciliation triggers |
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |
 | Output | `writer.rs`, `util/aligned_sbe_*.rs`, `util/dtos.rs` | Ordered SBE writes, chunk framing, supplied-schema DTOs |

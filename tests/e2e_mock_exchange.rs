@@ -38,6 +38,7 @@ use engineering_challenge::{
     coordinator,
     fixed::format_micros,
     journal,
+    protocol::{ControlOpcode, FrameClassification, FrameDirection, SessionSignal},
     report::RunReport,
     time::now_us,
     util::{
@@ -2092,7 +2093,7 @@ async fn rejected_payloads_are_journaled_across_reconnects() {
 /// neither create journal records nor consume receive sequence numbers; only
 /// the data frames around them advance the fence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn transport_control_frames_do_not_advance_the_journal_fence() {
+async fn journal_accounts_for_control_observations_without_advancing_receive_seq() {
     let directory = tempfile::tempdir().expect("tempdir");
     let output = directory.path().join("journal-control.sbe");
     let journal_root = directory.path().join("journal");
@@ -2155,7 +2156,71 @@ async fn transport_control_frames_do_not_advance_the_journal_fence() {
     assert_eq!(
         records.len() as u64,
         mock.frames_sent(),
-        "only application payloads may be journaled"
+        "only application payloads may be journaled as data"
+    );
+
+    let observations =
+        journal::read_observations(&run_directory).expect("reading journal observations");
+    assert!(
+        observations.len() > records.len(),
+        "native controls are retained as observations but excluded from the data view"
+    );
+    let data_observations: Vec<_> = observations
+        .iter()
+        .filter(|observation| observation.receive_seq.is_some())
+        .collect();
+    assert_eq!(
+        data_observations.len(),
+        records.len(),
+        "every data observation has exactly one receive fence"
+    );
+    let mut control_count = 0usize;
+    for observation in &observations {
+        if observation.classification.is_control() {
+            control_count += 1;
+            assert_eq!(
+                observation.receive_seq, None,
+                "a control observation must never consume the receive fence"
+            );
+            assert!(
+                observation.control_seq.is_some(),
+                "a control observation must advance the control sequence"
+            );
+            match (observation.direction, &observation.classification) {
+                (
+                    FrameDirection::Inbound,
+                    FrameClassification::Control {
+                        opcode: ControlOpcode::Ping,
+                    },
+                ) => assert_eq!(observation.signal, Some(SessionSignal::PeerPing)),
+                (
+                    FrameDirection::Outbound,
+                    FrameClassification::Control {
+                        opcode: ControlOpcode::Pong,
+                    },
+                ) => assert_eq!(observation.signal, Some(SessionSignal::PeerPong)),
+                (
+                    FrameDirection::Inbound,
+                    FrameClassification::Control {
+                        opcode: ControlOpcode::Pong,
+                    },
+                ) => assert_eq!(
+                    observation.signal,
+                    Some(SessionSignal::ProtocolControl),
+                    "Polymarket native Pong is transport plumbing, not an application heartbeat"
+                ),
+                other => panic!("unexpected control observation: {other:?}"),
+            }
+        } else {
+            assert_eq!(
+                observation.control_seq, None,
+                "a data observation must not advance the control sequence"
+            );
+        }
+    }
+    assert!(
+        control_count > 0,
+        "the mock delivered native control frames that must be retained"
     );
 
     let mut seen: BTreeMap<(String, u64), Vec<u64>> = BTreeMap::new();

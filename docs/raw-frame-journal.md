@@ -1,5 +1,14 @@
 # Raw-frame journal
 
+The current implementation writes journal schema v2, defined by
+[ADR-0002](adr/0002-persist-transport-observations-without-changing-receive-order.md).
+Every retained observation — application data frames **and** native WebSocket
+control frames, inbound and outbound — is persisted with typed protocol facts
+and three independent per-source, per-epoch sequences. The legacy data-only
+`read_records()` contract is unchanged, and v1 journals (including the
+checked-in v1 golden fixture) remain readable by this build. Writers emit v2
+only; v1 segments are never rewritten.
+
 The collector can retain every received public data frame in a versioned,
 append-only journal next to the normalized SBE capture. The journal is a
 forensic record: it keeps the exact payload, receive time, source epoch, and
@@ -58,20 +67,33 @@ or described as complete.
 
 ## Record format
 
-Each frame becomes one record:
+Each retained observation becomes one record. All sequences are scoped by
+`(source, connection_epoch)` and reset to 1 with every new epoch:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Journal schema version (`1`). |
+| `schema_version` | Journal schema version (`2` in records written by this build; `1` is still parsed). |
 | `source` | Source identity such as `s0r0`, with `shard` and `replica` fields. |
 | `connection_epoch` | Increments on every successful websocket connection for that source. |
-| `receive_seq` | Per-source frame counter, reset to zero for each new epoch and advanced exactly once for every payload read at the ingress boundary — before any decode or protocol decision — including ignored and rejected payloads. |
-| `received_at_us` | Unix-epoch microseconds captured immediately after the payload is read and before decoding. |
+| `observation_seq` | Counter over **all** retained observations for the source and epoch, in the order the worker retained them. This is the authoritative data/control interleaving. |
+| `receive_seq` | Present on inbound data observations only (`record_kind = "data"`, `direction = "inbound"`). Per-source application receive fence, advanced exactly once per Text/Binary payload read at the ingress boundary — before any decode or protocol decision — including ignored and rejected payloads. |
+| `control_seq` | Present on native control observations only (`record_kind = "control"`). Per-source counter over inbound and outbound native Ping/Pong. |
+| `received_at_us` | Unix-epoch microseconds captured immediately after the frame is read (for outbound observations, when the worker retained the send). |
 | `clock_source` | Fixed label `unix_epoch_microseconds`. |
-| `frame_kind` | `text` or `binary`, preserved from the transport. |
-| `payload_len` | Exact payload length. |
-| `decode` | `{"status":"decoded","events":N}`, `{"status":"ignored","reason":"..."}`, or `{"status":"rejected","category":"..."}`. |
-| payload | Exact bytes as received. No re-encoding, truncation, or normalization. |
+| `record_kind` | `data` or `control`. |
+| `frame_kind` / `opcode` | `text` or `binary` for data records; `ping` or `pong` for control records. |
+| `direction` | `inbound` or `outbound`. |
+| `signal` | Adapter-assigned session signal: `market_data`, `heartbeat_ack`, `heartbeat_request`, `peer_ping`, `peer_pong`, or `protocol_control`. Never inferred from payload bytes during replay. |
+| `mechanism` | Adapter-assigned heartbeat mechanism: `application_text`, `websocket_control`, or `disabled`. |
+| `decode` | Data records only: `{"status":"decoded","events":N}`, `{"status":"ignored","reason":"..."}`, or `{"status":"rejected","category":"..."}`. |
+| `send_result` | Outbound observations only: `{"status":"sent"}` or `{"status":"failed","error":"..."}`. |
+| payload | Exact bytes as received or sent. No re-encoding, truncation, or normalization. |
+
+v1 records carry only `schema_version`, `source`, `shard`, `replica`,
+`connection_epoch`, `receive_seq`, `received_at_us`, `clock_source`,
+`frame_kind`, `payload_len`, and `decode`. Readers surface them as inbound data
+observations with `signal` and `mechanism` set to `null`: those facts were
+never stored, and a reader must not fabricate them.
 
 ## Capture boundary
 
@@ -89,13 +111,30 @@ parsing or protocol decisions, exactly once per payload read. This includes:
   together with their untouched bytes, including the payload that triggered a
   reconnect.
 
-Transport-level idle events (websocket ping/pong frames with no application
-payload) are out of scope: they advance neither the receive fence nor the
-journal. A protocol failure observed before any payload was read (for example
-a pending-command acknowledgement timeout) likewise has no payload to journal
+In schema v2, native transport-level Ping/Pong controls are retained as typed
+control observations in the order the worker observed them. An inbound native
+Ping is journaled with its exact payload together with the automatic Pong
+response — direction `outbound` and the real send result — and an inbound
+native Pong keeps its correlation bytes. A failed Pong send is recorded with
+`send_result: failed`; the already-observed inbound Ping is never discarded
+because the response failed. Controls advance `control_seq` and
+`observation_seq` but never the application receive fence, and they never
+become `ExchangeEvent`s. They are visible through `read_observations()` and
+excluded from the legacy data-only `read_records()` API.
+
+Venue classification is adapter-assigned, not inferred from bytes: Polymarket's
+application-text `PING`/`PONG` are **data** frames (mechanism
+`application_text`, signals `peer_ping`/`heartbeat_ack`) that advance
+`receive_seq`; Polymarket's native Pong is `protocol_control`; Kalshi's native
+Pong is `heartbeat_ack` with its correlation payload; a Pong answering a
+server Ping is `peer_pong`.
+
+A protocol failure observed before any payload was read (for example a
+pending-command acknowledgement timeout) likewise has no payload to journal
 and does not advance the fence. A frame the venue wrote into a socket at the
 moment a connection is torn down is a transport loss, not a journal accounting
-failure; the journal accounts for every payload the collector actually read.
+failure; the v1 journal accounts for every application payload the collector
+actually read.
 
 Rejected frames keep their payload and a stable category. Error text and
 payload previews are not written into the record header, so a journal does not
@@ -142,15 +181,21 @@ renamed segment before the manifest claimed completion.
 
 ## Ordering and time
 
-One writer thread consumes a bounded queue, so the journal order is the order in
-which source workers enqueued records. For one source, records strictly advance
-`(connection_epoch, receive_seq)`. Across sources, file order is queue arrival
-order, not a global sort by receive timestamp; receive times can regress between
-sources. A reader that needs a timestamp-ordered view must sort by receive time
-and accept the resulting loss of observed arrival order.
+One writer thread consumes a bounded queue, so the journal order is the order
+in which source workers enqueued observations. For one
+`(source, connection_epoch)`, `observation_seq` strictly advances 1, 2, 3, … in
+file order across segments. Within that scope, inbound data observations
+independently advance `receive_seq` and native controls independently advance
+`control_seq`; all three reset to 1 with a new connection epoch. Across
+sources, file order is queue arrival order, not a global sort by receive
+timestamp; receive times can regress between sources. A reader that needs a
+timestamp-ordered view must sort by receive time and accept the resulting loss
+of observed arrival order.
 
-The receive fence advances before decoding, so a rejected frame cannot reuse the
-previous sequence number or hide itself from recovery ordering.
+The receive fence advances before decoding, so a rejected application payload
+cannot reuse the previous sequence number or hide itself from recovery
+ordering. `control_seq` and `observation_seq` never change the meaning of
+`receive_seq`. See ADR-0002 for the normative ordering model.
 
 ## Durability accounting
 
@@ -220,10 +265,29 @@ segment's existence and finalized state, header provenance, header and footer
 checksums, record counts, byte counts, receive-time bounds, and source ranges. It
 re-parses every record checksum, requires per-source order within and across
 segments, rejects bytes after a footer, rejects unlisted `.pmj` files, and
-rejects any `.pmj.partial` file.
+rejects any `.pmj.partial` file. In v2 segments it additionally enforces, per
+`(source, connection_epoch)`: contiguous `observation_seq` from 1 across
+segments, independently contiguous `receive_seq` and `control_seq` for the
+domains each record carries, first observation of a new epoch starting at
+sequence 1 in every present domain, and non-regressing epochs. v1 segments are
+validated with their legacy receive-fence semantics. Unsupported manifest,
+segment, or record schema versions fail closed.
 
 `journal::read_records` performs the same completeness check and then returns
-records in file order with their exact payloads.
+application records in file order with their exact payloads — the unchanged
+data-only compatibility API over both v1 and v2 journals. Native controls never
+appear in it.
+
+`journal::read_observations` returns every retained observation — application
+data and native controls, inbound and outbound — in `observation_seq` order,
+with typed direction, classification, signal, mechanism, correlation payloads,
+and outbound send results. For v1 journals it surfaces the legacy data records
+with `signal` and `mechanism` left `null` rather than fabricated.
+
+Checked-in golden fixtures pin both reader contracts:
+`fixtures/journal-v1-golden/golden` (a finalized v1 run) and
+`fixtures/journal-v2-golden/golden` (a finalized v2 run mixing data records,
+an inbound Ping, its outbound Pong, and an application-text PONG).
 
 The checksums are integrity, not authenticity: SHA-256 detects accidental
 corruption and truncation, but an actor who can rewrite a segment can recompute

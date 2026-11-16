@@ -16,7 +16,11 @@ use crate::{
     exchange::polymarket::codec::decode_polymarket_message,
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
-    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame},
+    protocol::{HeartbeatMechanism, SendResult, TransportObservation},
+    session::{
+        HeartbeatRequest, HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure,
+        SessionFrame, SessionSignal,
+    },
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
 };
@@ -126,6 +130,13 @@ impl PolymarketSession {
 
 #[async_trait]
 impl MarketDataSession for PolymarketSession {
+    fn heartbeat_spec(&self) -> HeartbeatSpec {
+        // The venue's documented application-level text PING/PONG exchange:
+        // client text PING every 10 seconds, server text PONG. The deadline
+        // and thresholds are client policy, not venue guarantees.
+        HeartbeatSpec::ten_second_application_text()
+    }
+
     async fn connect(&mut self) -> Result<(), SessionFailure> {
         self.close().await;
         let stream = ws::connect(&self.settings.ws_url, &[], &self.connect_options)
@@ -180,12 +191,34 @@ impl MarketDataSession for PolymarketSession {
 
     async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure> {
         self.flush_pending_pong().await?;
-        let payload = ws::next_payload(self.stream_mut()?)
+        let read = ws::next_payload(self.stream_mut()?)
             .await
             .map_err(SessionFailure::Reconnect)?;
         let received_at_us = now_us().unwrap_or(0);
-        let (text, kind) = match payload {
-            WsPayload::Idle => return Ok(SessionFrame::idle(0)),
+        let mechanism = self.heartbeat_spec().mechanism;
+        let (text, kind) = match read.payload {
+            // Native controls are transport plumbing for this venue: the
+            // heartbeat is the application-level text PING/PONG exchange
+            // handled below. A native Pong must never clear an outstanding
+            // text heartbeat, but it is still retained as an observation.
+            WsPayload::Ping(payload) => {
+                return Ok(SessionFrame::native_control(
+                    WsPayload::Ping(payload),
+                    read.response,
+                    mechanism,
+                    SessionSignal::ProtocolControl,
+                    received_at_us,
+                ));
+            }
+            WsPayload::Pong(payload) => {
+                return Ok(SessionFrame::native_control(
+                    WsPayload::Pong(payload),
+                    None,
+                    mechanism,
+                    SessionSignal::ProtocolControl,
+                    received_at_us,
+                ));
+            }
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
                 Ok(text) => (text, FrameKind::Binary),
@@ -219,6 +252,9 @@ impl MarketDataSession for PolymarketSession {
         if control.eq_ignore_ascii_case("PING") {
             self.pong_pending = true;
             self.flush_pending_pong().await?;
+            // The venue's own probe is a different observation from an
+            // acknowledgement of a client heartbeat. It is application data
+            // (text) even though the adapter interprets it as a heartbeat.
             return Ok(SessionFrame::data(
                 Vec::new(),
                 bytes,
@@ -228,7 +264,8 @@ impl MarketDataSession for PolymarketSession {
                 },
                 DecodeOutcome::ignored("control_frame"),
                 received_at_us,
-            ));
+            )
+            .with_signal(SessionSignal::PeerPing));
         }
         if control.eq_ignore_ascii_case("PONG") {
             return Ok(SessionFrame::data(
@@ -240,7 +277,8 @@ impl MarketDataSession for PolymarketSession {
                 },
                 DecodeOutcome::ignored("control_frame"),
                 received_at_us,
-            ));
+            )
+            .with_signal(SessionSignal::HeartbeatAck { correlation: None }));
         }
         match decode_polymarket_message(&text, received_at_us) {
             Ok(events) => {
@@ -277,10 +315,23 @@ impl MarketDataSession for PolymarketSession {
         }
     }
 
-    async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
+    async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+        // The venue's text PING carries no request nonce: correlation is the
+        // single-outstanding-window contract, an explicit protocol
+        // limitation recorded in the heartbeat spec.
         ws::send_text(self.stream_mut()?, "PING".to_owned())
             .await
-            .map_err(SessionFailure::Reconnect)
+            .map_err(SessionFailure::Reconnect)?;
+        Ok(HeartbeatRequest {
+            correlation: None,
+            observations: vec![TransportObservation::outbound_data(
+                FrameKind::Text,
+                b"PING".to_vec(),
+                SessionSignal::HeartbeatRequest,
+                HeartbeatMechanism::ApplicationText,
+                SendResult::Sent,
+            )],
+        })
     }
 
     async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure> {
@@ -291,8 +342,10 @@ impl MarketDataSession for PolymarketSession {
         // for these assets on the live connection makes the venue treat them
         // as new subscriptions and emit a fresh book for each. The core only
         // accepts the recovery once that book arrives as an exchange
-        // snapshot; a venue that sends nothing leaves the probe budget to
-        // escalate to a full reconnect.
+        // snapshot. If the venue sends nothing, the core can repeat this
+        // symbol-scoped refresh while the source-level heartbeat/transport
+        // state is evaluated independently; probe exhaustion alone does not
+        // authorize a full-source reconnect.
         let chunk_size = self.settings.batch_size.max(1);
         for chunk in symbols.chunks(chunk_size) {
             self.send_json(json!({
@@ -337,6 +390,7 @@ mod tests {
 
     use super::*;
     use crate::model::ExchangeEvent;
+    use crate::protocol::{ControlOpcode, FrameClassification, FrameDirection};
 
     type ServerWs = WebSocketStream<tokio::net::TcpStream>;
 
@@ -515,11 +569,208 @@ mod tests {
             pong.events.is_empty(),
             "PONG is a control frame, not market data"
         );
+        assert_eq!(
+            pong.signal,
+            SessionSignal::HeartbeatAck { correlation: None }
+        );
+        assert_eq!(
+            pong.observations
+                .first()
+                .map(|observation| observation.classification),
+            Some(FrameClassification::Data {
+                frame_kind: FrameKind::Text
+            }),
+            "the text PONG is application data typed as a heartbeat acknowledgement"
+        );
 
         assert_eq!(
             next_snapshot(&mut session, "a").await,
             (400_000, 10_000_000)
         );
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    /// M2 pin (feed-continuity contracts): only the application-level text
+    /// `PONG` acknowledges the Polymarket application heartbeat. A native
+    /// WebSocket PONG is transport plumbing, not an application heartbeat
+    /// acknowledgement, and must never clear an outstanding text heartbeat.
+    #[tokio::test]
+    async fn native_pong_does_not_acknowledge_the_application_heartbeat() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let initial = read_json(&mut ws).await;
+            assert_eq!(initial["type"], "market");
+            // A transport-level PONG with no application text.
+            ws.send(Message::Pong(b"native-ack".to_vec().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let settings = PolymarketSettings {
+            ws_url: format!("ws://{address}"),
+            ..PolymarketSettings::default()
+        };
+        let mut session = PolymarketSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session
+            .apply_subscriptions(&BTreeSet::from(["a".to_owned()]))
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_ne!(
+            frame.signal,
+            SessionSignal::HeartbeatAck { correlation: None },
+            "a native WebSocket PONG must not acknowledge the application heartbeat"
+        );
+        assert_eq!(frame.signal, SessionSignal::ProtocolControl);
+        assert!(frame.events.is_empty());
+        assert!(frame.raw.is_none());
+        let observation = frame
+            .observations
+            .first()
+            .expect("the native Pong is retained as an observation");
+        assert_eq!(observation.direction, FrameDirection::Inbound);
+        assert_eq!(
+            observation.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Pong
+            }
+        );
+        assert_eq!(observation.signal, SessionSignal::ProtocolControl);
+        assert_eq!(observation.payload, b"native-ack");
+        assert_eq!(observation.send_result, None);
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    /// An inbound application-text `PING` is data on the wire (it advances the
+    /// receive fence), typed as `PeerPing` and answered with a text `PONG`. It
+    /// is never converted into a native control or a market-data event.
+    #[tokio::test]
+    async fn inbound_text_ping_is_data_typed_as_a_peer_ping() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let initial = read_json(&mut ws).await;
+            assert_eq!(initial["type"], "market");
+            ws.send(Message::Text("PING".to_owned().into()))
+                .await
+                .unwrap();
+            assert_eq!(read_text(&mut ws).await, "PONG");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let settings = PolymarketSettings {
+            ws_url: format!("ws://{address}"),
+            ..PolymarketSettings::default()
+        };
+        let mut session = PolymarketSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session
+            .apply_subscriptions(&BTreeSet::from(["a".to_owned()]))
+            .await
+            .unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+
+        assert_eq!(
+            frame.raw.as_ref().map(|raw| raw.kind),
+            Some(FrameKind::Text)
+        );
+        assert_eq!(
+            frame.raw.as_ref().map(|raw| raw.payload.as_slice()),
+            Some(b"PING".as_slice())
+        );
+        assert_eq!(frame.signal, SessionSignal::PeerPing);
+        assert!(frame.events.is_empty());
+        let observation = frame
+            .observations
+            .first()
+            .expect("the text PING is retained as a data observation");
+        assert_eq!(
+            observation.classification,
+            FrameClassification::Data {
+                frame_kind: FrameKind::Text
+            },
+            "an application PING advances the receive fence; it is not a native control"
+        );
+        assert_eq!(observation.signal, SessionSignal::PeerPing);
+        assert_eq!(observation.payload, b"PING");
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    /// The application-level text `PONG` is the acknowledgement of the
+    /// client's text `PING`: it must arrive typed as `HeartbeatAck`.
+    #[tokio::test]
+    async fn text_pong_acknowledges_the_application_heartbeat() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let initial = read_json(&mut ws).await;
+            assert_eq!(initial["type"], "market");
+            assert_eq!(read_text(&mut ws).await, "PING");
+            ws.send(Message::Text("PONG".to_owned().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let settings = PolymarketSettings {
+            ws_url: format!("ws://{address}"),
+            ..PolymarketSettings::default()
+        };
+        let mut session = PolymarketSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session
+            .apply_subscriptions(&BTreeSet::from(["a".to_owned()]))
+            .await
+            .unwrap();
+        session.send_keepalive().await.unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_eq!(
+            frame.signal,
+            SessionSignal::HeartbeatAck { correlation: None },
+            "the text PONG must be typed as a heartbeat acknowledgement"
+        );
+        assert_eq!(
+            frame.raw.as_ref().map(|raw| raw.kind),
+            Some(FrameKind::Text),
+            "the application text PONG is a data frame on the wire"
+        );
+        let observation = frame
+            .observations
+            .first()
+            .expect("the text acknowledgement is retained as an observation");
+        assert_eq!(
+            observation.classification,
+            FrameClassification::Data {
+                frame_kind: FrameKind::Text
+            },
+            "an application PONG must not be confused with a native Pong control"
+        );
+        assert_eq!(
+            observation.signal,
+            SessionSignal::HeartbeatAck { correlation: None }
+        );
+        assert_eq!(observation.payload, b"PONG");
         session.close().await;
         server.await.unwrap();
     }

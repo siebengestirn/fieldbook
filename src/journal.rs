@@ -59,10 +59,26 @@ use crossbeam::channel::{Receiver, Sender as QueueSender, bounded, select, tick}
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{model::SourceId, report::write_json_atomic, time::now_us, util::sha256_hex};
+use crate::{
+    model::SourceId,
+    protocol::{
+        ControlOpcode, FrameClassification, FrameDirection, HeartbeatMechanism, SendResult,
+        SessionSignal,
+    },
+    report::write_json_atomic,
+    time::now_us,
+    util::sha256_hex,
+};
 
-/// Current journal schema version.
-pub const JOURNAL_SCHEMA_VERSION: u32 = 1;
+/// The frame kind is part of the shared protocol vocabulary; re-exported so
+/// existing `journal::FrameKind` paths keep working.
+pub use crate::protocol::FrameKind;
+
+/// Current journal schema version written by this build.
+pub const JOURNAL_SCHEMA_VERSION: u32 = 2;
+
+/// Oldest schema version this build can read.
+pub const JOURNAL_MIN_READABLE_SCHEMA_VERSION: u32 = 1;
 
 const RECORD_MAGIC: [u8; 4] = *b"PMR1";
 const SEGMENT_MAGIC: [u8; 8] = *b"PMJSEG01";
@@ -74,14 +90,6 @@ const FINAL_SUFFIX: &str = ".pmj";
 const MANIFEST_FILE: &str = "manifest.json";
 const MAX_RECORD_BYTES: usize = 64 << 20;
 const MAX_HEADER_BYTES: usize = 1 << 20;
-
-/// WebSocket data-frame kind preserved in the record header.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FrameKind {
-    Text,
-    Binary,
-}
 
 /// Outcome of decoding one frame, recorded without altering the payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,33 +468,61 @@ impl JournalHandle {
         Ok(Self { inner })
     }
 
-    /// Enqueue one received frame.
+    /// Enqueue one inbound application data record (schema v2).
     ///
     /// The call blocks for at most `enqueue_timeout` while the queue is full.
     /// A timeout or a stopped writer marks the run failed and returns an error;
     /// the frame is not silently dropped while the capture remains complete.
-    pub fn record(
-        &self,
-        source: SourceId,
-        connection_epoch: u64,
-        receive_seq: u64,
-        received_at_us: i64,
-        frame: RawFrame,
-        outcome: DecodeOutcome,
-    ) -> anyhow::Result<()> {
+    pub fn record(&self, record: DataRecord) -> anyhow::Result<()> {
+        let job = RecordJob {
+            source: record.source,
+            connection_epoch: record.connection_epoch,
+            observation_seq: 0,
+            control_seq: None,
+            receive_seq: Some(record.receive_seq),
+            direction: FrameDirection::Inbound,
+            received_at_us: record.received_at_us,
+            classification: FrameClassification::Data {
+                frame_kind: record.frame.kind,
+            },
+            signal: record.signal,
+            mechanism: record.mechanism,
+            payload: record.frame.payload,
+            outcome: Some(record.outcome),
+            send_result: None,
+        };
+        self.enqueue(job)
+    }
+
+    /// Enqueue one retained inbound or outbound observation (schema v2).
+    ///
+    /// `observation_seq` and native `control_seq` are assigned by the writer in
+    /// enqueue order, which is the order the source worker retained the
+    /// observations. Data records are never enqueued through this method.
+    pub fn observe(&self, observation: ObservationRecord) -> anyhow::Result<()> {
+        let job = RecordJob {
+            source: observation.source,
+            connection_epoch: observation.connection_epoch,
+            observation_seq: 0,
+            control_seq: None,
+            receive_seq: None,
+            direction: observation.direction,
+            received_at_us: observation.received_at_us,
+            classification: observation.classification,
+            signal: observation.signal,
+            mechanism: observation.mechanism,
+            payload: observation.payload,
+            outcome: None,
+            send_result: observation.send_result,
+        };
+        self.enqueue(job)
+    }
+
+    fn enqueue(&self, job: RecordJob) -> anyhow::Result<()> {
         // The guard spans the entire operation. Shutdown and abort wait for it
         // to drop, which happens only after a queue failure has been latched
         // and accepted records have updated their counters.
         let _admission = self.admit()?;
-        let job = RecordJob {
-            source,
-            connection_epoch,
-            receive_seq,
-            received_at_us,
-            kind: frame.kind,
-            payload: frame.payload,
-            outcome,
-        };
         let timeout = Duration::from_millis(self.inner.durability.enqueue_timeout_ms);
         let result = self.inner.queue.send_timeout(Command::Record(job), timeout);
         #[cfg(test)]
@@ -768,14 +804,87 @@ fn run_failure(inner: &Inner) -> Option<String> {
     })
 }
 
+/// One inbound application data record to persist.
+#[derive(Debug, Clone)]
+pub struct DataRecord {
+    pub source: SourceId,
+    pub connection_epoch: u64,
+    pub receive_seq: u64,
+    pub received_at_us: i64,
+    pub frame: RawFrame,
+    pub outcome: DecodeOutcome,
+    /// Adapter-assigned interpretation of this payload.
+    pub signal: SessionSignal,
+    /// Venue heartbeat mechanism, recorded as typed evidence.
+    pub mechanism: HeartbeatMechanism,
+}
+
+/// One retained inbound or outbound transport observation.
+#[derive(Debug, Clone)]
+pub struct ObservationRecord {
+    pub source: SourceId,
+    pub connection_epoch: u64,
+    pub received_at_us: i64,
+    pub direction: FrameDirection,
+    pub classification: FrameClassification,
+    pub signal: SessionSignal,
+    pub mechanism: HeartbeatMechanism,
+    pub payload: Vec<u8>,
+    /// `Some` on outbound observations only.
+    pub send_result: Option<SendResult>,
+}
+
+/// Internal writer job. The writer assigns the observation and control
+/// sequences in enqueue order.
 struct RecordJob {
     source: SourceId,
     connection_epoch: u64,
-    receive_seq: u64,
+    observation_seq: u64,
+    control_seq: Option<u64>,
+    receive_seq: Option<u64>,
+    direction: FrameDirection,
     received_at_us: i64,
-    kind: FrameKind,
+    classification: FrameClassification,
+    signal: SessionSignal,
+    mechanism: HeartbeatMechanism,
     payload: Vec<u8>,
-    outcome: DecodeOutcome,
+    outcome: Option<DecodeOutcome>,
+    send_result: Option<SendResult>,
+}
+
+/// Per-source, per-epoch sequence allocation owned by the writer thread.
+#[derive(Default)]
+struct SequenceState {
+    observation_seq: u64,
+    control_seq: u64,
+}
+
+impl RecordJob {
+    /// Assign the sequence domains this record belongs to.
+    fn assign_sequences(
+        &mut self,
+        sequences: &mut BTreeMap<(SourceId, u64), SequenceState>,
+    ) -> anyhow::Result<()> {
+        let state = sequences
+            .entry((self.source, self.connection_epoch))
+            .or_default();
+        state.observation_seq = state.observation_seq.saturating_add(1);
+        self.observation_seq = state.observation_seq;
+        if self.classification.is_control() {
+            anyhow::ensure!(
+                self.receive_seq.is_none(),
+                "a native control observation cannot consume the data receive fence"
+            );
+            state.control_seq = state.control_seq.saturating_add(1);
+            self.control_seq = Some(state.control_seq);
+        } else {
+            anyhow::ensure!(
+                self.receive_seq.is_some() == (self.direction == FrameDirection::Inbound),
+                "an inbound data observation requires a receive fence and an outbound one must not have it"
+            );
+        }
+        Ok(())
+    }
 }
 
 enum Command {
@@ -784,8 +893,46 @@ enum Command {
     Abort,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RecordKind {
+    Data,
+    Control,
+}
+
+/// Schema v2 record header written by this build.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RecordHeader {
+struct RecordHeaderV2 {
+    schema_version: u32,
+    source: String,
+    shard: u16,
+    replica: u16,
+    connection_epoch: u64,
+    observation_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    receive_seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    control_seq: Option<u64>,
+    received_at_us: i64,
+    clock_source: String,
+    record_kind: RecordKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frame_kind: Option<FrameKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opcode: Option<ControlOpcode>,
+    direction: FrameDirection,
+    signal: SessionSignal,
+    mechanism: HeartbeatMechanism,
+    payload_len: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decode: Option<DecodeOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    send_result: Option<SendResult>,
+}
+
+/// Schema v1 record header, retained for reading legacy journals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordHeaderV1 {
     schema_version: u32,
     source: String,
     shard: u16,
@@ -797,6 +944,108 @@ struct RecordHeader {
     frame_kind: FrameKind,
     payload_len: u64,
     decode: DecodeOutcome,
+}
+
+/// Version-independent view of one record header.
+#[derive(Debug, Clone)]
+struct RecordHeader {
+    schema_version: u32,
+    source: String,
+    connection_epoch: u64,
+    /// `observation_seq` for v2; the legacy receive fence for v1.
+    observation_seq: u64,
+    receive_seq: Option<u64>,
+    control_seq: Option<u64>,
+    received_at_us: i64,
+    classification: FrameClassification,
+    direction: FrameDirection,
+    /// `None` for v1: those facts were never stored, and replay must not
+    /// fabricate them.
+    signal: Option<SessionSignal>,
+    mechanism: Option<HeartbeatMechanism>,
+    outcome: Option<DecodeOutcome>,
+    send_result: Option<SendResult>,
+    payload_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct HeaderVersionProbe {
+    schema_version: u32,
+}
+
+impl RecordHeader {
+    fn parse(json: &[u8]) -> anyhow::Result<Self> {
+        let probe: HeaderVersionProbe =
+            serde_json::from_slice(json).context("parsing record header version")?;
+        match probe.schema_version {
+            1 => {
+                let header: RecordHeaderV1 =
+                    serde_json::from_slice(json).context("parsing v1 record header")?;
+                Ok(Self {
+                    schema_version: header.schema_version,
+                    source: header.source,
+                    connection_epoch: header.connection_epoch,
+                    observation_seq: header.receive_seq,
+                    receive_seq: Some(header.receive_seq),
+                    control_seq: None,
+                    received_at_us: header.received_at_us,
+                    classification: FrameClassification::Data {
+                        frame_kind: header.frame_kind,
+                    },
+                    direction: FrameDirection::Inbound,
+                    signal: None,
+                    mechanism: None,
+                    outcome: Some(header.decode),
+                    send_result: None,
+                    payload_len: header.payload_len,
+                })
+            }
+            JOURNAL_SCHEMA_VERSION => {
+                let header: RecordHeaderV2 =
+                    serde_json::from_slice(json).context("parsing v2 record header")?;
+                let classification = match (header.record_kind, header.frame_kind, header.opcode) {
+                    (RecordKind::Data, Some(frame_kind), None) => {
+                        FrameClassification::Data { frame_kind }
+                    }
+                    (RecordKind::Control, None, Some(opcode)) => {
+                        FrameClassification::Control { opcode }
+                    }
+                    _ => bail!("record classification fields are inconsistent"),
+                };
+                anyhow::ensure!(
+                    header.receive_seq.is_some()
+                        == matches!(
+                            (classification, header.direction),
+                            (FrameClassification::Data { .. }, FrameDirection::Inbound)
+                        ),
+                    "receive fence presence does not match the record classification"
+                );
+                anyhow::ensure!(
+                    header.control_seq.is_some() == classification.is_control(),
+                    "control sequence presence does not match the record classification"
+                );
+                Ok(Self {
+                    schema_version: header.schema_version,
+                    source: header.source,
+                    connection_epoch: header.connection_epoch,
+                    observation_seq: header.observation_seq,
+                    receive_seq: header.receive_seq,
+                    control_seq: header.control_seq,
+                    received_at_us: header.received_at_us,
+                    classification,
+                    direction: header.direction,
+                    signal: Some(header.signal),
+                    mechanism: Some(header.mechanism),
+                    outcome: header.decode,
+                    send_result: header.send_result,
+                    payload_len: header.payload_len,
+                })
+            }
+            version => bail!(
+                "unsupported journal record schema {version} (this build reads {JOURNAL_MIN_READABLE_SCHEMA_VERSION}..={JOURNAL_SCHEMA_VERSION})"
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -956,18 +1205,30 @@ impl SegmentWriter {
 
     /// Append one record and return its framed length.
     fn write_record(&mut self, job: &RecordJob) -> anyhow::Result<u64> {
-        let header = RecordHeader {
+        let (record_kind, frame_kind, opcode) = match job.classification {
+            FrameClassification::Data { frame_kind } => (RecordKind::Data, Some(frame_kind), None),
+            FrameClassification::Control { opcode } => (RecordKind::Control, None, Some(opcode)),
+        };
+        let header = RecordHeaderV2 {
             schema_version: JOURNAL_SCHEMA_VERSION,
             source: job.source.to_string(),
             shard: job.source.shard,
             replica: job.source.replica,
             connection_epoch: job.connection_epoch,
+            observation_seq: job.observation_seq,
             receive_seq: job.receive_seq,
+            control_seq: job.control_seq,
             received_at_us: job.received_at_us,
             clock_source: "unix_epoch_microseconds".to_owned(),
-            frame_kind: job.kind,
+            record_kind,
+            frame_kind,
+            opcode,
+            direction: job.direction,
+            signal: job.signal.clone(),
+            mechanism: job.mechanism,
             payload_len: u64::try_from(job.payload.len()).unwrap_or(u64::MAX),
             decode: job.outcome.clone(),
+            send_result: job.send_result.clone(),
         };
         let header_json = serde_json::to_vec(&header).context("serializing record header")?;
         let header_len = u32::try_from(header_json.len()).context("record header exceeds u32")?;
@@ -996,15 +1257,15 @@ impl SegmentWriter {
             .entry(source.clone())
             .and_modify(|range| {
                 range.last_epoch = job.connection_epoch;
-                range.last_seq = job.receive_seq;
+                range.last_seq = job.observation_seq;
                 range.records = range.records.saturating_add(1);
             })
             .or_insert(SourceRange {
                 source,
                 first_epoch: job.connection_epoch,
                 last_epoch: job.connection_epoch,
-                first_seq: job.receive_seq,
-                last_seq: job.receive_seq,
+                first_seq: job.observation_seq,
+                last_seq: job.observation_seq,
                 records: 1,
             });
         Ok(framed)
@@ -1121,6 +1382,7 @@ fn run_writer(
         }
     };
     let mut next_index = 1u64;
+    let mut sequences: BTreeMap<(SourceId, u64), SequenceState> = BTreeMap::new();
     let tick_period = config.flush_interval.min(config.sync_interval);
     let ticks = tick(tick_period);
     let mut last_flush = Instant::now();
@@ -1133,8 +1395,10 @@ fn run_writer(
         }
         select! {
             recv(queue) -> message => match message {
-                Ok(Command::Record(job)) => {
-                    let result = run_fault(fault.as_ref(), FaultPoint::Write)
+                Ok(Command::Record(mut job)) => {
+                    let result = job
+                        .assign_sequences(&mut sequences)
+                        .and_then(|()| run_fault(fault.as_ref(), FaultPoint::Write))
                         .and_then(|()| segment.write_record(&job));
                     match result {
                         Ok(framed) => {
@@ -1472,9 +1736,12 @@ pub fn recover_incomplete_run(run_directory: &Path) -> anyhow::Result<JournalVer
         )
     })?;
     anyhow::ensure!(
-        manifest.schema_version == JOURNAL_SCHEMA_VERSION,
-        "unsupported journal manifest schema {}",
-        manifest.schema_version
+        (JOURNAL_MIN_READABLE_SCHEMA_VERSION..=JOURNAL_SCHEMA_VERSION)
+            .contains(&manifest.schema_version),
+        "unsupported journal manifest schema {} (this build reads {}..={})",
+        manifest.schema_version,
+        JOURNAL_MIN_READABLE_SCHEMA_VERSION,
+        JOURNAL_SCHEMA_VERSION
     );
     if matches!(manifest.state, RunState::Starting | RunState::Open) {
         manifest.state = RunState::Incomplete;
@@ -1497,9 +1764,12 @@ pub fn verify_run(run_directory: &Path) -> anyhow::Result<JournalVerification> {
     let manifest: Manifest = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing manifest `{}`", manifest_path.display()))?;
     anyhow::ensure!(
-        manifest.schema_version == JOURNAL_SCHEMA_VERSION,
-        "unsupported journal manifest schema {}",
-        manifest.schema_version
+        (JOURNAL_MIN_READABLE_SCHEMA_VERSION..=JOURNAL_SCHEMA_VERSION)
+            .contains(&manifest.schema_version),
+        "unsupported journal manifest schema {} (this build reads {}..={})",
+        manifest.schema_version,
+        JOURNAL_MIN_READABLE_SCHEMA_VERSION,
+        JOURNAL_SCHEMA_VERSION
     );
     let mut errors = Vec::new();
     if manifest.state != RunState::Finalized {
@@ -1511,8 +1781,9 @@ pub fn verify_run(run_directory: &Path) -> anyhow::Result<JournalVerification> {
     let mut segments = Vec::new();
     let mut record_count = 0u64;
     let mut previous_ranges: BTreeMap<String, SourceRange> = BTreeMap::new();
+    let mut cursors: BTreeMap<String, SequenceCursor> = BTreeMap::new();
     for expected in &manifest.segments {
-        match verify_segment(run_directory, &manifest, expected) {
+        match verify_segment(run_directory, &manifest, expected, &mut cursors) {
             Ok((segment, count)) => {
                 for range in &segment.sources {
                     if let Some(previous) = previous_ranges.get(&range.source) {
@@ -1693,10 +1964,19 @@ pub fn validate_report_status(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct SequenceCursor {
+    epoch: u64,
+    observation: u64,
+    receive: u64,
+    control: u64,
+}
+
 fn verify_segment(
     run_directory: &Path,
     manifest: &Manifest,
     expected: &ManifestSegment,
+    previous: &mut BTreeMap<String, SequenceCursor>,
 ) -> anyhow::Result<(SegmentVerification, u64)> {
     anyhow::ensure!(
         expected.state == "finalized",
@@ -1720,12 +2000,17 @@ fn verify_segment(
             && header.config_sha256 == manifest.config_sha256,
         "segment provenance does not match the manifest"
     );
+    let segment_schema = header.schema_version;
+    anyhow::ensure!(
+        segment_schema == manifest.schema_version,
+        "segment schema {segment_schema} does not match the manifest schema {}",
+        manifest.schema_version
+    );
     let mut hasher = Sha256::new();
     let mut records = 0u64;
     let mut first_us: Option<i64> = None;
     let mut last_us: Option<i64> = None;
     let mut ranges: BTreeMap<String, SourceRange> = BTreeMap::new();
-    let mut previous: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut body_bytes = 0u64;
     loop {
         let mut magic = [0u8; 4];
@@ -1738,6 +2023,11 @@ fn verify_segment(
         }
         if magic == RECORD_MAGIC {
             let parsed = read_record(&mut file)?;
+            anyhow::ensure!(
+                parsed.header.schema_version == segment_schema,
+                "record schema {} does not match the segment schema {segment_schema}",
+                parsed.header.schema_version
+            );
             body_bytes = body_bytes.saturating_add(parsed.raw.len() as u64);
             hasher.update(&parsed.raw);
             records = records.saturating_add(1);
@@ -1749,33 +2039,85 @@ fn verify_segment(
                 value.max(header.received_at_us)
             }));
             let source = header.source.clone();
-            if let Some((epoch, seq)) = previous.get(&source).copied() {
-                let ordered = header.connection_epoch > epoch
-                    || (header.connection_epoch == epoch && header.receive_seq > seq);
+            let cursor = previous.get(&source).copied().unwrap_or_default();
+            anyhow::ensure!(
+                header.connection_epoch >= cursor.epoch,
+                "record order regressed for {source}: epoch {} after {}",
+                header.connection_epoch,
+                cursor.epoch
+            );
+            let same_epoch = header.connection_epoch == cursor.epoch;
+            if same_epoch {
                 anyhow::ensure!(
-                    ordered,
-                    "record order regressed for {source}: ({epoch}, {seq}) then ({}, {})",
+                    header.observation_seq == cursor.observation.saturating_add(1),
+                    "observation sequence for {source} is not contiguous in epoch {}: {} then {}",
                     header.connection_epoch,
-                    header.receive_seq
+                    cursor.observation,
+                    header.observation_seq
+                );
+                if let Some(receive_seq) = header.receive_seq {
+                    anyhow::ensure!(
+                        receive_seq == cursor.receive.saturating_add(1),
+                        "receive sequence for {source} is not contiguous in epoch {}: {} then {receive_seq}",
+                        header.connection_epoch,
+                        cursor.receive
+                    );
+                }
+                if let Some(control_seq) = header.control_seq {
+                    anyhow::ensure!(
+                        control_seq == cursor.control.saturating_add(1),
+                        "control sequence for {source} is not contiguous in epoch {}: {} then {control_seq}",
+                        header.connection_epoch,
+                        cursor.control
+                    );
+                }
+            } else {
+                anyhow::ensure!(
+                    header.observation_seq == 1,
+                    "a new epoch for {source} must start at observation sequence 1, got {}",
+                    header.observation_seq
+                );
+                anyhow::ensure!(
+                    header.receive_seq.is_none_or(|seq| seq == 1),
+                    "a new epoch for {source} must start its receive sequence at 1"
+                );
+                anyhow::ensure!(
+                    header.control_seq.is_none_or(|seq| seq == 1),
+                    "a new epoch for {source} must start its control sequence at 1"
                 );
             }
             previous.insert(
                 source.clone(),
-                (header.connection_epoch, header.receive_seq),
+                SequenceCursor {
+                    epoch: header.connection_epoch,
+                    observation: header.observation_seq,
+                    // A sequence domain that has not appeared yet in this epoch
+                    // continues from zero, not from the previous epoch.
+                    receive: header.receive_seq.unwrap_or(if same_epoch {
+                        cursor.receive
+                    } else {
+                        0
+                    }),
+                    control: header.control_seq.unwrap_or(if same_epoch {
+                        cursor.control
+                    } else {
+                        0
+                    }),
+                },
             );
             ranges
                 .entry(source.clone())
                 .and_modify(|range| {
                     range.last_epoch = header.connection_epoch;
-                    range.last_seq = header.receive_seq;
+                    range.last_seq = header.observation_seq;
                     range.records = range.records.saturating_add(1);
                 })
                 .or_insert(SourceRange {
                     source,
                     first_epoch: header.connection_epoch,
                     last_epoch: header.connection_epoch,
-                    first_seq: header.receive_seq,
-                    last_seq: header.receive_seq,
+                    first_seq: header.observation_seq,
+                    last_seq: header.observation_seq,
                     records: 1,
                 });
             continue;
@@ -1868,14 +2210,21 @@ fn read_segment_header(file: &mut File) -> anyhow::Result<SegmentHeader> {
             .to_le_bytes(),
     );
     framed.extend_from_slice(&json);
-    let mut expected = [0u8; CHECKSUM_BYTES];
-    file.read_exact(&mut expected)
+    let mut expected_hash = [0u8; CHECKSUM_BYTES];
+    file.read_exact(&mut expected_hash)
         .context("reading segment header checksum")?;
     anyhow::ensure!(
-        expected == sha256_hex(&framed).as_bytes(),
+        expected_hash == sha256_hex(&framed).as_bytes(),
         "segment header checksum mismatch"
     );
-    serde_json::from_slice(&json).context("parsing segment header")
+    let header: SegmentHeader = serde_json::from_slice(&json).context("parsing segment header")?;
+    anyhow::ensure!(
+        (JOURNAL_MIN_READABLE_SCHEMA_VERSION..=JOURNAL_SCHEMA_VERSION)
+            .contains(&header.schema_version),
+        "unsupported journal segment schema {}",
+        header.schema_version
+    );
+    Ok(header)
 }
 
 fn read_json_block(file: &mut File) -> anyhow::Result<Vec<u8>> {
@@ -1945,8 +2294,7 @@ fn read_record(file: &mut File) -> anyhow::Result<ParsedRecord> {
         checksum == sha256_hex(&raw[..raw.len() - CHECKSUM_BYTES]).as_bytes(),
         "record checksum mismatch"
     );
-    let header: RecordHeader =
-        serde_json::from_slice(header_json).context("parsing record header")?;
+    let header = RecordHeader::parse(header_json)?;
     anyhow::ensure!(
         header.payload_len == payload_len as u64,
         "record payload length does not match its header"
@@ -1978,7 +2326,10 @@ fn read_footer(file: &mut File) -> anyhow::Result<SegmentFooter> {
     serde_json::from_slice(&json).context("parsing segment footer")
 }
 
-/// One journal record, including the original payload bytes.
+/// One journal data record, including the original payload bytes.
+///
+/// This is the v1-compatible view returned by [`read_records`]: inbound
+/// application data only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalRecord {
     pub schema_version: u32,
@@ -1991,8 +2342,62 @@ pub struct JournalRecord {
     pub outcome: DecodeOutcome,
 }
 
-/// Read every record from the finalized segments of one run in file order.
+/// One retained observation, data or native control.
+///
+/// `signal` and `mechanism` are `None` for v1 records: those facts were never
+/// stored, and a reader must not fabricate them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JournalObservation {
+    pub schema_version: u32,
+    pub source: String,
+    pub connection_epoch: u64,
+    pub observation_seq: u64,
+    pub receive_seq: Option<u64>,
+    pub control_seq: Option<u64>,
+    pub direction: FrameDirection,
+    pub classification: FrameClassification,
+    pub signal: Option<SessionSignal>,
+    pub mechanism: Option<HeartbeatMechanism>,
+    pub received_at_us: i64,
+    pub payload: Vec<u8>,
+    pub outcome: Option<DecodeOutcome>,
+    pub send_result: Option<SendResult>,
+}
+
+/// Read every application data record from the finalized segments of one run
+/// in file order. Native control observations are excluded by contract.
 pub fn read_records(run_directory: &Path) -> anyhow::Result<Vec<JournalRecord>> {
+    Ok(read_observations(run_directory)?
+        .into_iter()
+        .filter_map(|observation| {
+            let receive_seq = observation.receive_seq?;
+            if !observation
+                .classification
+                .is_inbound_data(observation.direction)
+            {
+                return None;
+            }
+            let FrameClassification::Data { frame_kind } = observation.classification else {
+                return None;
+            };
+            Some(JournalRecord {
+                schema_version: observation.schema_version,
+                source: observation.source,
+                connection_epoch: observation.connection_epoch,
+                receive_seq,
+                received_at_us: observation.received_at_us,
+                frame_kind,
+                payload: observation.payload,
+                outcome: observation.outcome.unwrap_or_default(),
+            })
+        })
+        .collect())
+}
+
+/// Read every retained observation (application data and native controls) from
+/// the finalized segments of one run in file order, preserving the order the
+/// source worker retained them.
+pub fn read_observations(run_directory: &Path) -> anyhow::Result<Vec<JournalObservation>> {
     let verification = verify_run(run_directory)?;
     anyhow::ensure!(
         verification.complete,
@@ -2000,7 +2405,7 @@ pub fn read_records(run_directory: &Path) -> anyhow::Result<Vec<JournalRecord>> 
         verification.errors.join("; ")
     );
     let manifest: Manifest = serde_json::from_slice(&fs::read(run_directory.join(MANIFEST_FILE))?)?;
-    let mut records = Vec::new();
+    let mut observations = Vec::new();
     for segment in &manifest.segments {
         let mut file = File::open(run_directory.join(&segment.file))?;
         read_segment_header(&mut file)?;
@@ -2009,15 +2414,22 @@ pub fn read_records(run_directory: &Path) -> anyhow::Result<Vec<JournalRecord>> 
             file.read_exact(&mut magic)?;
             if magic == RECORD_MAGIC {
                 let parsed = read_record(&mut file)?;
-                records.push(JournalRecord {
-                    schema_version: parsed.header.schema_version,
-                    source: parsed.header.source,
-                    connection_epoch: parsed.header.connection_epoch,
-                    receive_seq: parsed.header.receive_seq,
-                    received_at_us: parsed.header.received_at_us,
-                    frame_kind: parsed.header.frame_kind,
+                let header = parsed.header;
+                observations.push(JournalObservation {
+                    schema_version: header.schema_version,
+                    source: header.source,
+                    connection_epoch: header.connection_epoch,
+                    observation_seq: header.observation_seq,
+                    receive_seq: header.receive_seq,
+                    control_seq: header.control_seq,
+                    direction: header.direction,
+                    classification: header.classification,
+                    signal: header.signal,
+                    mechanism: header.mechanism,
+                    received_at_us: header.received_at_us,
                     payload: parsed.payload,
-                    outcome: parsed.header.decode,
+                    outcome: header.outcome,
+                    send_result: header.send_result,
                 });
                 continue;
             }
@@ -2027,7 +2439,7 @@ pub fn read_records(run_directory: &Path) -> anyhow::Result<Vec<JournalRecord>> 
             bail!("unknown framing marker while reading records");
         }
     }
-    Ok(records)
+    Ok(observations)
 }
 
 #[cfg(test)]

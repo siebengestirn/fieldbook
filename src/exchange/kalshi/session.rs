@@ -22,7 +22,11 @@ use crate::{
     },
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
-    session::{MarketDataSession, SessionFactory, SessionFailure, SessionFrame},
+    protocol::{ControlOpcode, HeartbeatMechanism, SendResult, TransportObservation},
+    session::{
+        HeartbeatRequest, HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure,
+        SessionFrame, SessionSignal,
+    },
     time::now_us,
     ws::{self, ConnectOptions, WsPayload, WsStream},
 };
@@ -212,6 +216,9 @@ pub struct KalshiSession {
     stream: Option<WsStream>,
     mode: SessionMode,
     next_id: u64,
+    /// Monotonic counter whose big-endian encoding is the PING payload; the
+    /// venue's PONG must echo it for the acknowledgement to correlate.
+    heartbeat_nonce: u64,
     desired: BTreeSet<String>,
     orderbook_subs: Vec<OrderbookSubscription>,
     pending_subscribes: BTreeMap<u64, BTreeSet<String>>,
@@ -250,6 +257,7 @@ impl KalshiSession {
             .clone()
             .unwrap_or_else(|| settings.environment.ws_url().to_owned());
         Self {
+            heartbeat_nonce: 0,
             settings,
             auth,
             stream: None,
@@ -539,6 +547,12 @@ fn ignored_payload_frame(
 
 #[async_trait]
 impl MarketDataSession for KalshiSession {
+    fn heartbeat_spec(&self) -> HeartbeatSpec {
+        // Kalshi heartbeats over native WebSocket control frames: the ack
+        // correlation is the control payload, not application text.
+        HeartbeatSpec::ten_second_websocket_control()
+    }
+
     async fn connect(&mut self) -> Result<(), SessionFailure> {
         self.close().await;
         let headers = self
@@ -562,6 +576,7 @@ impl MarketDataSession for KalshiSession {
             })?;
         self.stream = Some(stream);
         self.next_id = 1;
+        self.heartbeat_nonce = 0;
         self.orderbook_subs.clear();
         self.pending_subscribes.clear();
         self.pending_updates.clear();
@@ -611,12 +626,37 @@ impl MarketDataSession for KalshiSession {
                 )));
             }
         }
-        let payload = ws::next_payload(self.stream_mut()?)
+        let read = ws::next_payload(self.stream_mut()?)
             .await
             .map_err(SessionFailure::Reconnect)?;
         let received_at_us = now_us().unwrap_or(0);
-        let (text, kind) = match payload {
-            WsPayload::Idle => return Ok(SessionFrame::idle(0)),
+        let mechanism = self.heartbeat_spec().mechanism;
+        let (text, kind) = match read.payload {
+            // Native control frames are preserved as typed observations. A
+            // server Ping is evidence plus its Pong response; a native Pong
+            // acknowledges this venue's client heartbeat and keeps its
+            // correlation payload.
+            WsPayload::Ping(payload) => {
+                return Ok(SessionFrame::native_control(
+                    WsPayload::Ping(payload),
+                    read.response,
+                    mechanism,
+                    SessionSignal::HeartbeatAck { correlation: None },
+                    received_at_us,
+                ));
+            }
+            WsPayload::Pong(payload) => {
+                let signal = SessionSignal::HeartbeatAck {
+                    correlation: Some(payload.clone()),
+                };
+                return Ok(SessionFrame::native_control(
+                    WsPayload::Pong(payload),
+                    None,
+                    mechanism,
+                    signal,
+                    received_at_us,
+                ));
+            }
             WsPayload::Text(text) => (text, FrameKind::Text),
             WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
                 Ok(text) => (text, FrameKind::Binary),
@@ -935,10 +975,25 @@ impl MarketDataSession for KalshiSession {
         }
     }
 
-    async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
-        ws::send_ping(self.stream_mut()?)
+    async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+        // The nonce is the correlation: the venue's PONG must echo it, and
+        // only a PONG carrying this exact payload acknowledges this
+        // request.
+        self.heartbeat_nonce = self.heartbeat_nonce.wrapping_add(1);
+        let nonce = self.heartbeat_nonce.to_be_bytes().to_vec();
+        ws::send_ping_with_payload(self.stream_mut()?, nonce.clone())
             .await
-            .map_err(SessionFailure::Reconnect)
+            .map_err(SessionFailure::Reconnect)?;
+        Ok(HeartbeatRequest {
+            correlation: Some(nonce.clone()),
+            observations: vec![TransportObservation::outbound_control(
+                ControlOpcode::Ping,
+                nonce,
+                SessionSignal::HeartbeatRequest,
+                HeartbeatMechanism::WebSocketControl,
+                SendResult::Sent,
+            )],
+        })
     }
 
     async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure> {
@@ -1038,6 +1093,8 @@ mod tests {
 
     use super::*;
     use crate::model::ExchangeEvent;
+    use crate::protocol::{FrameClassification, FrameDirection};
+    use crate::session::SessionSignal;
 
     type ServerWs = WebSocketStream<tokio::net::TcpStream>;
 
@@ -2048,5 +2105,129 @@ mod tests {
         ));
         server.await.unwrap();
         session.close().await;
+    }
+    /// M2 pin (feed-continuity contracts): a native WebSocket PONG is the
+    /// Kalshi venue's heartbeat acknowledgement. It must surface through the
+    /// real `KalshiSession::next_frame()` as `SessionSignal::HeartbeatAck`
+    /// with the control payload preserved - not be discarded as an idle
+    /// frame. The worker clears an outstanding heartbeat only on this
+    /// signal; discarding it makes a healthy connection look like missed
+    /// heartbeats.
+    #[tokio::test]
+    async fn native_pong_is_a_heartbeat_acknowledgement_with_payload_preserved() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(listener).await;
+            // connect() establishes the transport without subscribing, so
+            // answer immediately with a native PONG carrying a control
+            // payload.
+            ws.send(Message::Pong(b"heartbeat-ack".to_vec().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut session = test_session(address).await;
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_eq!(
+            frame.signal,
+            SessionSignal::HeartbeatAck {
+                correlation: Some(b"heartbeat-ack".to_vec()),
+            },
+            "a native PONG must be classified as a heartbeat acknowledgement"
+        );
+        assert!(
+            frame.events.is_empty(),
+            "an acknowledgement carries no market data"
+        );
+        assert!(
+            frame.raw.is_none(),
+            "a native control frame is not an application data record"
+        );
+        let observation = frame
+            .observations
+            .first()
+            .expect("the control observation is preserved");
+        assert_eq!(observation.direction, FrameDirection::Inbound);
+        assert_eq!(
+            observation.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Pong
+            }
+        );
+        assert_eq!(observation.payload, b"heartbeat-ack");
+        assert_eq!(observation.mechanism, HeartbeatMechanism::WebSocketControl);
+        assert!(observation.send_result.is_none());
+        assert!(frame.received_at_us.is_some(), "receive time is preserved");
+        server.await.unwrap();
+    }
+
+    /// A native server PING must be answered with a matching native PONG:
+    /// the venue's own transport keepalive must not be left unanswered.
+    #[tokio::test]
+    async fn native_server_ping_is_answered_with_a_matching_pong() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut ws = accept(listener).await;
+            ws.send(Message::Ping(b"server-probe".to_vec().into()))
+                .await
+                .unwrap();
+            // Read frames until the client's matching PONG arrives.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while tokio::time::Instant::now() < deadline {
+                match tokio::time::timeout_at(deadline, ws.next()).await {
+                    Ok(Some(Ok(Message::Pong(payload)))) => {
+                        assert_eq!(payload, &b"server-probe".to_vec());
+                        return;
+                    }
+                    Ok(Some(Ok(_))) => continue,
+                    Ok(Some(Err(_))) | Ok(None) | Err(_) => {
+                        panic!("client stream ended before the PONG answer")
+                    }
+                }
+            }
+            panic!("no native PONG answer arrived for the server ping");
+        });
+
+        let mut session = test_session(address).await;
+        // Drive the session so the transport layer processes the ping; the
+        // tungstenite client answers it automatically during reads.
+        let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect("client frame failed");
+        assert_eq!(frame.signal, SessionSignal::PeerPing);
+        assert!(frame.events.is_empty());
+        assert!(frame.raw.is_none());
+        assert_eq!(frame.observations.len(), 2);
+        let inbound = &frame.observations[0];
+        assert_eq!(inbound.direction, FrameDirection::Inbound);
+        assert_eq!(
+            inbound.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Ping
+            }
+        );
+        assert_eq!(inbound.signal, SessionSignal::PeerPing);
+        assert_eq!(inbound.payload, b"server-probe");
+        assert_eq!(inbound.send_result, None);
+        let outbound = &frame.observations[1];
+        assert_eq!(outbound.direction, FrameDirection::Outbound);
+        assert_eq!(
+            outbound.classification,
+            FrameClassification::Control {
+                opcode: ControlOpcode::Pong
+            }
+        );
+        assert_eq!(outbound.signal, SessionSignal::PeerPong);
+        assert_eq!(outbound.payload, b"server-probe");
+        assert_eq!(outbound.send_result, Some(SendResult::Sent));
+        assert!(frame.transport_failure.is_none());
+        server.await.unwrap();
     }
 }

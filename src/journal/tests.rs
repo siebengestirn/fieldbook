@@ -49,15 +49,35 @@ fn append(
     outcome: DecodeOutcome,
 ) {
     handle
-        .record(
+        .record(data_record(
             source,
             epoch,
             seq,
             1_700_000_000_000_000 + seq as i64,
             RawFrame::binary(payload.to_vec()),
             outcome,
-        )
+        ))
         .expect("record");
+}
+
+fn data_record(
+    source: SourceId,
+    connection_epoch: u64,
+    receive_seq: u64,
+    received_at_us: i64,
+    frame: RawFrame,
+    outcome: DecodeOutcome,
+) -> DataRecord {
+    DataRecord {
+        source,
+        connection_epoch,
+        receive_seq,
+        received_at_us,
+        frame,
+        outcome,
+        signal: crate::protocol::SessionSignal::MarketData,
+        mechanism: crate::protocol::HeartbeatMechanism::Disabled,
+    }
 }
 
 fn run_directory(root: &Path, run_id: &str) -> PathBuf {
@@ -241,7 +261,7 @@ fn payload_bytes_survive_write_and_read() {
         &handle,
         SourceId::new(0, 1),
         1,
-        2,
+        1,
         &binary,
         DecodeOutcome::ignored("unknown_event_type"),
     );
@@ -341,6 +361,316 @@ fn checked_in_kalshi_fixtures_round_trip_byte_for_byte() {
 }
 
 #[test]
+fn checked_in_v1_journal_fixture_still_reads() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/journal-v1-golden/golden");
+    let verification = verify_run(&directory).expect("verify v1 fixture");
+    assert!(verification.complete, "{:?}", verification.errors);
+    assert_eq!(verification.record_count, 3);
+
+    let records = read_records(&directory).expect("read v1 records");
+    let identity: Vec<_> = records
+        .iter()
+        .map(|record| {
+            (
+                record.schema_version,
+                record.source.as_str(),
+                record.connection_epoch,
+                record.receive_seq,
+                record.frame_kind,
+            )
+        })
+        .collect();
+    assert_eq!(
+        identity,
+        vec![
+            (1, "s0r0", 1, 1, FrameKind::Text),
+            (1, "s0r0", 1, 2, FrameKind::Binary),
+            (1, "s0r0", 1, 3, FrameKind::Text),
+        ]
+    );
+    assert_eq!(
+        records[0].payload,
+        br#"{"event_type":"book","asset_id":"0xabc","bids":[],"asks":[]}"#
+    );
+    assert_eq!(records[1].payload, vec![0, 159, 146, 150, 255]);
+    assert_eq!(records[2].payload, br#"{"event_type":"future_event"}"#);
+
+    // v1 never stored typed provenance. A reader must not fabricate it: the
+    // observation view exposes every v1 record as inbound data with no signal
+    // or mechanism.
+    let observations = read_observations(&directory).expect("read v1 observations");
+    assert_eq!(observations.len(), 3);
+    for (observation, record) in observations.iter().zip(records.iter()) {
+        assert_eq!(observation.schema_version, 1);
+        assert_eq!(observation.observation_seq, record.receive_seq);
+        assert_eq!(observation.receive_seq, Some(record.receive_seq));
+        assert_eq!(observation.control_seq, None);
+        assert_eq!(observation.direction, FrameDirection::Inbound);
+        assert!(!observation.classification.is_control());
+        assert_eq!(observation.signal, None);
+        assert_eq!(observation.mechanism, None);
+        assert_eq!(observation.payload, record.payload);
+    }
+}
+
+#[test]
+fn checked_in_v2_journal_fixture_preserves_control_interleaving() {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/journal-v2-golden/golden");
+    let verification = verify_run(&directory).expect("verify v2 fixture");
+    assert!(verification.complete, "{:?}", verification.errors);
+    assert_eq!(verification.record_count, 6);
+
+    let observations = read_observations(&directory).expect("read v2 observations");
+    assert_eq!(observations.len(), 6);
+    let identity: Vec<_> = observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.observation_seq,
+                observation.receive_seq,
+                observation.control_seq,
+                observation.direction,
+                observation.classification,
+            )
+        })
+        .collect();
+    assert_eq!(
+        identity,
+        vec![
+            (
+                1,
+                Some(1),
+                None,
+                FrameDirection::Inbound,
+                FrameClassification::Data {
+                    frame_kind: FrameKind::Text
+                },
+            ),
+            (
+                2,
+                None,
+                Some(1),
+                FrameDirection::Inbound,
+                FrameClassification::Control {
+                    opcode: ControlOpcode::Ping
+                },
+            ),
+            (
+                3,
+                None,
+                Some(2),
+                FrameDirection::Outbound,
+                FrameClassification::Control {
+                    opcode: ControlOpcode::Pong
+                },
+            ),
+            (
+                4,
+                Some(2),
+                None,
+                FrameDirection::Inbound,
+                FrameClassification::Data {
+                    frame_kind: FrameKind::Binary
+                },
+            ),
+            (
+                5,
+                Some(3),
+                None,
+                FrameDirection::Inbound,
+                FrameClassification::Data {
+                    frame_kind: FrameKind::Text
+                },
+            ),
+            (
+                6,
+                Some(4),
+                None,
+                FrameDirection::Inbound,
+                FrameClassification::Data {
+                    frame_kind: FrameKind::Text
+                },
+            ),
+        ]
+    );
+    let ping = &observations[1];
+    assert_eq!(ping.signal, Some(SessionSignal::PeerPing));
+    assert_eq!(ping.mechanism, Some(HeartbeatMechanism::ApplicationText));
+    assert_eq!(ping.payload, b"server-ping");
+
+    let pong = &observations[2];
+    assert_eq!(pong.signal, Some(SessionSignal::PeerPong));
+    assert_eq!(pong.payload, b"server-ping");
+    assert_eq!(pong.send_result, Some(SendResult::Sent));
+
+    // The application text PONG is data on the wire: receive fence 3, typed as
+    // an acknowledgement, never as market data.
+    let ack = &observations[4];
+    assert_eq!(
+        ack.signal,
+        Some(SessionSignal::HeartbeatAck { correlation: None })
+    );
+    assert_eq!(ack.payload, b"PONG");
+
+    // The protected data-only view excludes both native controls and keeps
+    // contiguous receive sequences.
+    let records = read_records(&directory).expect("read v2 records");
+    let receive: Vec<_> = records.iter().map(|record| record.receive_seq).collect();
+    assert_eq!(receive, vec![1, 2, 3, 4]);
+    assert!(
+        records
+            .iter()
+            .all(|record| !record.payload.starts_with(b"server-ping"))
+    );
+}
+
+#[test]
+fn control_and_data_sequences_reset_with_each_connection_epoch() {
+    let temp = TempDir::new().expect("tempdir");
+    let handle = start(temp.path(), "run");
+    let source = SourceId::new(0, 0);
+    for epoch in [1u64, 2] {
+        for receive_seq in [1u64, 2] {
+            append(
+                &handle,
+                source,
+                epoch,
+                receive_seq,
+                format!("data-{epoch}-{receive_seq}").as_bytes(),
+                DecodeOutcome::decoded(1),
+            );
+            if receive_seq == 1 {
+                handle
+                    .observe(ObservationRecord {
+                        source,
+                        connection_epoch: epoch,
+                        received_at_us: 1_700_000_000_000_000,
+                        direction: FrameDirection::Inbound,
+                        classification: FrameClassification::Control {
+                            opcode: ControlOpcode::Ping,
+                        },
+                        signal: SessionSignal::PeerPing,
+                        mechanism: HeartbeatMechanism::WebSocketControl,
+                        payload: format!("probe-{epoch}").into_bytes(),
+                        send_result: None,
+                    })
+                    .expect("inbound ping");
+                handle
+                    .observe(ObservationRecord {
+                        source,
+                        connection_epoch: epoch,
+                        received_at_us: 1_700_000_000_000_001,
+                        direction: FrameDirection::Outbound,
+                        classification: FrameClassification::Control {
+                            opcode: ControlOpcode::Pong,
+                        },
+                        signal: SessionSignal::PeerPong,
+                        mechanism: HeartbeatMechanism::WebSocketControl,
+                        payload: format!("probe-{epoch}").into_bytes(),
+                        send_result: Some(SendResult::Sent),
+                    })
+                    .expect("outbound pong");
+            }
+        }
+    }
+    let summary = handle
+        .shutdown(Duration::from_secs(2))
+        .expect("journal shutdown");
+    let directory = PathBuf::from(&summary.run_directory);
+    let verification = verify_run(&directory).expect("verify");
+    assert!(verification.complete, "{:?}", verification.errors);
+
+    let observations = read_observations(&directory).expect("read observations");
+    let per_epoch: Vec<_> = observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.connection_epoch,
+                observation.observation_seq,
+                observation.receive_seq,
+                observation.control_seq,
+            )
+        })
+        .collect();
+    assert_eq!(
+        per_epoch,
+        vec![
+            (1, 1, Some(1), None),
+            (1, 2, None, Some(1)),
+            (1, 3, None, Some(2)),
+            (1, 4, Some(2), None),
+            (2, 1, Some(1), None),
+            (2, 2, None, Some(1)),
+            (2, 3, None, Some(2)),
+            (2, 4, Some(2), None),
+        ]
+    );
+}
+
+#[test]
+fn unsupported_journal_versions_fail_closed() {
+    let error = RecordHeader::parse(br#"{"schema_version":99}"#).expect_err("v99 must be rejected");
+    assert!(
+        format!("{error:#}").contains("unsupported journal record schema 99"),
+        "{error:#}"
+    );
+
+    // A v2 header whose typed classification fields disagree is corrupt, not
+    // an opportunity to guess.
+    let inconsistent = br#"{
+        "schema_version": 2,
+        "source": "s0r0",
+        "shard": 0,
+        "replica": 0,
+        "connection_epoch": 1,
+        "observation_seq": 1,
+        "control_seq": 1,
+        "received_at_us": 1,
+        "clock_source": "unix_epoch_microseconds",
+        "record_kind": "control",
+        "frame_kind": "text",
+        "direction": "inbound",
+        "signal": {"signal": "market_data"},
+        "mechanism": "disabled",
+        "payload_len": 0
+    }"#;
+    let error = RecordHeader::parse(inconsistent).expect_err("inconsistent header");
+    assert!(
+        format!("{error:#}").contains("classification fields are inconsistent"),
+        "{error:#}"
+    );
+
+    let temp = TempDir::new().expect("tempdir");
+    let handle = start(temp.path(), "run");
+    append(
+        &handle,
+        SourceId::new(0, 0),
+        1,
+        1,
+        b"a",
+        DecodeOutcome::decoded(1),
+    );
+    handle
+        .shutdown(Duration::from_secs(2))
+        .expect("journal shutdown");
+    let directory = run_directory(temp.path(), "run");
+    let manifest_path = directory.join(MANIFEST_FILE);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("read manifest")).expect("json");
+    manifest["schema_version"] = serde_json::json!(99);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+    let error = verify_run(&directory).expect_err("unsupported manifest version");
+    assert!(
+        format!("{error:#}").contains("unsupported journal manifest schema 99"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn record_order_matches_source_epoch_and_sequence() {
     let temp = TempDir::new().expect("tempdir");
     let handle = start(temp.path(), "run");
@@ -356,7 +686,7 @@ fn record_order_matches_source_epoch_and_sequence() {
         &handle,
         SourceId::new(0, 1),
         4,
-        2,
+        1,
         b"b",
         DecodeOutcome::decoded(1),
     );
@@ -364,7 +694,7 @@ fn record_order_matches_source_epoch_and_sequence() {
         &handle,
         SourceId::new(0, 0),
         1,
-        3,
+        2,
         b"c",
         DecodeOutcome::decoded(1),
     );
@@ -372,7 +702,7 @@ fn record_order_matches_source_epoch_and_sequence() {
         &handle,
         SourceId::new(0, 0),
         3,
-        4,
+        1,
         b"d",
         DecodeOutcome::decoded(1),
     );
@@ -397,9 +727,9 @@ fn record_order_matches_source_epoch_and_sequence() {
         identity,
         vec![
             ("s0r0", 1, 1),
-            ("s0r1", 4, 2),
-            ("s0r0", 1, 3),
-            ("s0r0", 3, 4)
+            ("s0r1", 4, 1),
+            ("s0r0", 1, 2),
+            ("s0r0", 3, 1)
         ]
     );
 }
@@ -572,14 +902,14 @@ fn storage_write_failure_marks_run_failed() {
     assert!(!handle.status().healthy());
     assert!(
         handle
-            .record(
+            .record(data_record(
                 SourceId::new(0, 0),
                 1,
                 2,
                 now_us().unwrap_or(0),
                 RawFrame::binary(b"second".to_vec()),
                 DecodeOutcome::decoded(1),
-            )
+            ))
             .is_err()
     );
     let verification = verify_run(&run_directory(temp.path(), "run")).expect("verify");
@@ -610,14 +940,14 @@ fn assert_real_filesystem_enospc() {
         .expect("journal must start before filesystem exhaustion");
     let payload = vec![0x5a; 32 * 1024];
     for seq in 1..=16_384u64 {
-        let result = handle.record(
+        let result = handle.record(data_record(
             SourceId::new(0, 0),
             1,
             seq,
             1_700_000_000_000_000 + seq as i64,
             RawFrame::binary(payload.clone()),
             DecodeOutcome::decoded(1),
-        );
+        ));
         if result.is_err() || handle.status().state == RunState::Failed {
             break;
         }
@@ -793,14 +1123,14 @@ fn queue_saturation_then_shutdown_stays_failed() {
         DecodeOutcome::decoded(1),
     );
     let error = handle
-        .record(
+        .record(data_record(
             SourceId::new(0, 0),
             1,
             3,
             now_us().unwrap_or(0),
             RawFrame::binary(b"third".to_vec()),
             DecodeOutcome::decoded(1),
-        )
+        ))
         .expect_err("third record must fail");
     assert!(format!("{error:#}").contains("queue stayed full"));
     assert_eq!(handle.status().state, RunState::Failed);
@@ -896,14 +1226,14 @@ fn shutdown_waits_for_a_producer_failure_latch() {
     let producer = {
         let handle = Arc::clone(&handle);
         thread::spawn(move || {
-            handle.record(
+            handle.record(data_record(
                 SourceId::new(0, 0),
                 1,
                 3,
                 now_us().unwrap_or(0),
                 RawFrame::binary(b"third".to_vec()),
                 DecodeOutcome::decoded(1),
-            )
+            ))
         })
     };
     producer_entered_rx
@@ -1005,14 +1335,14 @@ fn abort_waits_for_an_active_producer_before_stopping_the_writer() {
     let producer = {
         let handle = Arc::clone(&handle);
         thread::spawn(move || {
-            handle.record(
+            handle.record(data_record(
                 SourceId::new(0, 0),
                 1,
                 2,
                 now_us().unwrap_or(0),
                 RawFrame::binary(b"second".to_vec()),
                 DecodeOutcome::decoded(1),
-            )
+            ))
         })
     };
     producer_entered_rx
@@ -1078,14 +1408,14 @@ fn concurrent_producers_stop_after_failure() {
             thread::spawn(move || {
                 let source = SourceId::new(0, replica);
                 for seq in 1..=25u64 {
-                    match handle.record(
+                    match handle.record(data_record(
                         source,
                         1,
                         seq,
                         now_us().unwrap_or(0),
                         RawFrame::binary(b"late".to_vec()),
                         DecodeOutcome::decoded(1),
-                    ) {
+                    )) {
                         Ok(()) => {}
                         Err(error) => return Err(format!("{error:#}")),
                     }
@@ -1402,10 +1732,10 @@ fn graceful_shutdown_finalizes_rotated_segments() {
     let mut config = test_config(temp.path());
     config.segment_max_bytes = 4096;
     let handle = JournalHandle::start(config, meta("run")).expect("start");
-    for seq in 1..=12 {
+    for seq in 1..=12u64 {
         append(
             &handle,
-            SourceId::new(seq as u16 % 2, 0),
+            SourceId::new(0, 0),
             1,
             seq,
             &[b'z'; 1200],

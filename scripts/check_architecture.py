@@ -36,6 +36,8 @@ SOURCE_RESPONSIBILITIES = {
     "src/model.rs": "normalized market, source, event, control, and output domain types",
     "src/orderbook.rs": "normalized order-book representation and mutation invariants",
     "src/probe.rs": "network-probe command: stage-timed egress transport diagnostic and JSON report",
+    "src/protocol.rs": "shared venue-neutral transport vocabulary: frame class/direction, control opcodes, session signals, heartbeat mechanism, send result, and transport observations",
+    "src/recovery.rs": "typed recovery policy: explicit causes, authorized actions, and bounded attempt decisions",
     "src/replay.rs": "deterministic JSONL replay into the collector/output path",
     "src/report.rs": "market metadata and run-report sidecars; atomic JSON helper",
     "src/session.rs": "generic websocket session/factory contract and supervised worker lifecycle",
@@ -108,7 +110,17 @@ REQUIRED_ANCHORS = {
     "src/verify.rs": ["pub fn run"],
     "src/journal.rs": [
         "pub struct JournalHandle", "pub fn verify_run", "pub fn read_records",
-        "struct Manifest", "struct SegmentFooter", "RunState::Finalized",
+        "pub fn read_observations", "struct Manifest", "struct SegmentFooter", "RunState::Finalized",
+    ],
+    "src/protocol.rs": [
+        "pub enum SessionSignal", "pub enum FrameClassification",
+        "pub struct TransportObservation",
+    ],
+    "src/recovery.rs": [
+        "pub enum RecoveryAction", "pub enum RecoveryCause",
+        "pub fn decide", "pub struct RecoveryTarget", "pub struct RecoveryFence",
+        "pub struct InstrumentRecoveryQueue", "pub struct SourceRecoveryQueue",
+        "pub struct RecoveryCoordinator",
     ],
     "src/util/build.rs": ["generate_str_to_out_dir", "GenerationConfig"],
 }
