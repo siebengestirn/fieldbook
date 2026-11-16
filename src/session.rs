@@ -1282,13 +1282,13 @@ impl HeartbeatTracker {
             return HeartbeatAck::Late;
         }
         // Correlation is enforced only where the venue supplies it.
-        if let Some(expected) = &outstanding.correlation {
-            if correlation != Some(expected.as_slice()) {
-                // A response with the wrong payload is not this request's
-                // acknowledgement: unmatched, and the window stays open.
-                self.unmatched = self.unmatched.saturating_add(1);
-                return HeartbeatAck::Mismatched;
-            }
+        if let Some(expected) = &outstanding.correlation
+            && correlation != Some(expected.as_slice())
+        {
+            // A response with the wrong payload is not this request's
+            // acknowledgement: unmatched, and the window stays open.
+            self.unmatched = self.unmatched.saturating_add(1);
+            return HeartbeatAck::Mismatched;
         }
         self.outstanding = None;
         self.missed = 0;
@@ -2631,16 +2631,13 @@ mod first_ack_pin_tests {
 
         impl CorrelatedSession {
             async fn next_frame_from_queue(&mut self) -> SessionFrame {
-                loop {
-                    if let Some(frame) = self.queue.lock().unwrap().pop_front() {
-                        return frame;
-                    }
-                    // Keep the worker cycling while the queue is empty: an
-                    // idle transport frame carries no payload and no market
-                    // data.
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    return SessionFrame::idle(0);
+                if let Some(frame) = self.queue.lock().unwrap().pop_front() {
+                    return frame;
                 }
+                // Keep the worker cycling while the queue is empty: an idle
+                // transport frame carries no payload and no market data.
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                SessionFrame::idle(0)
             }
         }
 

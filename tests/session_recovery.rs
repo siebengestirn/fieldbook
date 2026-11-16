@@ -91,8 +91,10 @@ impl MarketDataSession for MockSession {
         }
     }
 
-    async fn send_keepalive(&mut self) -> Result<(), SessionFailure> {
-        Ok(())
+    async fn send_keepalive(
+        &mut self,
+    ) -> Result<engineering_challenge::session::HeartbeatRequest, SessionFailure> {
+        Ok(engineering_challenge::session::HeartbeatRequest { correlation: None })
     }
 
     async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
