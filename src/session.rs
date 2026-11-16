@@ -301,16 +301,46 @@ impl HeartbeatSpec {
     }
 
     /// No client-driven heartbeat: the worker sends nothing and the
-    /// heartbeat state stays `Disabled`.
+    /// heartbeat state stays `Disabled`. The scheduling fields are zero:
+    /// the absence of a schedule is represented by the mechanism, never by
+    /// a sentinel duration.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
             mechanism: HeartbeatMechanism::Disabled,
-            send_interval: Duration::MAX,
-            response_deadline: Duration::MAX,
-            miss_threshold: u32::MAX,
-            reconnect_after_misses: u32::MAX,
+            send_interval: Duration::ZERO,
+            response_deadline: Duration::ZERO,
+            miss_threshold: 0,
+            reconnect_after_misses: 0,
         }
+    }
+
+    /// Reject an adapter policy that cannot be executed before any socket
+    /// opens. Invalid policy must fail during session setup, never cause a
+    /// timer anomaly mid-run.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.mechanism == HeartbeatMechanism::Disabled {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !self.send_interval.is_zero(),
+            "heartbeat send interval must be nonzero for an enabled mechanism"
+        );
+        anyhow::ensure!(
+            !self.response_deadline.is_zero(),
+            "heartbeat response deadline must be nonzero for an enabled mechanism"
+        );
+        anyhow::ensure!(
+            self.miss_threshold >= 1,
+            "heartbeat miss threshold must be at least 1 for an enabled mechanism"
+        );
+        anyhow::ensure!(
+            self.reconnect_after_misses >= self.miss_threshold,
+            "heartbeat reconnect threshold ({}) must be at least the miss              threshold ({})",
+            self.reconnect_after_misses,
+            self.miss_threshold
+        );
+        Ok(())
     }
 }
 
@@ -371,8 +401,20 @@ pub async fn run_worker(
             break;
         };
         // The adapter owns the heartbeat contract; the worker executes it
-        // without knowing the venue's mechanism.
+        // without knowing the venue's mechanism. An invalid policy fails
+        // during session setup - never as a timer anomaly mid-run.
         let spec = active.heartbeat_spec();
+        if let Err(error) = spec.validate() {
+            let message = format!("{error:#}");
+            warn!(%source, error = %message, "invalid adapter heartbeat policy");
+            let _ = events
+                .send(WorkerEvent::Fatal {
+                    source,
+                    error: message,
+                })
+                .await;
+            break;
+        }
         let permit = tokio::select! {
             permit = config.connect_permits.clone().acquire_owned() => match permit {
                 Ok(permit) => permit,
@@ -466,7 +508,11 @@ pub async fn run_worker(
         let next_periodic_reconnect =
             now + config.reconnect_after + Duration::from_millis(rand::random::<u64>() % 60_000);
         let mut idle_deadline = now + config.idle_timeout;
-        let mut next_keepalive = now + spec.send_interval;
+        let mut next_keepalive = if spec.mechanism == HeartbeatMechanism::Disabled {
+            None
+        } else {
+            Some(now + spec.send_interval)
+        };
         let mut next_status = now + config.status_interval;
 
         if !desired.is_empty() {
@@ -580,7 +626,9 @@ pub async fn run_worker(
                 must_reconnect = true;
             }
             sync_heartbeat_state(&mut status, &tracker);
-            if now >= next_keepalive {
+            if let Some(next) = next_keepalive
+                && now >= next
+            {
                 if let Some(active) = session.as_mut() {
                     // One outstanding heartbeat: a new heartbeat is sent
                     // only when none is in flight. While one is outstanding
@@ -605,7 +653,7 @@ pub async fn run_worker(
                         }
                     }
                 }
-                next_keepalive = now + spec.send_interval;
+                next_keepalive = Some(now + spec.send_interval);
             }
             if now >= next_status {
                 let _ = events.send(WorkerEvent::Status(status.clone())).await;
@@ -625,6 +673,7 @@ pub async fn run_worker(
             }
 
             let wake = next_keepalive
+                .unwrap_or(next_status)
                 .min(next_status)
                 .min(next_periodic_reconnect)
                 .min(idle_deadline)
@@ -1676,6 +1725,7 @@ mod heartbeat_pin_tests {
     /// PONG. This is the exact blind spot the feed-continuity contracts
     /// close: market traffic must not be able to mask heartbeat failure.
     pub(super) struct SilentServerSession {
+        pub(super) spec: HeartbeatSpec,
         pub(super) pings: Arc<AtomicU64>,
         pub(super) frames_served: Arc<AtomicU64>,
         /// When set, the first frame served after this many prior frames is
@@ -1716,17 +1766,12 @@ mod heartbeat_pin_tests {
     #[async_trait]
     impl MarketDataSession for SilentServerSession {
         fn heartbeat_spec(&self) -> HeartbeatSpec {
-            // Deterministic adapter contract: a PONG must arrive within
-            // 50ms of its ping, one miss makes the connection suspect, and
-            // the policy never reconnects during the window so the suspect
-            // state is observable rather than immediately rotated.
-            HeartbeatSpec {
-                mechanism: HeartbeatMechanism::ApplicationText,
-                send_interval: Duration::from_millis(10),
-                response_deadline: Duration::from_millis(50),
-                miss_threshold: 1,
-                reconnect_after_misses: u32::MAX,
-            }
+            // Deterministic adapter contract (or the test's override): a
+            // PONG must arrive within 50ms of its ping, one miss makes the
+            // connection suspect, and the policy never reconnects during
+            // the window so the suspect state is observable rather than
+            // immediately rotated.
+            self.spec
         }
 
         async fn connect(&mut self) -> Result<(), SessionFailure> {
@@ -1766,6 +1811,7 @@ mod heartbeat_pin_tests {
     }
 
     pub(super) struct SilentServerFactory {
+        pub(super) spec_override: Option<HeartbeatSpec>,
         pub(super) pings: Arc<AtomicU64>,
         pub(super) frames_served: Arc<AtomicU64>,
         pub(super) ack_after_frames: Option<u64>,
@@ -1778,6 +1824,13 @@ mod heartbeat_pin_tests {
             _source: SourceId,
         ) -> anyhow::Result<Box<dyn MarketDataSession>> {
             Ok(Box::new(SilentServerSession {
+                spec: self.spec_override.unwrap_or_else(|| HeartbeatSpec {
+                    mechanism: HeartbeatMechanism::ApplicationText,
+                    send_interval: Duration::from_millis(10),
+                    response_deadline: Duration::from_millis(50),
+                    miss_threshold: 1,
+                    reconnect_after_misses: u32::MAX,
+                }),
                 pings: self.pings.clone(),
                 frames_served: self.frames_served.clone(),
                 ack_after_frames: self.ack_after_frames,
@@ -1800,6 +1853,7 @@ mod heartbeat_pin_tests {
         let pings = Arc::new(AtomicU64::new(0));
         let frames_served = Arc::new(AtomicU64::new(0));
         let factory = Arc::new(SilentServerFactory {
+            spec_override: None,
             pings: pings.clone(),
             frames_served: frames_served.clone(),
             ack_after_frames: None,
@@ -2085,6 +2139,7 @@ mod first_ack_pin_tests {
         let pings = Arc::new(AtomicU64::new(0));
         let frames_served = Arc::new(AtomicU64::new(0));
         let factory = Arc::new(SilentServerFactory {
+            spec_override: None,
             pings: pings.clone(),
             frames_served: frames_served.clone(),
             ack_after_frames: Some(3),
@@ -2309,6 +2364,142 @@ mod first_ack_pin_tests {
         assert!(
             last.heartbeat_rtt_us.is_none(),
             "a late acknowledgement must not produce an RTT"
+        );
+    }
+
+    /// M2.1 pin (Finding 4): a disabled heartbeat schedule must be absent,
+    /// not a sentinel duration. The worker runs with market frames flowing
+    /// and time advancing; no heartbeat may be sent, the state stays
+    /// `Disabled`, and no `Instant + Duration::MAX` overflow may occur.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disabled_heartbeat_worker_never_sends_and_never_overflows() {
+        let pings = Arc::new(AtomicU64::new(0));
+        let frames_served = Arc::new(AtomicU64::new(0));
+        let factory = Arc::new(SilentServerFactory {
+            spec_override: Some(HeartbeatSpec::disabled()),
+            pings: pings.clone(),
+            frames_served: frames_served.clone(),
+            ack_after_frames: None,
+        });
+        let source = SourceId::new(0, 0);
+        let (_commands_tx, commands_rx) = mpsc::channel(8);
+        let (events, mut events_rx) = mpsc::channel(256);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let config = WorkerConfig {
+            status_interval: Duration::from_millis(20),
+            idle_timeout: Duration::from_secs(60),
+            reconnect_after: Duration::from_secs(3_600),
+            reconnect_base_backoff: Duration::from_millis(10),
+            reconnect_max_backoff: Duration::from_millis(20),
+            connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            journal: None,
+        };
+
+        let worker = tokio::spawn(run_worker(
+            factory,
+            source,
+            commands_rx,
+            events.clone(),
+            config,
+            shutdown_rx,
+        ));
+        drop(events);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+        let mut statuses: Vec<SourceStatus> = Vec::new();
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+                Ok(Some(WorkerEvent::Status(status))) => statuses.push(status),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = shutdown_tx.send(());
+        let _ = worker.await;
+
+        assert_eq!(
+            pings.load(Ordering::Relaxed),
+            0,
+            "a disabled mechanism must never send a heartbeat"
+        );
+        assert!(
+            frames_served.load(Ordering::Relaxed) >= 10,
+            "market frames must keep flowing"
+        );
+        let last = statuses.last().expect("status must keep publishing");
+        assert_eq!(last.heartbeat_state, HeartbeatState::Disabled);
+        assert_eq!(last.transport_state, TransportState::Connected);
+        assert!(last.last_ping_sent_us.is_none());
+    }
+
+    /// M2.1 pin (Finding 4): an adapter policy that cannot be executed must
+    /// fail during session setup with an explicit error - never surface as
+    /// a timer anomaly or a silent misbehavior.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_heartbeat_policy_fails_at_session_setup() {
+        let pings = Arc::new(AtomicU64::new(0));
+        let frames_served = Arc::new(AtomicU64::new(0));
+        let invalid = HeartbeatSpec {
+            mechanism: HeartbeatMechanism::ApplicationText,
+            send_interval: Duration::from_millis(10),
+            response_deadline: Duration::from_millis(50),
+            miss_threshold: 3,
+            reconnect_after_misses: 2,
+        };
+        assert!(invalid.validate().is_err());
+        let factory = Arc::new(SilentServerFactory {
+            spec_override: Some(invalid),
+            pings: pings.clone(),
+            frames_served: frames_served.clone(),
+            ack_after_frames: None,
+        });
+        let source = SourceId::new(0, 0);
+        let (_commands_tx, commands_rx) = mpsc::channel(8);
+        let (events, mut events_rx) = mpsc::channel(64);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let config = WorkerConfig {
+            status_interval: Duration::from_millis(20),
+            idle_timeout: Duration::from_secs(60),
+            reconnect_after: Duration::from_secs(3_600),
+            reconnect_base_backoff: Duration::from_millis(10),
+            reconnect_max_backoff: Duration::from_millis(20),
+            connect_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            journal: None,
+        };
+
+        let worker = tokio::spawn(run_worker(
+            factory,
+            source,
+            commands_rx,
+            events.clone(),
+            config,
+            shutdown_rx,
+        ));
+        drop(events);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(2_000);
+        let mut fatal_message = None;
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout_at(deadline, events_rx.recv()).await {
+                Ok(Some(WorkerEvent::Fatal { error, .. })) => {
+                    fatal_message = Some(error);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => break,
+            }
+        }
+        let _ = worker.await;
+
+        let message = fatal_message.expect("an invalid policy must fail the worker at setup");
+        assert!(
+            message.contains("heartbeat"),
+            "the setup failure must name the heartbeat policy: {message}"
+        );
+        assert_eq!(
+            pings.load(Ordering::Relaxed),
+            0,
+            "no heartbeat may be sent under an invalid policy"
         );
     }
 }
