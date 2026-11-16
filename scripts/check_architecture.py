@@ -118,7 +118,8 @@ REQUIRED_ANCHORS = {
     ],
     "src/recovery.rs": [
         "pub enum RecoveryAction", "pub enum RecoveryCause",
-        "pub fn decide",
+        "pub fn decide", "pub struct InstrumentRecoveryQueue",
+        "pub struct SourceRecoveryQueue", "pub struct RecoveryCoordinator",
     ],
     "src/util/build.rs": ["generate_str_to_out_dir", "GenerationConfig"],
 }

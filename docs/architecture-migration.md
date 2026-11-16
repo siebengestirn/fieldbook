@@ -336,6 +336,28 @@ boolean; the protected quiet-instrument test
 `src/collector/state/tests.rs::quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect`
 remains the guard until that migration lands.
 
+#### M3.2 — Independent recovery queues (implemented)
+
+`RecoveryCoordinator` owns two disjoint, bounded queues.
+`InstrumentRecoveryQueue` is keyed by `(SourceId, instrument, generation)` and
+holds only `RefreshInstruments` requests; `SourceRecoveryQueue` is keyed by
+`(SourceId, generation)` and holds only `ReconnectSource` requests. Insertion
+validates the action against the owning queue, so a source reconnect cannot be
+routed through the instrument queue. Repeated causes coalesce onto the exact
+same key, preserving instrument identity and generation; a different
+instrument never merges into another's request. Each `RecoveryRequest` carries
+its action, sorted cause set, attempt count, attempt bound, optional deadline,
+and terminal outcome (`Acknowledged` with epoch and receive fence, `Cancelled`,
+or `Failed`). Due work is emitted in deterministic key order, and completed
+requests are reaped before generations are reused.
+
+This coordinator is not yet wired into `CollectorCore` or the worker command
+path; that integration, together with per-instrument acknowledgement fences,
+is M3.3. The 3,000-instrument test
+`src/recovery.rs::three_thousand_quiet_instruments_fill_only_the_instrument_queue`
+proves that 3,000 quiet instruments produce 3,000 instrument requests and zero
+source requests.
+
 Acceptance gates: A (state correctness), B (recovery scope), C (ordering —
 epoch/receive-seq/fence), D (accounting in manifests), E (mixed
 hot/quiet synthetic workload with injected failures), F (review package:
