@@ -1,7 +1,7 @@
 # Market-data architecture migration
 
-**Status:** Adopted in part; recovery M3.1–M3.4 implemented and pushed on
-`feat/feed-continuity-contracts` (through `34befa4`). The platform migration
+**Status:** Adopted in part; recovery M3.1–M3.4 and M5.1 are integrated into
+`main` (PR #45 merge `d54aa08`, PR #47 merge `9ba0141`). The platform migration
 labels below predate that work and are retained for historical traceability —
 see the versioned programme status table immediately below.
 **Base:** `6610edc` (`main`; PR #42 merged as `abd7971`, PR #44 as `6610edc`)  
@@ -23,7 +23,11 @@ and normalized persistence) is complete.
 | Recovery M3.2 — independent instrument/source queues | Complete (`6975ae3`) |
 | Recovery M3.3 — per-instrument acknowledgement fences | Complete (`b6ffd80`) |
 | Recovery M4 — blast-radius evidence | Complete (`34befa4`); 3,000-instrument, independent-shard, and backup-freshness tests assert emitted output |
-| Stress M5 — mixed workload characterization | Next; stress-lab design frozen in `docs/stress-lab-design.md` |
+| M5.1 — deterministic mixed workload and initial evidence | Implemented; ledger-certification corrective work in progress (`fix/m5-event-ledger-certification`) |
+| M5.2 — burst characterization | Next |
+| M5.3 — lifecycle churn | Planned |
+| M5.4 — disconnect and recovery sweeps | Planned |
+| M5.5 — backpressure, combined workloads and performance | Planned |
 | Platform M2 — persistent instrument identity | Unresolved; ADR 0001 is design-only |
 | Platform M3 — subscription and feed capability contracts | Unresolved |
 | Platform M4 — canonical events and normalized persistence | Unresolved |
@@ -307,11 +311,11 @@ A backtest cannot be accepted without data provenance, execution assumptions, co
 
 ## Migration plan
 
-### M1.5 — Feed continuity and recovery contracts (ACTIVE — this branch)
+### M1.5 — Feed continuity and recovery contracts (integrated into `main`)
 
 The failed full-universe run is the driver; see the reconciliation above.
-`feat/feed-continuity-contracts` implements this phase as a correctness
-project, not a reconnection feature. Three state domains, kept independent:
+The completed continuity and recovery milestones implement this phase as a
+correctness project, not a reconnection feature. Three state domains, kept independent:
 
 1. **Connection health** (per source): `Connecting / Healthy / Suspect /
    Reconnecting / Backoff / Stopped`, owned by the connection worker, driven

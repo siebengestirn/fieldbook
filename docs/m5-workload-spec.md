@@ -66,26 +66,53 @@ generated -> transmitted -> received -> decoded -> applied
           -> writer accepted -> SBE persisted -> journaled
 ```
 
-M5.1 extends the ledger with independently sourced boundaries:
+The certified accounting model uses monotonic counters sampled at baseline
+and final, with both directional discrepancies computed for every comparable
+stage pair:
+
+- `shortfall = max(0, expected - observed)`
+- `excess = max(0, observed - expected)`
+
+Missing evidence stays `None` and blocks certification; it is never zero.
+
+Independently sourced counters:
 
 - `enqueued_deltas` — mock outbound-queue admission counter.
 - `transmitted_deltas` — mock websocket send completion counter.
-- `writer_accepted` — `collector_writer_messages_total` increase.
-- `received_frames` — summed `collector_source_messages` delta (all frames,
-  including snapshots and acks, so it is informational, not delta-comparable).
-- `decode_errors` — summed `collector_source_decode_errors` delta.
+- `received_frames` — `collector_data_frames_received_total`, accumulated in
+  the collector core across reconnects.
+- `delta_events_decoded` — `collector_delta_events_decoded_total`, one count
+  per decoded `LevelChange` event, also core-accumulated.
+- `writer_delta_admissions` — `collector_writer_delta_admissions_total`, the
+  queue-admission boundary.
+- `writer_delta_writes` — `collector_writer_delta_messages_total`, successful
+  SBE delta writes. This is distinct from total writer messages because the
+  output also contains snapshots.
+- `sbe_deltas` — independent decode of the persisted capture.
+- `journaled_records` — independent journal verification.
 
-Two-sided adjacent gaps are now first-class ledger fields:
-`enqueue_transmit_gap` and `writer_acceptance_gap` must be `Some(0)` for a cell
-to reconcile. A gap that cannot be observed stays `None` and blocks
-certification instead of becoming zero. `decode_failure_count` is recorded
-separately from `unexplained_drops`, as are injected pre-wire drops and
-suppressed replica duplicates.
+Certified adjacent gaps:
 
-Remaining explicit gap: a per-stage delta-specific receive/decoder counter does
-not yet exist in production, so `received_frames` cannot be equated to logical
-deltas. Latency, CPU, peak RSS and queue-wait instrumentation remain unavailable
-and block **performance** certification; they are never substituted with zero.
+- `enqueue_transmit_shortfall` / `enqueue_transmit_excess`
+- `decode_transmit_shortfall` / `decode_transmit_excess`
+- `writer_admission_shortfall` / `writer_admission_excess`
+- `writer_write_shortfall` / `writer_write_excess`
+
+Replica fan-out appears on both transmit and decode sides, so no dedup
+arithmetic is needed for that comparison. Duplicate suppression remains a
+separately recorded downstream signal. A nonzero decode error count, missing
+receive/decode/writer evidence, or any reversed counter discrepancy fails the
+actual `CellAcceptance` path through `ledger_acceptance_reasons`, not only the
+`EventLedger::reconciled()` helper.
+
+Historical note: `failed-v3-seed-000b-200-coverage_set_mismatch.json` recorded
+zero received frames because the earlier sampler read per-source status gauges
+that reset across reconnects. The artifact is retained unchanged as superseded
+evidence; a diagnostic regression test pins it. Current certification uses
+core-accumulated monotonic counters.
+
+Latency, CPU, peak RSS and queue-wait instrumentation remain unavailable and
+block **performance** certification; they are never substituted with zero.
 
 ## Acceptance gates for this increment
 

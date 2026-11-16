@@ -20,8 +20,8 @@ A preserved 60-minute full-universe Polymarket run
 ([evidence](measurements/live/2026-11-14-universe-capture-failed/)) showed a
 completed process — zero writer errors, a finalized journal — that was **not a
 correct dataset**: 12.34% of snapshots failed SBE reconstruction after 756
-websocket connection errors drove 10 million failover snapshots. The active
-correctness increment (`feat/feed-continuity-contracts`) enforces one
+websocket connection errors drove 10 million failover snapshots. The
+integrated continuity and recovery work (merged into `main`) enforces one
 distinction throughout the collector:
 
 > An instrument's lack of updates must not be interpreted as evidence that its
