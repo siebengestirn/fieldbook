@@ -55,7 +55,7 @@ const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
 /// Scenario schema version. Bumped when workload semantics change so a
 /// corrected generator never silently replaces an earlier manifest.
-const SCENARIO_VERSION: u32 = 3;
+const SCENARIO_VERSION: u32 = 4;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
