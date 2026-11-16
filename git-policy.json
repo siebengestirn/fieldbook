@@ -12,7 +12,10 @@
     "one_coherent_change_per_branch": true,
     "delete_after_verified_merge": true,
     "automatic_local_branch_deletion": false,
-    "automatic_remote_branch_deletion": false
+    "automatic_remote_branch_deletion": false,
+    "temporary": true,
+    "pull_request_required": true,
+    "no_permanent_develop_or_release_branches": true
   },
   "history": {
     "merge_strategy": "merge_commit",
@@ -29,8 +32,13 @@
       "CI status checks must pass on the merged head",
       "no force-pushes to main",
       "no rewriting published commits",
-      "only reviewed PR merge commits may enter main"
-    ]
+      "only reviewed PR merge commits may enter main",
+      "feature branches must be up to date with main when CI strict mode is enabled"
+    ],
+    "squash_merge": false,
+    "rebase_merge": false,
+    "force_push": false,
+    "direct_main_commits": false
   },
   "working_tree": {
     "must_be_clean_before_start": true,
@@ -102,5 +110,30 @@
       "final fix"
     ],
     "validate_unmerged_topic_commits_against": "main"
+  },
+  "canonical_repository": "siebengestirn/engineering-challenge-template",
+  "pr_review": {
+    "self_review_checklist_required": true,
+    "ci_evidence_required": true,
+    "required_approving_reviews": 0,
+    "reason": "single-developer repository: use explicit self-review plus independent CI, not an unsatisfiable reviewer requirement"
+  },
+  "milestone_tags": {
+    "after_verified_main_merge_only": true,
+    "examples": [
+      "recovery-m4",
+      "mixed-workload-m5.1"
+    ]
+  },
+  "github_protection_audit": {
+    "restrict_direct_main_pushes": true,
+    "require_pull_request": true,
+    "require_status_checks": true,
+    "require_latest_checks": true,
+    "prevent_force_pushes": true,
+    "prevent_main_deletion": true,
+    "allowed_merge_method": "merge_commit",
+    "require_linear_history": false,
+    "require_conversation_resolution": true
   }
 }
