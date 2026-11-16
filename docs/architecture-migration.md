@@ -358,6 +358,26 @@ is M3.3. The 3,000-instrument test
 proves that 3,000 quiet instruments produce 3,000 instrument requests and zero
 source requests.
 
+#### M3.3 — Per-instrument acknowledgement fences (implemented)
+
+`RecoveryFence` binds a `(connection_epoch, receive_seq)` fence to an exact
+`RecoveryTarget` of `(source, instrument, generation)`. `WorkerEvent::RecoveryReady`
+now enumerates the exact instruments an acknowledgement covers, and
+`CollectorCore::handle_recovery_ready` stamps a fence only on those named
+instruments whose outstanding request has a matching generation and whose
+connection epoch is not stale. An unknown target, an unknown or stale
+generation, or an older epoch fences nothing. A batch acknowledgement clears
+the pending entry only when every named target was fenced; a partial batch
+leaves the remaining instruments independently recoverable. Each stored fence
+carries its target, so a later snapshot must beat both the fence and the
+request generation before it can re-anchor that book.
+
+Regression pins:
+`src/collector/state/tests.rs::recovery_acknowledgement_fences_only_the_named_instrument`,
+`src/collector/state/tests.rs::stale_generation_epoch_and_unknown_target_acks_are_rejected`,
+`src/collector/state/tests.rs::batch_acknowledgement_enumerates_every_target`, and
+`src/recovery.rs::a_fence_is_bound_to_its_exact_instrument_and_generation`.
+
 Acceptance gates: A (state correctness), B (recovery scope), C (ordering —
 epoch/receive-seq/fence), D (accounting in manifests), E (mixed
 hot/quiet synthetic workload with injected failures), F (review package:

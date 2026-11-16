@@ -241,6 +241,7 @@ async fn recovery_ack_precedes_snapshot_and_uses_last_payload_fence() {
         match tokio::time::timeout(remaining, evt_rx.recv()).await {
             Ok(Some(WorkerEvent::RecoveryReady {
                 source: s,
+                targets: _,
                 generation,
                 connection_epoch,
                 receive_seq,

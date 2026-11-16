@@ -586,7 +586,7 @@ fn kalshi_without_clock_requires_clockless_recovery() {
         snapshot_event_fenced("A", 425_000, 575_000, None, NOW + 11, 2, 1),
     );
     assert!(before.is_empty());
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 7);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 7);
     let after = core.handle_event(
         SOURCE_B,
         snapshot_event_fenced("A", 425_000, 575_000, None, NOW + 12, 2, 8),
@@ -957,7 +957,7 @@ fn clockless_full_recovery_requires_acknowledged_fence_and_fresh_snapshot() {
     assert!(core.markets["A"].active.is_none());
     assert_eq!(core.stats().rejected_recovery_snapshots, 1);
 
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 7);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 7);
 
     // Equal to the acknowledgement fence is not newer.
     let equal_fence = core.handle_event(
@@ -1052,7 +1052,7 @@ fn disconnected_replica_reconnect_is_fenced_by_a_requested_recovery() {
     // The worker acknowledges while backing off, then opens a new
     // connection. That connection's first snapshot must be eligible even
     // though the source was disconnected when the incident started.
-    core.handle_recovery_ready(SOURCE_A, generation, 1, 5);
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 5);
     core.handle_event(
         SOURCE_A,
         ExchangeEvent::StreamReset {
@@ -1135,7 +1135,7 @@ fn delayed_pre_incident_frame_is_rejected_by_receive_fence() {
     );
     core.handle_status(connected_status(SOURCE_A, false), NOW + 1);
     let (generation, _symbols, _reconnect) = recovery_control(&mut core, SOURCE_B);
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 5);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 5);
 
     let before_book = core.markets["A"].books[&SOURCE_B].book.clone();
     let before_received = core.markets["A"].books[&SOURCE_B].last_received_at_us;
@@ -1188,7 +1188,7 @@ fn shadow_snapshot_does_not_consume_recovery_token() {
         },
     );
     let (generation, _symbols, _reconnect) = recovery_control(&mut core, SOURCE_B);
-    core.handle_recovery_ready(SOURCE_B, generation, 1, 3);
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 3);
 
     // A fresh shadow snapshot is applied but must not resolve the active
     // symbol's incident or consume the token needed for a later failover.
@@ -1320,7 +1320,7 @@ fn fresh_active_repair_requires_acknowledged_recovery_fence() {
     assert!(before_ack.is_empty());
     assert_eq!(core.markets["A"].continuity, ContinuityState::Stale);
 
-    core.handle_recovery_ready(SOURCE_A, generation, 1, 1);
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 1);
     let repaired = core.handle_event(
         SOURCE_A,
         snapshot_event_fenced("A", 410_000, 590_000, None, NOW + 2_000_002, 1, 2),
@@ -1960,5 +1960,101 @@ fn quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect() {
     assert!(
         !active_request.3,
         "a single quiet instrument must not request a source reconnect; got {active_request:?}"
+    );
+}
+
+fn two_market_recovery_fixture() -> (CollectorCore, u64) {
+    let mut core = core();
+    core.apply_discovery(NOW, vec![market("A"), market("B")])
+        .unwrap();
+    core.drain_controls();
+    connect_sources(&mut core);
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("A", 400_000, 600_000, None, NOW, 1, 1),
+    );
+    core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("B", 410_000, 590_000, None, NOW, 1, 2),
+    );
+    core.handle_status(connected_status(SOURCE_A, false), NOW + 1);
+    let (generation, _, _) = recovery_control(&mut core, SOURCE_A);
+    (core, generation)
+}
+
+#[test]
+fn recovery_acknowledgement_fences_only_the_named_instrument() {
+    let (mut core, generation) = two_market_recovery_fixture();
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 5);
+
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some(),
+        "the named instrument must be fenced"
+    );
+    assert!(
+        core.markets["B"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_none(),
+        "an acknowledgement for A must never fence B"
+    );
+
+    let outputs = core.handle_event(
+        SOURCE_A,
+        snapshot_event_fenced("B", 410_000, 590_000, None, NOW + 3, 1, 6),
+    );
+    assert!(
+        outputs.is_empty(),
+        "B has no acknowledgement fence, so its snapshot must be rejected"
+    );
+}
+
+#[test]
+fn stale_generation_epoch_and_unknown_target_acks_are_rejected() {
+    let (mut core, generation) = two_market_recovery_fixture();
+
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation + 99, 1, 5);
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 0, 999);
+    core.handle_recovery_ready(SOURCE_A, &["MISSING".to_owned()], generation, 1, 5);
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_none(),
+        "no stale or unknown acknowledgement may fence a book"
+    );
+
+    core.handle_recovery_ready(SOURCE_A, &["A".to_owned()], generation, 1, 5);
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some(),
+        "the exact target, generation and epoch must fence the book"
+    );
+}
+
+#[test]
+fn batch_acknowledgement_enumerates_every_target() {
+    let (mut core, generation) = two_market_recovery_fixture();
+    core.handle_recovery_ready(
+        SOURCE_A,
+        &["A".to_owned(), "B".to_owned()],
+        generation,
+        1,
+        5,
+    );
+    assert!(
+        core.markets["A"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some()
+    );
+    assert!(
+        core.markets["B"].recovery_requests[&SOURCE_A]
+            .fence
+            .is_some()
+    );
+    assert!(
+        !core.pending_recovery.contains_key(&SOURCE_A),
+        "a complete batch acknowledgement clears the pending entry"
     );
 }

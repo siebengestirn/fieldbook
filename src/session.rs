@@ -354,6 +354,9 @@ pub enum WorkerEvent {
     /// greater fence, so the core can reject frames read before the request.
     RecoveryReady {
         source: SourceId,
+        /// Exact native instruments this acknowledgement covers. A batch
+        /// acknowledgement must enumerate every target it fenced.
+        targets: Vec<String>,
         generation: u64,
         connection_epoch: u64,
         receive_seq: u64,
@@ -1145,6 +1148,7 @@ async fn handle_control(
             // control was applied; any later recovery snapshot must be newer.
             let ack = WorkerEvent::RecoveryReady {
                 source: status.source,
+                targets: symbols.clone(),
                 generation,
                 connection_epoch,
                 receive_seq,
@@ -1249,7 +1253,7 @@ async fn backoff_or_stop(
                 Some(Control::Recover {
                     generation,
                     reconnect: _,
-                    symbols: _,
+                    symbols,
                 }) => {
                     // No frame can be read while backing off. The next
                     // connection increments the epoch, which makes any
@@ -1258,6 +1262,7 @@ async fn backoff_or_stop(
                     let _ = events
                         .send(WorkerEvent::RecoveryReady {
                             source: status.source,
+                            targets: symbols,
                             generation,
                             connection_epoch,
                             receive_seq,

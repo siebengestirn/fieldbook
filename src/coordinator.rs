@@ -801,11 +801,18 @@ where
             }
             Ok(Some(WorkerEvent::RecoveryReady {
                 source,
+                targets,
                 generation,
                 connection_epoch,
                 receive_seq,
             })) => {
-                core.handle_recovery_ready(source, generation, connection_epoch, receive_seq);
+                core.handle_recovery_ready(
+                    source,
+                    &targets,
+                    generation,
+                    connection_epoch,
+                    receive_seq,
+                );
             }
             Ok(None) | Err(_) => break,
         }
@@ -1068,11 +1075,12 @@ async fn process_worker_event(
         }
         WorkerEvent::RecoveryReady {
             source,
+            targets,
             generation,
             connection_epoch,
             receive_seq,
         } => {
-            core.handle_recovery_ready(source, generation, connection_epoch, receive_seq);
+            core.handle_recovery_ready(source, &targets, generation, connection_epoch, receive_seq);
         }
         WorkerEvent::Stopped { source } => {
             active_sources.remove(&source);

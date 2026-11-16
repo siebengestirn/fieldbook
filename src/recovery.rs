@@ -175,6 +175,38 @@ pub fn decide(signals: RecoverySignals) -> RecoveryDecision {
     }
 }
 
+/// Exact target an acknowledgement or fence applies to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RecoveryTarget {
+    pub source: SourceId,
+    pub instrument: String,
+    pub generation: u64,
+}
+
+/// A receive fence bound to one exact recovery target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryFence {
+    pub target: RecoveryTarget,
+    pub connection_epoch: u64,
+    pub receive_seq: u64,
+}
+
+impl RecoveryFence {
+    /// Whether a frame read at `(epoch, seq)` is strictly newer than the
+    /// fence. Snapshots at or before the fence cannot repair a gap.
+    #[must_use]
+    pub const fn is_before(&self, epoch: u64, seq: u64) -> bool {
+        epoch > self.connection_epoch || (epoch == self.connection_epoch && seq > self.receive_seq)
+    }
+
+    /// Whether an acknowledgement from an older connection cannot fence this
+    /// target.
+    #[must_use]
+    pub const fn rejects_stale_ack(&self, epoch: u64, seq: u64) -> bool {
+        epoch < self.connection_epoch || (epoch == self.connection_epoch && seq < self.receive_seq)
+    }
+}
+
 /// Identity of one instrument-scoped recovery request. The instrument and
 /// generation are part of the key: two instruments on the same source can
 /// never be coalesced into one request.
@@ -783,6 +815,32 @@ mod tests {
         assert_eq!(decision.action, None);
         assert!(decision.causes.is_empty());
         assert!(!decision.exhausted);
+    }
+
+    #[test]
+    fn a_fence_is_bound_to_its_exact_instrument_and_generation() {
+        let target = RecoveryTarget {
+            source: SourceId::new(0, 0),
+            instrument: "A".to_owned(),
+            generation: 7,
+        };
+        let fence = RecoveryFence {
+            target: target.clone(),
+            connection_epoch: 2,
+            receive_seq: 9,
+        };
+        let other = RecoveryTarget {
+            instrument: "B".to_owned(),
+            ..target.clone()
+        };
+        assert_ne!(target, other);
+        assert_ne!(target.generation + 1, target.generation);
+        assert!(fence.is_before(2, 10));
+        assert!(fence.is_before(3, 1));
+        assert!(!fence.is_before(2, 9));
+        assert!(!fence.is_before(1, 100));
+        assert!(fence.rejects_stale_ack(1, 100));
+        assert!(!fence.rejects_stale_ack(2, 9));
     }
 
     #[test]
