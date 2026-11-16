@@ -54,6 +54,7 @@ run_step "python unit tests (scripts/assurance)" \
   python3 -m unittest discover -s scripts/assurance -p 'test_*.py'
 run_step "requirement-matrix references" python3 scripts/check_matrix_tests.py
 run_step "architecture traceability" python3 scripts/check_architecture.py --check
+run_step "generated-path policy" python3 scripts/check_generated_paths.py
 if cargo audit --version >/dev/null 2>&1; then
   run_step "cargo audit" cargo audit
 else

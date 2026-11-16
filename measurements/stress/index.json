@@ -9,7 +9,7 @@
       "symbols": 1000
     },
     "failed-seed-000b-200-coverage_set_mismatch": {
-      "body_sha256": "d34e62e552c09b267100293453aa49dffa8cee23da0853325fbd239b97ae2acc",
+      "body_sha256": "ac2edeb5e834ec31bddd980dafe4071713bed8f970be1a572e70c7252ba1e4d0",
       "path": "failed-seed-000b-200-coverage_set_mismatch.json",
       "publication_state": "published",
       "run_status": "failed",
@@ -32,12 +32,52 @@
       "seed": 14,
       "symbols": 200
     },
+    "failed-v3-seed-000b-200-coverage_set_mismatch": {
+      "body_sha256": "d1b5e9931d8847855e628f9aa786c8f1065b932fee20593f7c02e75c0ee593e2",
+      "path": "failed-v3-seed-000b-200-coverage_set_mismatch.json",
+      "publication_state": "published",
+      "run_status": "failed",
+      "seed": 11,
+      "symbols": 200
+    },
     "seed-0007-4000-uniform": {
       "body_sha256": "4f499b179f89d5375a20a12711e49e4798e73498d9ba601b98f893f05ad56704",
       "path": "seed-0007-4000-uniform.json",
       "publication_state": "published",
       "run_status": "success",
       "seed": 7,
+      "symbols": 4000
+    },
+    "seed-0007-4000-uniform-v3": {
+      "body_sha256": "fc457b4898020edf19c97574e3b60cc84196dec195be08cfcb3ab00d145498c0",
+      "path": "seed-0007-4000-uniform-v3.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 7,
+      "symbols": 4000
+    },
+    "seed-0017-4000-hotquiet": {
+      "body_sha256": "b3440eab67f6e4b1b818fd9bb1aaf26aa17f9d44eeca1135b01773bb311855f7",
+      "path": "seed-0017-4000-hotquiet.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 23,
+      "symbols": 4000
+    },
+    "seed-0017-4000-hotquiet-v3": {
+      "body_sha256": "bab6d9a1f18092b55636c89a60e517f8d3fcf355da3e2840f6a4edc59167a01f",
+      "path": "seed-0017-4000-hotquiet-v3.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 23,
+      "symbols": 4000
+    },
+    "seed-001d-4000-hotquiet-v3": {
+      "body_sha256": "0905907839f809bbc79f58a090163fa4c239ac1d574c156533dc878a09637b99",
+      "path": "seed-001d-4000-hotquiet-v3.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 29,
       "symbols": 4000
     }
   },
