@@ -11,12 +11,19 @@
 //! presented as real venue markets. `generated`, `eligible` and `excluded`
 //! counts are reported separately; the expected universe is the eligible set.
 
+use std::collections::BTreeSet;
+
 use serde_json::{Value, json};
 
 use super::rng::SplitMix64;
 
 /// Generator version, recorded in every manifest. Bump on any semantic change.
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 2;
+
+/// Separate stream for deterministic hot/quiet role assignment. Keeping it
+/// distinct from discovery and book seeding means changing workload shape
+/// does not perturb those streams.
+const HOT_ROLE_STREAM: u64 = 0x484F_545F_524F_4C45;
 
 /// One generated market record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +73,8 @@ impl SyntheticMarket {
 /// One generated universe: the eligible markets and the decoy set.
 #[derive(Debug, Clone)]
 pub struct SyntheticUniverse {
+    /// Root seed, retained so role assignment can use a derived stream.
+    pub seed: u64,
     /// All generated records, eligible first, then decoys.
     pub markets: Vec<SyntheticMarket>,
     pub eligible_count: usize,
@@ -85,6 +94,7 @@ impl SyntheticUniverse {
         let eligible = decoy_eligible(seed, symbols, decoy_fraction_ppm, &mut rng, &mut markets);
         let excluded = markets.len() - eligible;
         Self {
+            seed,
             markets,
             eligible_count: eligible,
             excluded_count: excluded,
@@ -102,6 +112,34 @@ impl SyntheticUniverse {
         let mut tickers: Vec<String> = self.eligible().map(|m| m.ticker.clone()).collect();
         tickers.sort();
         tickers
+    }
+
+    /// Deterministically designate a fraction of the eligible universe as
+    /// hot instruments. Roles are assigned by a derived PRNG stream, never by
+    /// payload bytes or arrival order, and decoys can never receive a role.
+    #[must_use]
+    pub fn hot_tickers(&self, fraction_ppm: u32) -> BTreeSet<String> {
+        if fraction_ppm == 0 {
+            return BTreeSet::new();
+        }
+        let eligible: Vec<&SyntheticMarket> = self.eligible().collect();
+        if eligible.is_empty() {
+            return BTreeSet::new();
+        }
+        let count = eligible
+            .len()
+            .saturating_mul(fraction_ppm as usize)
+            .div_ceil(1_000_000)
+            .min(eligible.len());
+        let mut rng = SplitMix64::new(self.seed ^ HOT_ROLE_STREAM);
+        let mut remaining: Vec<usize> = (0..eligible.len()).collect();
+        let mut chosen = BTreeSet::new();
+        for _ in 0..count {
+            let position = rng.below_usize(remaining.len());
+            let index = remaining.swap_remove(position);
+            chosen.insert(eligible[index].ticker.clone());
+        }
+        chosen
     }
 
     /// Exact tickers of everything the MVE/status filter must reject.
@@ -289,5 +327,33 @@ mod tests {
             );
             assert!(record.get("mve_selected_legs").is_none());
         }
+    }
+
+    #[test]
+    fn hot_quiet_roles_are_exact_deterministic_and_free_of_decoys() {
+        let universe = SyntheticUniverse::generate(7, 4_000, 20_000);
+        assert_eq!(universe.eligible_count, 4_000);
+        let hot = universe.hot_tickers(50_000);
+        assert_eq!(
+            hot.len(),
+            200,
+            "5% of 4,000 eligible instruments must be hot"
+        );
+        let excluded: BTreeSet<String> = universe.excluded_tickers_sorted().into_iter().collect();
+        assert!(
+            hot.is_disjoint(&excluded),
+            "decoys cannot receive workload roles"
+        );
+
+        let again = SyntheticUniverse::generate(7, 4_000, 20_000).hot_tickers(50_000);
+        assert_eq!(
+            hot, again,
+            "role assignment must be reproducible under a fixed seed"
+        );
+        assert_ne!(
+            hot,
+            SyntheticUniverse::generate(8, 4_000, 20_000).hot_tickers(50_000),
+            "a different seed must produce a different hot set"
+        );
     }
 }

@@ -88,14 +88,15 @@ pub struct CellConfig {
     pub lifecycle_replicas: usize,
     /// Number of order-book deltas to publish after anchoring.
     pub events: usize,
-    /// Zipf-like skew: the first 10% of markets receive 80% of events.
+    /// Legacy binary skew: the first 10% of markets receive 80% of events.
     pub hot_pair: bool,
-    /// Reserved for the workload-shape matrix (unused by the first cells).
-    #[expect(
-        dead_code,
-        reason = "read by the workload-shape cells, which this increment does not wire yet"
-    )]
+    /// Equal-weight baseline marker retained for workload provenance.
     pub uniform_spread: bool,
+    /// Portion of eligible instruments designated hot, in parts per million.
+    /// Zero keeps the legacy `hot_pair`/uniform behavior.
+    pub hot_fraction_ppm: u32,
+    /// Share of published deltas routed to designated hot instruments.
+    pub hot_event_share_pct: u32,
     pub journal: bool,
     /// Overrides `ANCHOR_LIMIT`/`DRAIN_LIMIT` for fast failure tests.
     pub limits: Option<(u64, u64)>,
@@ -125,6 +126,8 @@ impl Default for CellConfig {
             events: 300,
             hot_pair: false,
             uniform_spread: true,
+            hot_fraction_ppm: 0,
+            hot_event_share_pct: 0,
             journal: true,
             limits: None,
             force_capacity_reject: false,
@@ -269,6 +272,8 @@ pub struct CellOutput {
     /// Symbols anchored by at least one *snapshot* (never by deltas alone).
     pub anchored_symbols: BTreeSet<String>,
     pub eligible_count: usize,
+    /// Number of eligible instruments assigned the hot workload role.
+    pub hot_tickers: usize,
     pub decoy_absent: bool,
     pub journal_complete: bool,
     pub journaled_records: Option<u64>,
@@ -638,6 +643,7 @@ struct PublishPlan {
 fn publish_events(
     mock: &MockKalshi,
     tickers: &[String],
+    hot: &BTreeSet<String>,
     config: &CellConfig,
     rng: &mut SplitMix64,
     skip_ticker: Option<&str>,
@@ -655,8 +661,19 @@ fn publish_events(
         .filter(|ticker| Some(*ticker) != skip_ticker)
         .collect();
     let hot_cut = (publishable.len() / 10).max(2);
+    let hot_indices: Vec<usize> = publishable
+        .iter()
+        .enumerate()
+        .filter_map(|(index, ticker)| hot.contains(*ticker).then_some(index))
+        .collect();
     while generated < config.events {
-        let index = if config.hot_pair {
+        let index = if config.hot_fraction_ppm > 0 && !hot_indices.is_empty() {
+            if rng.below(100) < u64::from(config.hot_event_share_pct.min(100)) {
+                hot_indices[rng.below_usize(hot_indices.len())]
+            } else {
+                rng.below_usize(publishable.len())
+            }
+        } else if config.hot_pair {
             if rng.below(100) < 80 {
                 rng.below_usize(hot_cut)
             } else {
@@ -964,6 +981,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let universe =
         SyntheticUniverse::generate(config.seed, config.symbols, config.decoy_fraction_ppm);
     let eligible = universe.eligible_tickers_sorted();
+    let hot = universe.hot_tickers(config.hot_fraction_ppm);
     let mock = MockKalshi::start(universe).await;
     let mut seed_rng = SplitMix64::new(config.seed ^ 0x51E5_ED5E_ED5E_0001);
     for market in mock.state().universe().markets.iter() {
@@ -1066,6 +1084,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let plan = publish_events(
         &mock,
         &eligible,
+        &hot,
         config,
         &mut SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E),
         skip_ticker.as_deref(),
@@ -1425,6 +1444,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             observed_symbols: observed,
             anchored_symbols: anchored,
             eligible_count: eligible.len(),
+            hot_tickers: hot.len(),
             decoy_absent,
             journal_complete,
             journaled_records,
@@ -1593,7 +1613,7 @@ pub fn build_cell_manifest(
         "prng_algorithm_version".to_owned(),
         json!(super::rng::PRNG_ALGORITHM_VERSION),
     );
-    document.insert("scenario_version".to_owned(), json!(1));
+    document.insert("scenario_version".to_owned(), json!(2));
     document.insert("build_profile".to_owned(), json!(build_profile()));
     document.insert("target_triple".to_owned(), json!(target_triple()));
     document.insert(
@@ -1634,7 +1654,17 @@ pub fn build_cell_manifest(
         "replicas_requested": config.replicas,
         "replicas_actual": output.and_then(|o| o.report.capacity.as_ref().map(|plan| plan.replicas)).unwrap_or(0),
         "lifecycle_replicas": config.lifecycle_replicas,
-        "distribution": if config.hot_pair { "zipf_hot_pair" } else { "uniform" },
+        "distribution": if config.hot_fraction_ppm > 0 {
+            "hot_quiet"
+        } else if config.hot_pair {
+            "zipf_hot_pair"
+        } else {
+            "uniform"
+        },
+        "hot_fraction_ppm": config.hot_fraction_ppm,
+        "hot_event_share_pct": config.hot_event_share_pct,
+        "hot_tickers": output.map(|o| o.hot_tickers).unwrap_or(0),
+        "uniform_spread": config.uniform_spread,
         "journal": config.journal,
         "failure_injection": config.fail_inject.map(|f| format!("{f:?}")),
     });
