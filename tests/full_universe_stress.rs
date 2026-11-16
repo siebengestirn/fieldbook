@@ -952,6 +952,8 @@ async fn over_application_fixture_fails_closed() {
 /// direction of every gap fails independently.
 #[test]
 fn ledger_reconciliation_is_two_sided() {
+    use stress_support::runner::{ledger_acceptance_reasons, two_sided};
+
     fn ledger(applied: u64, sbe: u64) -> stress_support::runner::EventLedger {
         stress_support::runner::EventLedger {
             generated_events: 100,
@@ -966,15 +968,29 @@ fn ledger_reconciliation_is_two_sided() {
             persistence_excess: Some(sbe.saturating_sub(applied)),
             enqueued_deltas: Some(100),
             transmitted_deltas: Some(100),
-            writer_accepted: Some(applied),
             received_frames: Some(100),
+            delta_events_decoded: Some(applied),
             decode_errors: Some(0),
-            enqueue_transmit_gap: Some(0),
-            writer_acceptance_gap: Some(0),
+            writer_delta_admissions: Some(applied),
+            writer_delta_writes: Some(applied),
+            enqueue_transmit_shortfall: Some(0),
+            enqueue_transmit_excess: Some(0),
+            decode_transmit_shortfall: Some(0),
+            decode_transmit_excess: Some(0),
+            writer_admission_shortfall: Some(0),
+            writer_admission_excess: Some(0),
+            writer_write_shortfall: Some(0),
+            writer_write_excess: Some(0),
             decode_failure_count: Some(0),
             ..Default::default()
         }
     }
+
+    // Direction arithmetic itself: both sides are computed, not clamped.
+    assert_eq!(two_sided(Some(100), Some(100)), (Some(0), Some(0)));
+    assert_eq!(two_sided(Some(100), Some(95)), (Some(5), Some(0)));
+    assert_eq!(two_sided(Some(100), Some(105)), (Some(0), Some(5)));
+    assert_eq!(two_sided(None, Some(100)), (None, None));
 
     assert!(ledger(100, 100).reconciled(), "exact accounting reconciles");
     assert!(
@@ -994,27 +1010,73 @@ fn ledger_reconciliation_is_two_sided() {
         "persistence gap must not reconcile"
     );
 
-    let mut bad_enqueue = ledger(100, 100);
-    bad_enqueue.enqueue_transmit_gap = Some(1);
-    assert!(
-        !bad_enqueue.reconciled(),
-        "enqueue/transmit loss must not reconcile"
-    );
+    // The certification path, not just the helper, must reject each defect.
+    for (mut bad, reason) in [
+        (ledger(100, 100), "pre_wire_loss"),
+        (ledger(100, 100), "enqueue_excess"),
+        (ledger(100, 100), "decode_failures"),
+        (ledger(100, 100), "receive_evidence_missing"),
+        (ledger(100, 100), "decode_evidence_missing"),
+        (ledger(100, 100), "writer_admission_shortfall"),
+        (ledger(100, 100), "writer_admission_excess"),
+        (ledger(100, 100), "writer_write_shortfall"),
+        (ledger(100, 100), "writer_write_excess"),
+        (ledger(100, 100), "writer_admission_evidence_missing"),
+        (ledger(100, 100), "writer_write_evidence_missing"),
+        (ledger(100, 100), "decode_transmit_evidence_missing"),
+        (ledger(100, 100), "replica_duplicate_evidence_missing"),
+    ] {
+        match reason {
+            "pre_wire_loss" => bad.enqueue_transmit_shortfall = Some(1),
+            "enqueue_excess" => bad.enqueue_transmit_excess = Some(1),
+            "decode_failures" => bad.decode_failure_count = Some(1),
+            "receive_evidence_missing" => bad.received_frames = None,
+            "decode_evidence_missing" => bad.delta_events_decoded = None,
+            "writer_admission_shortfall" => bad.writer_admission_shortfall = Some(1),
+            "writer_admission_excess" => bad.writer_admission_excess = Some(1),
+            "writer_write_shortfall" => bad.writer_write_shortfall = Some(1),
+            "writer_write_excess" => bad.writer_write_excess = Some(1),
+            "writer_admission_evidence_missing" => bad.writer_delta_admissions = None,
+            "writer_write_evidence_missing" => bad.writer_delta_writes = None,
+            "decode_transmit_evidence_missing" => bad.decode_transmit_shortfall = None,
+            "replica_duplicate_evidence_missing" => bad.suppressed_replica_duplicates = None,
+            _ => unreachable!(),
+        }
+        let reasons = ledger_acceptance_reasons(&bad, 0);
+        assert!(
+            reasons.iter().any(|found| found == reason),
+            "expected {reason} to block certification, got {reasons:?}"
+        );
+        if reason != "replica_duplicate_evidence_missing" {
+            assert!(!bad.reconciled(), "{reason} must not reconcile");
+        }
+    }
+}
 
-    let mut bad_writer = ledger(100, 100);
-    bad_writer.writer_acceptance_gap = Some(1);
-    assert!(
-        !bad_writer.reconciled(),
-        "writer rejection must not reconcile"
-    );
+#[test]
+fn historical_zero_receive_manifest_is_preserved_as_superseded_evidence() {
+    // Diagnostic regression: the v3 coverage-mismatch manifest recorded zero
+    // received frames because the earlier sampler read per-source status
+    // gauges that reset across reconnects. The artifact is immutable evidence;
+    // this test pins that it remains byte-for-byte available and is not used
+    // as a current certification claim.
+    let raw =
+        include_str!("../measurements/stress/failed-v3-seed-000b-200-coverage_set_mismatch.json");
+    let manifest: serde_json::Value = serde_json::from_str(raw).expect("manifest JSON");
+    assert_eq!(manifest["run_status"], "failed");
+    assert_eq!(manifest["event_ledger"]["received_frames"], 0);
+    assert_eq!(manifest["event_ledger"]["reconciled"], true);
+    assert_eq!(manifest["scenario_version"], 3);
+}
 
-    let mut unavailable = ledger(100, 100);
-    unavailable.writer_accepted = None;
-    unavailable.writer_acceptance_gap = None;
-    assert!(
-        !unavailable.reconciled(),
-        "unavailable instrumentation must block certification, not become zero"
-    );
+#[test]
+fn counter_reset_never_becomes_a_zero_count() {
+    use stress_support::runner::metric_window_delta;
+    assert_eq!(metric_window_delta(Some(10), Some(15)), Some(5));
+    assert_eq!(metric_window_delta(Some(10), Some(10)), Some(0));
+    assert_eq!(metric_window_delta(Some(15), Some(10)), None);
+    assert_eq!(metric_window_delta(None, Some(10)), None);
+    assert_eq!(metric_window_delta(Some(10), None), None);
 }
 
 /// M5 profile: 4,000 instruments with exactly 5% designated hot instruments

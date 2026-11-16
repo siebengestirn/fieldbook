@@ -23,7 +23,11 @@ injections.
 | `seed-0007-4000-uniform-v3.json` | Corrected v3 uniform baseline, 4,000 instruments, 2 shards × 2 replicas. |
 | `seed-0017-4000-hotquiet-v3.json` | Corrected v3 weighted hot/quiet: disjoint hot/cold sets, 200 hot instruments, 331 hot / 69 cold realized deltas. Reconciled ledger, exact coverage. Correctness evidence only. |
 | `seed-001d-4000-hotquiet-v3.json` | v3 exact-quota profile: 320 hot / 80 cold deltas out of 400, seed 29, reproducible event assignment. |
-| `failed-v3-seed-000b-200-coverage_set_mismatch.json` | v3 regeneration of the missing-anchor failure with the corrected ledger fields. The earlier `failed-seed-000b-...` artifact is retained unchanged. |
+| `failed-v3-seed-000b-200-coverage_set_mismatch.json` | Historical v3 missing-anchor failure with the zero-receive sampling defect; retained unchanged and superseded. |
+| `seed-0007-4000-uniform-v4.json` | v4 uniform baseline with certified accounting fields and monotonic counters. |
+| `seed-0017-4000-hotquiet-v4.json` | v4 corrected weighted hot/quiet profile with certified accounting. |
+| `seed-001d-4000-hotquiet-v4.json` | v4 exact-quota profile (320 hot / 80 cold) with certified accounting. |
+| `failed-v4-seed-000b-200-coverage_set_mismatch.json` | v4 regeneration of the missing-anchor failure. The event ledger reconciles with 60 decoded events and 30 applied events; the run still fails on coverage, and receive evidence is present. |
 | `failed-seed-000b-200-coverage_set_mismatch.json` | Missing-anchor injection: one eligible market receives no snapshot. It is acknowledged but never snapshot-anchored, the three-set comparison fails, and the runner classifies the cell `failed` (`coverage_set_mismatch`) — the event ledger itself still reconciles, which is exactly the point: the loss is a coverage loss, not an accounting loss. |
 | `failed-seed-000d-300-unexplained_drops.json` | Dropped-frame injection: 10 delta frames vanish before the wire (no sequence consumed, invisible to the protocol). Only event accounting catches it: `unexplained_drops = 5` (10 frames / 2 replicas), `injected_pre_wire_drops = 10`, classified `failed`. |
 | `failed-seed-000e-200-coverage_set_mismatch.json` | Bounded-queue saturation: the mock's outbound queue is capped at 8 and its forwarder stalled. `queue_saturated > 0`, nothing drains, the barrier refuses to certify; the cell is `failed`, never silently degraded. |

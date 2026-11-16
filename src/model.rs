@@ -888,6 +888,13 @@ pub struct SourceStatus {
     pub connected: bool,
     pub reconnects: u64,
     pub messages: u64,
+    /// Data frames (text or binary) read from the transport. Counted before
+    /// decode decisions, including snapshots and application data payloads.
+    #[serde(default)]
+    pub data_frames_received: u64,
+    /// Order-book delta events successfully decoded from the venue protocol.
+    #[serde(default)]
+    pub delta_events_decoded: u64,
     pub decode_errors: u64,
     pub protocol_errors: u64,
     pub bytes_received: u64,

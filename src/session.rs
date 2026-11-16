@@ -838,6 +838,25 @@ pub async fn run_worker(
                             let received_at_us = frame.received_at_us.unwrap_or_else(|| {
                                 now_us().unwrap_or(0)
                             });
+                            // Independent ingress evidence: count the data
+                            // frame before journal ingress consumes its raw
+                            // payload, and count a decoded order-book delta
+                            // from the normalized events. These are separate
+                            // boundaries from application and writer counts.
+                            if frame.raw.is_some() {
+                                status.data_frames_received =
+                                    status.data_frames_received.saturating_add(1);
+                            }
+                            let decoded_delta_events = frame
+                                .events
+                                .iter()
+                                .filter(|event| matches!(event, ExchangeEvent::LevelChange { .. }))
+                                .count();
+                            if decoded_delta_events > 0 {
+                                status.delta_events_decoded = status
+                                    .delta_events_decoded
+                                    .saturating_add(decoded_delta_events as u64);
+                            }
                             // The adapter owns the venue mechanism; the worker
                             // stamps it before journaling so every observation
                             // carries typed evidence.

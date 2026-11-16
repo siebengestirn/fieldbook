@@ -40,6 +40,14 @@
       "seed": 11,
       "symbols": 200
     },
+    "failed-v4-seed-000b-200-coverage_set_mismatch": {
+      "body_sha256": "b238a440155e66c09f2127278a5806fac7e8d9563ca5aba9058f8c60d810d8e9",
+      "path": "failed-v4-seed-000b-200-coverage_set_mismatch.json",
+      "publication_state": "published",
+      "run_status": "failed",
+      "seed": 11,
+      "symbols": 200
+    },
     "seed-0007-4000-uniform": {
       "body_sha256": "4f499b179f89d5375a20a12711e49e4798e73498d9ba601b98f893f05ad56704",
       "path": "seed-0007-4000-uniform.json",
@@ -51,6 +59,14 @@
     "seed-0007-4000-uniform-v3": {
       "body_sha256": "fc457b4898020edf19c97574e3b60cc84196dec195be08cfcb3ab00d145498c0",
       "path": "seed-0007-4000-uniform-v3.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 7,
+      "symbols": 4000
+    },
+    "seed-0007-4000-uniform-v4": {
+      "body_sha256": "b3876106052a40834bd6ebb29ee57e46a942fa2437efb38b31bb1ff33f93aa46",
+      "path": "seed-0007-4000-uniform-v4.json",
       "publication_state": "published",
       "run_status": "success",
       "seed": 7,
@@ -72,9 +88,25 @@
       "seed": 23,
       "symbols": 4000
     },
+    "seed-0017-4000-hotquiet-v4": {
+      "body_sha256": "8d70592e0f6b84b8542c88444ed3ea7403bb516365ef6cc4516e60b96e1f1958",
+      "path": "seed-0017-4000-hotquiet-v4.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 23,
+      "symbols": 4000
+    },
     "seed-001d-4000-hotquiet-v3": {
       "body_sha256": "0905907839f809bbc79f58a090163fa4c239ac1d574c156533dc878a09637b99",
       "path": "seed-001d-4000-hotquiet-v3.json",
+      "publication_state": "published",
+      "run_status": "success",
+      "seed": 29,
+      "symbols": 4000
+    },
+    "seed-001d-4000-hotquiet-v4": {
+      "body_sha256": "ede87b38e9e153ca076e9c8d127d0d3c53e82338d4d12fd7afebc5d47ceda446",
+      "path": "seed-001d-4000-hotquiet-v4.json",
       "publication_state": "published",
       "run_status": "success",
       "seed": 29,

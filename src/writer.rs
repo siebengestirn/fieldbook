@@ -718,6 +718,18 @@ impl WriterHandle {
                                 return;
                             }
                             writer_counters.messages.fetch_add(1, Ordering::Relaxed);
+                            match &message {
+                                OutputMessage::Snapshot(_) => {
+                                    writer_counters
+                                        .snapshot_messages
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                                OutputMessage::PriceLevelUpdate(_) => {
+                                    writer_counters
+                                        .delta_messages
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
                             writer_counters
                                 .bytes
                                 .store(sink.bytes_written(), Ordering::Relaxed);
@@ -819,7 +831,8 @@ impl WriterHandle {
                 anyhow::bail!("SBE writer queue full for {timeout:?}");
             }
         };
-        self.counters.note_enqueued();
+        self.counters
+            .note_enqueued(matches!(&message, OutputMessage::PriceLevelUpdate(_)));
         permit.send(WriterCommand::Message(message));
         Ok(())
     }
@@ -1044,6 +1057,16 @@ impl DirectWriter {
     pub fn write(&mut self, message: &OutputMessage) -> anyhow::Result<()> {
         MessageSink::write(&mut self.sink, message)?;
         self.counters.messages.fetch_add(1, Ordering::Relaxed);
+        match message {
+            OutputMessage::Snapshot(_) => {
+                self.counters
+                    .snapshot_messages
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            OutputMessage::PriceLevelUpdate(_) => {
+                self.counters.delta_messages.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         self.counters
             .bytes
             .store(MessageSink::bytes_written(&self.sink), Ordering::Relaxed);
