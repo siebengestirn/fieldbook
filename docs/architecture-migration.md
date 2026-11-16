@@ -305,6 +305,37 @@ source-scoped reconnect are distinct in code, logs, metrics and manifests;
 escalation from refresh to reconnect is an explicit policy decision, and
 scheduled refresh is recorded separately from transport failure.
 
+#### M3.1 — Typed recovery decisions (implemented)
+
+`src/recovery.rs` owns the pure M3.1 policy. `RecoverySignals` is a snapshot
+of observed conditions; `RecoveryCause` records why a decision was made;
+`RecoveryAction` is the only authorized outcome (`RefreshInstruments` or
+`ReconnectSource`); `RecoveryDecision` keeps every contributing cause, the
+authorized action, and an explicit budget-exhaustion outcome. The decision
+function is deterministic and has no I/O.
+
+The policy rules are:
+
+- `InstrumentQuiet`, `SnapshotTimeout`, and `ScheduledRefresh` authorize an
+  in-place instrument refresh only — a quiet instrument can never escalate
+  its source to a reconnect.
+- `TransportClosed`, `HeartbeatFailure`, `DecodeFailure`,
+  `ProtocolViolation`, and `OperatorRequested` authorize a source reconnect.
+  A heartbeat failure is ignored when the venue heartbeat mechanism is
+  `Disabled`, so a venue without heartbeats cannot produce a false failure.
+- When both classes are present the stronger action wins, but all causes stay
+  on the decision for audit.
+- `attempts >= max_attempts` adds `RecoveryExhausted` and withholds the action
+  instead of escalating without bound; repeated identical causes keep the
+  same action and budget.
+
+This module does not yet own the recovery queues or acknowledgement fences:
+those remain M3.2 and M3.3. The transitional `PendingRecovery` structure in
+`src/collector/state.rs` is still source-keyed and still merges a `reconnect`
+boolean; the protected quiet-instrument test
+`src/collector/state/tests.rs::quiet_instrument_on_healthy_source_never_escalates_to_source_reconnect`
+remains the guard until that migration lands.
+
 Acceptance gates: A (state correctness), B (recovery scope), C (ordering —
 epoch/receive-seq/fence), D (accounting in manifests), E (mixed
 hot/quiet synthetic workload with injected failures), F (review package:

@@ -17,6 +17,7 @@ pub mod orderbook;
 pub mod persistence;
 pub mod probe;
 pub mod protocol;
+pub mod recovery;
 pub mod replay;
 pub mod report;
 pub mod session;

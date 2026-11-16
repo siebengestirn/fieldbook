@@ -37,6 +37,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/orderbook.rs": "normalized order-book representation and mutation invariants",
     "src/probe.rs": "network-probe command: stage-timed egress transport diagnostic and JSON report",
     "src/protocol.rs": "shared venue-neutral transport vocabulary: frame class/direction, control opcodes, session signals, heartbeat mechanism, send result, and transport observations",
+    "src/recovery.rs": "typed recovery policy: explicit causes, authorized actions, and bounded attempt decisions",
     "src/replay.rs": "deterministic JSONL replay into the collector/output path",
     "src/report.rs": "market metadata and run-report sidecars; atomic JSON helper",
     "src/session.rs": "generic websocket session/factory contract and supervised worker lifecycle",
@@ -114,6 +115,10 @@ REQUIRED_ANCHORS = {
     "src/protocol.rs": [
         "pub enum SessionSignal", "pub enum FrameClassification",
         "pub struct TransportObservation",
+    ],
+    "src/recovery.rs": [
+        "pub enum RecoveryAction", "pub enum RecoveryCause",
+        "pub fn decide",
     ],
     "src/util/build.rs": ["generate_str_to_out_dir", "GenerationConfig"],
 }
