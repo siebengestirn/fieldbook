@@ -13,15 +13,16 @@ its three workload models are defined in
 [`M5_WORKLOAD_PROGRAMME.md`](M5_WORKLOAD_PROGRAMME.md); this document keeps the
 frozen hot/quiet workload and its v5 evidence unchanged.
 
-The current combined scenario schema is **v15** (M5.2 burst = 6, M5.3 = 7,
+The current combined scenario schema is **v16** (M5.2 burst = 6, M5.3 = 7,
 M5.4 = 8, M5.5 backpressure = 9, M5.6 stage timing = 10, M5.7 capacity = 11,
 M5.8 = 12; v13 was the combined integrated schema that folded the lifecycle
 scenarios and universe-epoch coverage together with the disconnect, burst,
 backpressure and capacity profiles; v14 additionally carried the M5.6
 stage-timing performance block; v15 folds in the M5.7 capacity characterization
-stages, the three workload models and their manifest evidence). Earlier v3-v13
-evidence files are retained byte-for-byte and are never overwritten by a v15
-run; cell ids carry the scenario version suffix.
+stages, the three workload models and their manifest evidence; v16 integrates the
+Hyperliquid H3 synthetic loopback capacity cells on the same manifest schema).
+Earlier v3-v15 evidence files are retained byte-for-byte and are never
+overwritten by a v16 run; cell ids carry the scenario version suffix.
 
 ## Invariants
 
@@ -65,11 +66,12 @@ run; cell ids carry the scenario version suffix.
 | `burst` | **Implemented in M5.2** | Four deterministic profiles (`step`, `impulse`, `repeated_impulses`, `ramp`) that partition the same 400 logical deltas into publish phases. No sleeps, timing instrumentation or performance claims. |
 | `lifecycle` | **Implemented in M5.3** | Typed L1-L10 churn driven by a seed + explicit event sequence over the mock's `market_lifecycle_v2` channel; retired instruments are epoch-scoped, not permanent coverage obligations. |
 | `disconnect` | **Implemented in M5.4** | Seed-derived explicit fault schedule (D1-D10) that closes replicas/sockets through the mock's `close_book_connections()` / `close_all_connections()`, measures incident-detection → valid re-anchor, and records the schedule in the manifest. |
-| `backpressure` | **Implemented in M5.5; carried into combined `scenario_version = 15`** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
+| `backpressure` | **Implemented in M5.5; carried into combined `scenario_version = 16`** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
 | `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell (M5.5 adds only the single-injection hot/quiet + writer-queue cell, not the full mixed profile). |
 | `fixed_per_instrument` | Implemented in M5.7 | Capacity workload model: `instruments × 1` uniform deltas, so offered load scales with the stage. |
 | `fixed_aggregate` | Implemented in M5.7 | Capacity workload model: a fixed 400 uniform deltas regardless of instrument count. |
 | `skewed_hot_quiet` | Implemented in M5.7 | Capacity workload model: a fixed 400 deltas routed 80/20 to a deterministic 5% hot set via the existing exact-quota assignment. |
+| `hyperliquid_h3` | **Implemented in H3 (`scenario_version = 16`)** | Venue-specific synthetic loopback profiles over the exact ten selected perpetuals: `balanced`, `telemetry_heavy` (mid fan-out + fast-context rate) and `book_refresh_burst` (`l2Book` cadence + trade bursts), each with a scripted reconnect. No deltas, no latency/capacity claim. |
 
 ## M5.2 burst profiles
 
@@ -120,7 +122,7 @@ The manifest records the explicit schedule under `workload_schedule`:
   `cumulative_expected` and `drain_completed`.
 
 Scenario `scenario_version` was bumped to **6** for the burst increment
-(superseded by the combined integrated schema at **15**); burst cell IDs carry
+(superseded by the combined integrated schema at **16**); burst cell IDs carry
 the profile label so two profiles never overwrite one another in the index. The
 v5 disposition-certified manifests remain immutable historical evidence.
 
@@ -137,7 +139,7 @@ and opt-in evidence rules.
 | Eligible instruments | 4,000 (`decoy_fraction_ppm = 20_000`) |
 | Hot instruments | 200 (5% of eligible, `hot_fraction_ppm = 50_000`) |
 | Hot event share | 80% (`hot_event_share_pct = 80`); exact mode pins 320/400 |
-| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 15`, the combined schema: 6=burst schedules (M5.2), 7=lifecycle (M5.3), 8=disconnect (M5.4), 9=backpressure (M5.5), 10=stage-timing evidence (M5.6), 11=capacity stages and workload models (M5.7), 12=increments, 13=integrated schema, 14=integrated schema plus stage timing, 15=integrated schema plus capacity characterization) |
+| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 16`, the combined schema: 6=burst schedules (M5.2), 7=lifecycle (M5.3), 8=disconnect (M5.4), 9=backpressure (M5.5), 10=stage-timing evidence (M5.6), 11=capacity stages and workload models (M5.7), 12=increments, 13=integrated schema, 14=integrated schema plus stage timing, 15=integrated schema plus capacity characterization, 16=Hyperliquid H3 synthetic loopback cells) |
 | Logical deltas | 400 |
 | Topology | 2 shards × 2 replicas + 1 lifecycle connection |
 | Journal | enabled |
@@ -149,7 +151,7 @@ decoys, and reproducible by
 Bumping the generator or scenario schema version is required before changing the
 semantics of this table.
 
-## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 15`)
+## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 16`)
 
 Each profile is one boundary, one injection and one terminal disposition. The
 runner derives the profile from `CellConfig` before the run, reconciles the five
@@ -200,7 +202,7 @@ runs the 4,000-instrument hot/quiet profile with a single writer-queue bound
 injection and no lifecycle, disconnect or chaos injection. It is added only
 after all five individual profile gates pass.
 
-## Capacity characterization (M5.7, `scenario_version = 15`)
+## Capacity characterization (M5.7, `scenario_version = 16`)
 
 The capacity scaffold keeps the generator, scheduler and certification path
 above unchanged and selects only two knobs: a stage (4,000 / 10,000 / 25,000 /
@@ -302,7 +304,7 @@ frames; core-ingress counters are sampled separately under distinct metric
 names. The full contract is in
 [`EVENT_ACCOUNTING_CONTRACT.md`](EVENT_ACCOUNTING_CONTRACT.md).
 
-## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 15`)
+## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 16`)
 
 The disconnect sweep is an **explicit, seed-derived schedule**, not random
 chaos. `tests/stress_support/faults.rs` derives a `Vec<FaultStep>` from the cell
@@ -404,7 +406,8 @@ harness's declared plan, checked against the final certified set.
 | Coverage | expected, acknowledged and anchored symbol sets are identical at 4,000 |
 | Continuity | no decoy appears in the capture; journal finalizes completely |
 | Determinism | hot-role unit test pins the 200/4,000 split and rejects a different seed |
-| Capacity scaffold (M5.7) | stage/model selection pins 4k/10k/25k/50k and all three workloads; 200-instrument cells reconcile for each model; 10k/25k/50k stage cells are ignored and opt-in; manifests use `scenario_version = 15` |
+| Capacity scaffold (M5.7) | stage/model selection pins 4k/10k/25k/50k and all three workloads; 200-instrument cells reconcile for each model; 10k/25k/50k stage cells are ignored and opt-in; manifests use `scenario_version = 16` |
+| Hyperliquid H3 (synthetic) | `tests/hyperliquid_capacity.rs::{h3_balanced_cell_certifies_every_evidence_gate, h3_telemetry_heavy_profile_keeps_telemetry_out_of_books, h3_book_refresh_burst_profile_reconciles_and_recovers}` prove exact 10-instrument three-set coverage, a reconciled ledger/dispositions, bounded writer queue, journal/SBE integrity, zero `LevelChange` and reconnect re-anchoring; `h3_schedule_is_seed_deterministic_and_profile_distinct` pins the explicit schedule; `reference_hyperliquid_manifest_is_versioned` is ignored and publishes a v16 manifest under `STRESS_MANIFEST_OUT` without overwriting evidence |
 | Evidence | `mixed_hot_quiet_4000_cell_reconciles_and_certifies` passes offline; `reference_mixed_hot_quiet_manifest_is_reproducible` emits a versioned manifest when run explicitly with `STRESS_MANIFEST_OUT` |
 | M5.2 burst phases | `burst_step_cell_reconciles_all_phases` and `burst_impulse_cell_reconciles_all_phases` prove acceptance, exact per-phase counts (100/200/100 and 40/280/80), cumulative drain completion, reconciled ledger, exact 4,000 coverage, SBE/completeness/journal verification, empty fault schedule and a manifest carrying the full workload schedule |
 | M5.2 determinism | `burst_profiles_partition_the_budget_exactly_and_deterministically` and `burst_profile_counts_are_pinned` pin the four partitions; `schedule_records_id_seed_hot_definition_and_empty_faults` pins the recorded schedule fields |
@@ -415,7 +418,7 @@ harness's declared plan, checked against the final certified set.
 | Disconnect recovery | `disconnect_standby_replica_loss_recovers_and_reconciles`, `disconnect_active_replica_loss_recovers_and_reconciles`, `disconnect_both_replicas_lost_reanchors_all_instruments`, `disconnect_many_instruments_reanchor_certifies_coverage`, `disconnect_recovery_timeout_surfaces_as_incomplete`, `disconnect_recovery_storm_preserves_generations_and_accounting`, `disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence` pass offline |
 | Lifecycle semantics | `core.lifecycle_events`, `lifecycle_duplicates` and `lifecycle_stale_dropped` equal the explicit schedule's applied/duplicate/stale counts; added markets are anchored, retired markets are not expected |
 | Lifecycle epochs | `coverage.per_epoch` records expected/anchored/retired set hashes per epoch; the final certificate is unchanged and extra anchors are permitted only for scheduled retirements |
-| Lifecycle evidence | add/activate, retire, duplicate, out-of-order and churn-under-load cells pass offline (exact coverage, reconciled ledger, SBE verification, journal finalization); `reference_lifecycle_churn_manifest_is_versioned` emits a v15 manifest when run explicitly with `STRESS_MANIFEST_OUT` |
+| Lifecycle evidence | add/activate, retire, duplicate, out-of-order and churn-under-load cells pass offline (exact coverage, reconciled ledger, SBE verification, journal finalization); `reference_lifecycle_churn_manifest_is_versioned` emits a v16 manifest when run explicitly with `STRESS_MANIFEST_OUT` |
 | Stage instrumentation | `stage_timing_cell_records_real_writer_write_latency` records non-zero SBE write, queue-wait and journal-append samples in a real cell; histogram unit tests pin percentile correctness, sample counts and merge-by-raw-counts |
 
 The earlier `seed-0017-4000-hotquiet.json` manifest was generated by the
@@ -431,9 +434,9 @@ artifacts are `seed-0007-4000-uniform-v4.json`,
 `failed-v5-seed-000b-200-coverage_set_mismatch.json` are tied to `5bb54e6`. Do not use the v2 manifest for comparative
 workload claims. The M5.5 v9 manifests are generated only into a caller-supplied
 `STRESS_MANIFEST_OUT` directory and are not copied over the v3-v5 artifacts;
-the combined v15 manifests extend the same publication protocol.
+the combined v16 manifests extend the same publication protocol.
 
-### Stage timing contract (introduced at v10; carried into combined v15)
+### Stage timing contract (introduced at v10; carried into combined v16)
 
 `performance.stage_timing` carries one `StageHistogram` per measured boundary,
 with `sample_count`, `min_ns`, `max_ns`, p50/p90/p95/p99/p99.9, an optional
@@ -444,14 +447,15 @@ scenario version are published alongside the counts. Nanoseconds are the
 storage unit, not an accuracy claim. `lifecycle`, `disconnect` and combined
 `mixed` profile remains **Planned**; `lifecycle` (M5.3), `disconnect` (M5.4),
 `burst` (M5.2) and `backpressure` (M5.5) are implemented workload profiles
-carried into the combined v15 schema. No
-capacity, Hyperliquid, or live performance result is claimed.
+carried into the combined v16 schema. Hyperliquid H3 adds synthetic loopback
+capacity cells at ten instruments only; it makes **no** capacity, throughput,
+latency or live performance claim.
 
 `stage_timing_cell_records_real_writer_write_latency` proves the writer SBE
 write and journal append boundaries record non-zero samples in a real cell;
 the histogram unit tests in `src/histogram.rs` pin percentile correctness,
 merge-by-raw-counts and sample-count rules. Previously published v3/v4/v5 manifests remain unchanged as
-historical evidence; v15 manifests use a new cell-id suffix and never overwrite
+historical evidence; v16 manifests use a new cell-id suffix and never overwrite
 them.
 
 ## Reproduce
@@ -478,21 +482,21 @@ STRESS_MANIFEST_OUT=/tmp/stress-v3 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_exact_hot_quiet_manifest_is_reproducible --test-threads=1 --nocapture
 
-STRESS_MANIFEST_OUT=/tmp/stress-v15 \
+STRESS_MANIFEST_OUT=/tmp/stress-v16 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_backpressure_profiles_manifest_is_reproducible --test-threads=1 --nocapture
 
 # M5.4 disconnect sweeps (non-ignored)
 cargo test --test full_universe_stress disconnect_ -- --test-threads=1
 
-STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v15 \
+STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v16 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_disconnect_sweep_manifest --test-threads=1 --nocapture
 
 # M5.3 lifecycle churn (non-ignored)
 cargo test --test lifecycle_churn
 
-STRESS_MANIFEST_OUT=/tmp/stress-lifecycle-v15 \
+STRESS_MANIFEST_OUT=/tmp/stress-lifecycle-v16 \
   cargo test --release --locked --test lifecycle_churn -- \
   --ignored reference_lifecycle_churn_manifest_is_versioned --test-threads=1 --nocapture
 ```
@@ -505,5 +509,7 @@ queue-wait distribution. None of these profiles produces performance claims.
 All lifecycle evidence above is synthetic loopback evidence. No live Kalshi
 lifecycle notification has been observed or claimed in this increment; the
 dedicated control-plane tests exercise a loopback mock of `market_lifecycle_v2`.
-The v15 cell ids (`*-lifecycle-<scenario>-v15`) are distinct from the retained
-v3-v5 manifests, so no existing artifact is overwritten.
+The v16 cell ids (`*-lifecycle-<scenario>-v16`,
+`hyperliquid-<profile>-v16-seed-<seed>`) are distinct from the retained v3-v15
+manifests, so no existing artifact is overwritten. All Hyperliquid H3 cells are
+synthetic loopback evidence and make no live, latency or capacity claim.
