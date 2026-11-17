@@ -233,11 +233,20 @@ fn journal_json(output: Option<&CellOutput>, reasons: &[String]) -> Value {
                 || reason == "journal_pressure_rejected"
         });
         return if rejected {
+            let mut errors: Vec<Value> = reasons
+                .iter()
+                .map(|reason| Value::String(reason.clone()))
+                .collect();
+            // Preserve the boundary-specific diagnostic even when the
+            // collector stopped before emitting a run report.
+            errors.push(Value::String(
+                "journal queue stayed full (journal pressure admission rejected)".to_owned(),
+            ));
             json!({
                 "state": "failed",
                 "complete": false,
                 "record_count": Value::Null,
-                "errors": reasons,
+                "errors": errors,
             })
         } else {
             json!({
