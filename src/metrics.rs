@@ -404,14 +404,19 @@ impl MetricsRegistry {
         // Derive aggregate counters from the current per-source status values
         // at refresh time so they never lag a single status event and survive
         // reconnects (worker statuses are cumulative within their lifetime).
-        state.core.transport_frames_received = sources
+        let transport_now: u64 = sources
             .values()
             .map(|source| source.data_frames_received)
             .sum();
-        state.core.decoded_delta_events = sources
+        let decoded_now: u64 = sources
             .values()
             .map(|source| source.delta_events_decoded)
             .sum();
+        // Worker statuses are per-connection and may reset on reconnect. Keep
+        // a monotonic high-water mark so a reset cannot erase observed work.
+        state.core.transport_frames_received =
+            state.core.transport_frames_received.max(transport_now);
+        state.core.decoded_delta_events = state.core.decoded_delta_events.max(decoded_now);
         state.writer = writer;
         state.sources = sources.values().cloned().collect();
         state.coverage = status.coverage;
