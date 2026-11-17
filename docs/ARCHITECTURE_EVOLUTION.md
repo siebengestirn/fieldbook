@@ -21,14 +21,19 @@ Hyperliquid H0-H3 and H0 reference-data adapters for Coinbase, Kraken, OKX and
 Binance are also merged. Exact per-milestone implementation/CI/evidence status
 is in [`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md).
 
+## Platform contracts now present (additive)
+
+Platform M2 identity, M3 data products/capabilities, M4 canonical events and the
+P5 JSONL-to-target reference application are merged. See
+[`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md) for exact status and the limits of
+each foundational phase.
+
 ## Future sequence
 
-1. Second non-market-data reference application (for example JSONL source to
-   PostgreSQL target) proving source/destination independence.
-2. Connector and capability contracts stabilized from the proof.
-3. Canonical event envelope and schema registry.
-4. Durability/replication subsystem with defined failure models.
-5. Partitioned deterministic execution engine.
+1. Rewire live ingest to consume typed identities/products and the canonical envelope.
+2. Real PostgreSQL target driver (separate dependency decision) and live database proof.
+3. Durability/replication subsystem with defined failure models.
+4. Partitioned deterministic execution engine.
 6. Distributed runtime only after single-node correctness and capacity are proven.
 
 ## Non-goals now

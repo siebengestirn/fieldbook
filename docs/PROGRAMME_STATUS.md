@@ -41,7 +41,12 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `b0885d9` | PR #62 — Coinbase H0 |
 | `4088baa` | PR #63 — Kraken H0 |
 | `4a68c64` | PR #64 — OKX H0 |
-| `1488412` | PR #65 — Binance H0 (current integrated head at review) |
+| `1488412` | PR #65 — Binance H0 |
+| `9135a11` | PR #66 — GOV-002 programme status reconciliation |
+| `432cd32` | PR #67 — Platform M2 persistent identity |
+| `69f87c9` | PR #68 — Platform M3 typed data products |
+| `a9a6b23` | PR #69 — Platform M4 canonical events |
+| `127e926` | PR #70 — P5 JSONL-to-target reference application (current integrated head) |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -66,6 +71,11 @@ twice.
 | Hyperliquid H2 | Yes | Yes | N/A | Books e2e + recovery drill | No | No |
 | Hyperliquid H3 | Yes | Yes | Reference executed | Yes (v16 Hyperliquid manifest in bundle) | No | No |
 | Coinbase/Kraken/OKX/Binance H0 | Yes | Yes | N/A | Golden reference fixtures | No | No |
+| GOV-002 | Yes | Yes | N/A | v16 evidence bundle + ledger | N/A | N/A |
+| Platform M2 identity (Phases 1-3) | Yes | Yes | N/A | 11 identity tests | No | N/A |
+| Platform M3 products (Phase 1) | Yes | Yes | N/A | Product/capability/state-machine tests | No | N/A |
+| Platform M4 canonical events (Phase 1) | Yes | Yes | N/A | Canonical conversion/schema tests | No | N/A |
+| P5 JSONL-to-target | Yes (simulator + SQL contract) | Yes | N/A | 24 application tests | No | No |
 
 ## Evidence bundle
 
@@ -97,7 +107,8 @@ inventory is `main` only; one worktree; zero stashes. See
 ## Not claimed
 
 Replicated/multi-site durability, end-to-end exactly-once to external targets,
-persistent instrument identity (Platform M2), typed data products (Platform
-M3), canonical normalized event store (Platform M4), JSONL-to-PostgreSQL
-reference application, distributed runtime, nanosecond clock accuracy, or any
-live venue certification.
+live PostgreSQL driver/live DB, distributed runtime, nanosecond clock accuracy,
+or any live venue certification. Platform M2/M3/M4 are additive contract
+foundations (Phases 1-3 / Phase 1): they do not yet rewire collector ownership,
+subscription consumption or the SBE writer. P5 is a deterministic simulator
+plus SQL contract, not a live database integration.
