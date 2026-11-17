@@ -37,6 +37,10 @@ use engineering_challenge::{
 };
 
 use super::{
+    capacity::{
+        AGGREGATE_EVENTS, CapacityCell, HOT_EVENT_SHARE_PCT, HOT_FRACTION_PPM,
+        PER_INSTRUMENT_EVENTS, WorkloadModel,
+    },
     faults::{FaultSchedule, FaultStep, SweepProfile},
     host::HostInfo,
     lifecycle::{
@@ -68,8 +72,11 @@ const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 /// lifecycle scenarios and universe-epoch coverage alongside the burst,
 /// disconnect, backpressure and capacity profiles; v14 is the integrated
 /// schema that additionally carries the M5.6 stage-timing performance block.
-/// Earlier version-certified cell IDs remain immutable historical evidence.
-const SCENARIO_VERSION: u32 = 14;
+/// v15 folds in the M5.7 capacity characterization (4k/10k/25k/50k stages and
+/// the fixed-per-instrument, fixed-aggregate and skewed hot/quiet workload
+/// models) with its own manifest evidence block. Earlier version-certified
+/// cell IDs remain immutable historical evidence.
+const SCENARIO_VERSION: u32 = 15;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -362,6 +369,9 @@ pub struct CellConfig {
     /// Deterministic disconnect/recovery fault schedule. `None` for ordinary
     /// cells; derived explicitly from the seed by the disconnect profiles.
     pub fault_schedule: Option<FaultSchedule>,
+    /// Capacity characterization selection. `None` for ordinary stress cells;
+    /// when present the manifest records stage, model and expected events.
+    pub capacity: Option<CapacityCell>,
 }
 
 impl Default for CellConfig {
@@ -389,6 +399,7 @@ impl Default for CellConfig {
             worktree_dir: None,
             require_clean_worktree: None,
             fault_schedule: None,
+            capacity: None,
         }
     }
 }
@@ -2065,11 +2076,24 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         .collect();
     let mock = MockKalshi::start(universe).await;
     // A reconnect legitimately re-sends one snapshot per instrument on every
-    // socket. Give the disconnect sweeps a larger per-connection bound so a
-    // recovery burst is absorbed instead of being misclassified as a throughput
-    // fault; the saturation fixture still uses the production default.
-    if config.fault_schedule.is_some() {
-        mock.state().set_outbound_capacity(65_536);
+    // socket, and a capacity stage's initial snapshot burst scales with the
+    // instrument count. The default per-connection mock queue (4096 frames) is
+    // sized for the 4k smoke cell; at 10k+ it would manufacture harness-side
+    // drops before the collector ever sees a frame. Size the *same* bounded
+    // queue for the larger demand so a recovery or snapshot burst is absorbed
+    // instead of being misclassified as a throughput fault; the saturation
+    // fixture still uses the production default.
+    let fault_capacity = config.fault_schedule.is_some().then_some(65_536);
+    let stage_capacity = config
+        .capacity
+        .map(|spec| spec.stage.symbols.saturating_add(4096));
+    let outbound_capacity = fault_capacity
+        .into_iter()
+        .chain(stage_capacity)
+        .max()
+        .unwrap_or(0);
+    if outbound_capacity > 0 {
+        mock.state().set_outbound_capacity(outbound_capacity);
     }
     let mut seed_rng = SplitMix64::new(config.seed ^ 0x51E5_ED5E_ED5E_0001);
     for market in mock.state().universe().markets.iter() {
@@ -2470,6 +2494,44 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
                     "lifecycle barrier: wire={sent}/{expected_wire}, active={active:?}/{expected_active}"
                 ));
                 break;
+            }
+            sleep(METRICS_POLL).await;
+        }
+    }
+
+    // The decoder counter is derived from per-source status values at the
+    // metrics registry's refresh cadence, so it can briefly lag the applied
+    // and wire counters after the drain barrier passes. Sample until the
+    // settled values agree before taking the final evidence snapshot; this
+    // keeps a refresh edge from looking like a disposition or transmit/decode
+    // defect. Failure fixtures simply consume the short bounded wait and are
+    // still evaluated on their real evidence below.
+    if !matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain)) {
+        let settle_deadline = Instant::now() + Duration::from_secs(3);
+        let mut previous: Option<(u64, u64)> = None;
+        loop {
+            let sample = match metrics_addr {
+                Some(addr) => scrape_metrics(addr).await,
+                None => None,
+            };
+            let decoded = sample
+                .as_ref()
+                .and_then(|sample| sample.count_sum("collector_decoded_delta_events_total"));
+            let applied = sample
+                .as_ref()
+                .and_then(|sample| sample.count("collector_deltas_emitted_total"));
+            let transmitted = mock.state().ledger_snapshot().deltas_sent;
+            let stable = previous.is_some_and(|(before_decoded, before_transmitted)| {
+                Some(before_decoded) == decoded && before_transmitted == transmitted
+            });
+            let settled = matches!((decoded, applied), (Some(decoded), Some(applied))
+                if decoded >= applied && decoded >= transmitted)
+                && stable;
+            if settled || Instant::now() >= settle_deadline {
+                break;
+            }
+            if let (Some(decoded), Some(_)) = (decoded, applied) {
+                previous = Some((decoded, transmitted));
             }
             sleep(METRICS_POLL).await;
         }
@@ -3182,6 +3244,91 @@ fn schedule_json(schedule: &WorkloadSchedule) -> Value {
     })
 }
 
+/// Capacity characterization evidence for one cell. Every count comes from
+/// the cell's own output. A resource that cannot be measured is reported with
+/// an explicit `unavailable` object, never as zero; the same applies to every
+/// ordinary (non-capacity) cell so the field is always present and auditable.
+fn capacity_json(config: &CellConfig, outcome: &CellOutcome, output: Option<&CellOutput>) -> Value {
+    let Some(spec) = config.capacity else {
+        return super::manifest::unavailable("not a capacity characterization cell");
+    };
+    let host = HostInfo::probe();
+    let coverage = output.and_then(|cell| cell.coverage.as_ref());
+    let skewed = spec.model == WorkloadModel::SkewedHotQuiet;
+    let per_instrument = spec.model == WorkloadModel::FixedPerInstrument;
+    json!({
+        "stage": spec.stage.label,
+        "instruments": spec.stage.symbols,
+        "eligible_instruments": output.map(|cell| cell.eligible_count),
+        "workload_model": spec.model.as_str(),
+        "expected_events": spec.expected_events(),
+        "workload": {
+            "events_per_instrument": if per_instrument {
+                json!(PER_INSTRUMENT_EVENTS)
+            } else {
+                Value::Null
+            },
+            "aggregate_events": if per_instrument {
+                Value::Null
+            } else {
+                json!(AGGREGATE_EVENTS)
+            },
+            "hot_fraction_ppm": if skewed { json!(HOT_FRACTION_PPM) } else { Value::Null },
+            "hot_event_share_pct": if skewed { json!(HOT_EVENT_SHARE_PCT) } else { Value::Null },
+            "hot_selection": if skewed { json!("exact_quota") } else { Value::Null },
+        },
+        "coverage": {
+            "expected": coverage.map(|summary| summary.expected),
+            "acknowledged": coverage.map(|summary| summary.acknowledged),
+            "anchored": coverage.map(|summary| summary.anchored),
+            "expected_set_sha256": output
+                .map(|cell| canonical_set_sha256(&cell.expected_symbols)),
+            "anchored_set_sha256": output
+                .map(|cell| canonical_set_sha256(&cell.anchored_symbols)),
+            "valid": coverage.map(|summary| summary.valid),
+        },
+        "verification": {
+            "sbe_valid": output.map(|cell| cell.verify_valid),
+            "completeness_valid": output.map(|cell| cell.completeness_valid),
+            "coverage_valid": coverage.map(|summary| summary.valid),
+            "journal_complete": output.map(|cell| cell.journal_complete),
+            "journal_record_count": output.and_then(|cell| cell.journaled_records),
+        },
+        "resources": {
+            "harness_rss_bytes": output
+                .and_then(|cell| cell.harness_process_rss_sample_bytes)
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable("rss not readable on this host")),
+            "cpu_seconds": super::manifest::unavailable(
+                "cpu_seconds not measured (no libc dependency)"
+            ),
+            "cpu_count": host
+                .cpu_count
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable("available_parallelism failed")),
+            "ram_mb": host
+                .ram_mb
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable("ram unavailable")),
+            "fd_limit": host
+                .fd_limit
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable("ulimit -n unavailable")),
+            "disk_free_bytes": host
+                .disk_free_bytes
+                .map(Value::from)
+                .unwrap_or_else(|| super::manifest::unavailable(
+                    host.disk_free_reason.as_deref().unwrap_or("df unavailable")
+                )),
+        },
+        "acceptance": {
+            "run_status": outcome.acceptance.status(),
+            "ledger_reconciled": output.map(|cell| cell.ledger.reconciled()).unwrap_or(false),
+            "reasons": outcome.acceptance.reasons.clone(),
+        }
+    })
+}
+
 /// Build one reference-matrix manifest document for a finished outcome.
 pub fn build_cell_manifest(
     outcome: &CellOutcome,
@@ -3340,6 +3487,19 @@ pub fn build_cell_manifest(
     if let Value::Object(scenario) = &mut scenario {
         scenario.insert("fault_schedule".to_owned(), fault_schedule_json.clone());
     }
+    if let Some(spec) = config.capacity
+        && let Value::Object(fields) = &mut scenario
+    {
+        fields.insert("capacity_stage".to_owned(), json!(spec.stage.label));
+        fields.insert(
+            "capacity_workload_model".to_owned(),
+            json!(spec.model.as_str()),
+        );
+        fields.insert(
+            "capacity_expected_events".to_owned(),
+            json!(spec.expected_events()),
+        );
+    }
     document.insert(
         "configuration_sha256".to_owned(),
         Value::from(sha256_hex(scenario.to_string().as_bytes())),
@@ -3349,6 +3509,10 @@ pub fn build_cell_manifest(
     // fault id, affected source/instruments, start epoch, failure time, type,
     // expected action/outcome, and deadline for every step.
     document.insert("fault_schedule".to_owned(), fault_schedule_json);
+    document.insert(
+        "capacity".to_owned(),
+        capacity_json(config, outcome, output),
+    );
 
     let desired_topology = json!({
         "shards": config.shards.unwrap_or(0),

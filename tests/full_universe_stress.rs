@@ -34,13 +34,17 @@ use std::collections::BTreeSet;
 use engineering_challenge::histogram::StageHistogram;
 
 use stress_support::{
+    capacity::{
+        AGGREGATE_EVENTS, CapacityCell, CapacityStage, HOT_EVENT_SHARE_PCT, HOT_FRACTION_PPM,
+        PER_INSTRUMENT_EVENTS, WorkloadModel,
+    },
     faults::SweepProfile,
     lifecycle::LifecycleScenario,
     mock::MockKalshi,
     rng::SplitMix64,
     runner::{
-        BurstProfile, CellConfig, CellOutcome, FailInject, HotSelection, canonical_set_sha256,
-        worktree_provenance,
+        BurstProfile, CellAcceptance, CellConfig, CellOutcome, FailInject, HotSelection,
+        build_cell_manifest, canonical_set_sha256, worktree_provenance,
     },
     universe::{GENERATOR_VERSION, SyntheticUniverse},
 };
@@ -100,6 +104,7 @@ fn headless_cell_config(seed: u64, symbols: usize) -> CellConfig {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     }
 }
 
@@ -133,6 +138,7 @@ async fn smoke_cell_anchors_applies_and_certifies() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
     assert!(
@@ -463,6 +469,7 @@ async fn malformed_index_fixture_fails_closed() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
@@ -711,6 +718,7 @@ async fn reference_success_manifest_is_reproducible() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
@@ -1157,6 +1165,7 @@ async fn mixed_hot_quiet_4000_cell_reconciles_and_certifies() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
     assert!(
@@ -1222,6 +1231,7 @@ async fn reference_mixed_hot_quiet_manifest_is_reproducible() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
@@ -1265,6 +1275,7 @@ async fn mixed_hot_quiet_exact_4000_cell_assigns_320_hot_events() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
     assert!(
@@ -1322,6 +1333,7 @@ async fn reference_exact_hot_quiet_manifest_is_reproducible() {
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
@@ -1361,6 +1373,7 @@ fn burst_cell_config(profile: BurstProfile, seed: u64, selection: HotSelection) 
         worktree_dir: None,
         require_clean_worktree: None,
         fault_schedule: None,
+        capacity: None,
     }
 }
 
@@ -1501,7 +1514,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(14));
+    assert_eq!(document["scenario_version"].as_u64(), Some(15));
     outcome
 }
 
@@ -1591,7 +1604,7 @@ fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
 }
 
 fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
-    assert_eq!(document["scenario_version"], 14);
+    assert_eq!(document["scenario_version"], 15);
     assert_eq!(document["backpressure"]["profile"], profile);
     let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
     assert!(!boundary.is_empty(), "boundary must be named");
@@ -1974,7 +1987,7 @@ async fn backpressure_combined_hot_quiet_writer_queue_4000_certifies() {
 }
 
 /// Ignored reference generator for the M5.5 boundary profiles. Uses the same
-/// `STRESS_MANIFEST_OUT` publication protocol and v14 cell ids as the other
+/// `STRESS_MANIFEST_OUT` publication protocol and v15 cell ids as the other
 /// reference generators; prior evidence is never overwritten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
@@ -2022,7 +2035,7 @@ async fn reference_backpressure_profiles_manifest_is_reproducible() {
         let outcome =
             stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
         let document = build_cell_manifest_for_reference(&out, seed);
-        assert_eq!(document["scenario_version"], 14);
+        assert_eq!(document["scenario_version"], 15);
         assert_eq!(document["backpressure"]["profile"], expected);
         assert!(
             !outcome.acceptance.valid || expected == "writer_queue_saturation",
@@ -2045,7 +2058,7 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
 }
 
 // ---------------------------------------------------------------------------
-// M5.4 deterministic disconnect and recovery sweeps (scenario_version 14).
+// M5.4 deterministic disconnect and recovery sweeps (scenario_version 15).
 // ---------------------------------------------------------------------------
 
 fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {
@@ -2538,7 +2551,7 @@ fn disconnect_fault_steps_carry_full_matrix_evidence() {
 
 /// Ignored reference generator for the disconnect sweep manifest. Run with
 /// `STRESS_MANIFEST_OUT` set to a fresh directory; prior evidence is never
-/// overwritten because v14 cell ids are content-addressed by seed and verdict.
+/// overwritten because v15 cell ids are content-addressed by seed and verdict.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
 async fn reference_disconnect_sweep_manifest() {
@@ -2684,7 +2697,7 @@ async fn stage_timing_cell_records_real_writer_write_latency() {
             .unwrap_or(0)
             > 0
     );
-    assert_eq!(stage["provenance"]["scenario_version"], 14);
+    assert_eq!(stage["provenance"]["scenario_version"], 15);
     assert!(stage["provenance"]["clock_source"].is_string());
     assert!(
         stage["boundaries"]["sbe_write"]["report"]["buckets"]
@@ -2696,4 +2709,274 @@ async fn stage_timing_cell_records_real_writer_write_latency() {
         stress_support::manifest::missing_required_fields(&manifest).is_empty(),
         "stage timing must satisfy the manifest contract"
     );
+}
+
+// ---------- M5.7 capacity characterization ----------
+
+/// Pure selection contract. Every stage/model combination resolves to an
+/// exact instrument count and event budget, and the same selection always
+/// produces the same cell configuration regardless of seed.
+#[test]
+fn capacity_stage_and_workload_model_selection_is_deterministic() {
+    for stage in CapacityStage::ALL {
+        let per_instrument = CapacityCell {
+            stage,
+            model: WorkloadModel::FixedPerInstrument,
+        };
+        let aggregate = CapacityCell {
+            stage,
+            model: WorkloadModel::FixedAggregate,
+        };
+        let skewed = CapacityCell {
+            stage,
+            model: WorkloadModel::SkewedHotQuiet,
+        };
+
+        assert_eq!(
+            per_instrument.expected_events(),
+            stage.symbols * PER_INSTRUMENT_EVENTS,
+            "fixed per-instrument rate must scale with the stage"
+        );
+        assert_eq!(aggregate.expected_events(), AGGREGATE_EVENTS);
+        assert_eq!(skewed.expected_events(), AGGREGATE_EVENTS);
+
+        let per_config = per_instrument.cell_config(7);
+        let aggregate_config = aggregate.cell_config(7);
+        let skewed_config = skewed.cell_config(7);
+
+        assert_eq!(per_config.capacity, Some(per_instrument));
+        assert_eq!(aggregate_config.capacity, Some(aggregate));
+        assert_eq!(skewed_config.capacity, Some(skewed));
+        for config in [&per_config, &aggregate_config, &skewed_config] {
+            assert_eq!(config.symbols, stage.symbols);
+            assert_eq!(config.shards, None, "capacity shards must be derived");
+            assert!(config.journal);
+        }
+        assert_eq!(per_config.events, stage.symbols);
+        assert_eq!(per_config.hot_fraction_ppm, 0);
+        assert!(per_config.uniform_spread);
+        assert_eq!(aggregate_config.events, AGGREGATE_EVENTS);
+        assert_eq!(aggregate_config.hot_fraction_ppm, 0);
+        assert!(aggregate_config.uniform_spread);
+        assert_eq!(skewed_config.events, AGGREGATE_EVENTS);
+        assert!(!skewed_config.uniform_spread);
+        assert_eq!(skewed_config.hot_fraction_ppm, HOT_FRACTION_PPM);
+        assert_eq!(skewed_config.hot_event_share_pct, HOT_EVENT_SHARE_PCT);
+        assert_eq!(skewed_config.hot_selection, HotSelection::ExactQuota);
+
+        // The selection, not the seed, owns the shape; changing only the seed
+        // must leave every count and every workload-model knob unchanged.
+        let reseeded = per_instrument.cell_config(9);
+        assert_eq!(reseeded.symbols, per_config.symbols);
+        assert_eq!(reseeded.events, per_config.events);
+        assert_eq!(reseeded.hot_fraction_ppm, per_config.hot_fraction_ppm);
+        assert_eq!(reseeded.hot_event_share_pct, per_config.hot_event_share_pct);
+        assert_eq!(reseeded.hot_selection, per_config.hot_selection);
+        assert_eq!(reseeded.shards, per_config.shards);
+        assert_eq!(reseeded.journal, per_config.journal);
+    }
+
+    assert_eq!(
+        CapacityStage::ALL.map(|stage| stage.symbols),
+        [4_000, 10_000, 25_000, 50_000]
+    );
+    assert_eq!(
+        WorkloadModel::parse("fixed_per_instrument"),
+        Some(WorkloadModel::FixedPerInstrument)
+    );
+    assert_eq!(
+        WorkloadModel::parse("fixed_aggregate"),
+        Some(WorkloadModel::FixedAggregate)
+    );
+    assert_eq!(
+        WorkloadModel::parse("skewed_hot_quiet"),
+        Some(WorkloadModel::SkewedHotQuiet)
+    );
+}
+
+/// The manifest contract is checked without a long run: a capacity cell
+/// records stage, instrument count, model, expected events and an explicit
+/// `unavailable(reason)` for resources the host cannot measure.
+#[test]
+fn capacity_manifest_records_stage_model_and_unavailable_reasons() {
+    let spec = CapacityCell {
+        stage: CapacityStage::TEN_K,
+        model: WorkloadModel::SkewedHotQuiet,
+    };
+    let config = spec.cell_config(7);
+    let outcome = CellOutcome {
+        output: None,
+        acceptance: CellAcceptance {
+            valid: true,
+            reasons: Vec::new(),
+            failure_class: None,
+        },
+        provenance: None,
+    };
+    let document = build_cell_manifest(&outcome, &config, "capacity-cell");
+    let capacity = &document["capacity"];
+    assert_eq!(document["scenario_version"], 15);
+    assert_eq!(document["scenario"]["capacity_stage"], "10k");
+    assert_eq!(
+        document["scenario"]["capacity_workload_model"],
+        "skewed_hot_quiet"
+    );
+    assert_eq!(document["scenario"]["capacity_expected_events"], 400);
+    assert_eq!(capacity["stage"], "10k");
+    assert_eq!(capacity["instruments"], 10_000);
+    assert_eq!(capacity["workload_model"], "skewed_hot_quiet");
+    assert_eq!(capacity["expected_events"], 400);
+    assert_eq!(capacity["workload"]["hot_fraction_ppm"], HOT_FRACTION_PPM);
+    assert_eq!(
+        capacity["workload"]["hot_event_share_pct"],
+        HOT_EVENT_SHARE_PCT
+    );
+    assert!(
+        capacity["resources"]["cpu_seconds"]["value"].is_null(),
+        "unmeasured CPU time must never be reported as zero"
+    );
+    assert!(
+        capacity["resources"]["cpu_seconds"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "every unavailable resource must carry an explicit reason"
+    );
+
+    let ordinary = build_cell_manifest(&outcome, &CellConfig::default(), "ordinary-cell");
+    assert!(
+        ordinary["capacity"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("not a capacity characterization cell")),
+        "non-capacity cells must name why the capacity fields are unavailable"
+    );
+}
+
+/// Non-ignored small-scale execution of all three models. The same runner,
+/// generator and scheduler used by the 4k smoke cell must produce the exact
+/// symbol/event counts and a reconciled two-sided ledger at 200 instruments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn capacity_workload_models_reconcile_at_small_scale() {
+    let stage = CapacityStage {
+        label: "test-200",
+        symbols: 200,
+    };
+    for model in [
+        WorkloadModel::FixedPerInstrument,
+        WorkloadModel::FixedAggregate,
+        WorkloadModel::SkewedHotQuiet,
+    ] {
+        let spec = CapacityCell { stage, model };
+        let config = spec.cell_config(31);
+        let directory = tempfile::tempdir().unwrap();
+        let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+        assert!(
+            outcome.acceptance.valid,
+            "{} cell failed: reasons={:?}",
+            model.as_str(),
+            outcome.acceptance.reasons
+        );
+        let output = outcome.output.expect("valid cell must carry output");
+
+        assert_eq!(output.eligible_count, 200, "{}", model.as_str());
+        assert_eq!(
+            output.events_published,
+            spec.expected_events(),
+            "{}",
+            model.as_str()
+        );
+        assert_eq!(
+            output.sbe_deltas,
+            spec.expected_events() as u64,
+            "{}",
+            model.as_str()
+        );
+        assert!(
+            output.ledger.reconciled(),
+            "{} ledger: {:?}",
+            model.as_str(),
+            output.ledger
+        );
+        assert_eq!(output.ledger.unexplained_drops, Some(0));
+        assert_eq!(output.ledger.persistence_gap, Some(0));
+
+        let coverage = output.coverage.as_ref().expect("coverage must be present");
+        assert_eq!(coverage.expected, 200, "{}", model.as_str());
+        assert_eq!(coverage.anchored, 200, "{}", model.as_str());
+        assert!(
+            output.verify_valid && output.completeness_valid && output.journal_complete,
+            "{} verification incomplete",
+            model.as_str()
+        );
+
+        if model == WorkloadModel::SkewedHotQuiet {
+            assert_eq!(output.hot_tickers, 10, "5% of 200 instruments");
+            assert_eq!(output.hot_events, 320);
+            assert_eq!(output.cold_events, 80);
+        } else {
+            assert_eq!(output.hot_tickers, 0);
+            assert_eq!(output.hot_events, 0);
+            assert_eq!(output.cold_events, output.events_published);
+        }
+    }
+}
+
+/// Execute one opt-in short correctness cell. Both `STRESS_CAPACITY_STAGE`
+/// (matching the test's stage) and `STRESS_MANIFEST_OUT` are required; the
+/// workload model is selected by `STRESS_WORKLOAD_MODEL` and defaults to the
+/// skewed hot/quiet profile so the run stays short at every stage.
+async fn run_short_capacity_cell(stage: CapacityStage) {
+    let requested = std::env::var("STRESS_CAPACITY_STAGE").unwrap_or_default();
+    assert_eq!(
+        CapacityStage::from_env(),
+        Some(stage),
+        "set STRESS_CAPACITY_STAGE={} to run this cell (got `{requested}`)",
+        stage.label
+    );
+    let manifest_out =
+        std::path::PathBuf::from(std::env::var("STRESS_MANIFEST_OUT").unwrap_or_else(|_| {
+            panic!("set STRESS_MANIFEST_OUT to publish the capacity manifest")
+        }));
+    let model = WorkloadModel::from_env_or_default();
+    let spec = CapacityCell { stage, model };
+    let config = spec.cell_config(0x5EED_0000 + stage.symbols as u64);
+    let directory = tempfile::tempdir().unwrap();
+    let outcome =
+        stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out.as_path()))
+            .await;
+    assert!(
+        outcome.acceptance.valid,
+        "{} capacity cell failed: reasons={:?}",
+        stage.label, outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    assert_eq!(output.eligible_count, stage.symbols);
+    assert_eq!(output.events_published, spec.expected_events());
+    assert_eq!(output.sbe_deltas, spec.expected_events() as u64);
+    assert!(output.ledger.reconciled(), "ledger: {:?}", output.ledger);
+    let coverage = output.coverage.as_ref().expect("coverage must be present");
+    assert_eq!(coverage.expected, stage.symbols);
+    assert_eq!(coverage.anchored, stage.symbols);
+    assert!(output.verify_valid && output.completeness_valid && output.journal_complete);
+}
+
+/// 10k short correctness run. Evidence class: synthetic loopback; this is not
+/// a throughput or discovery-capacity certificate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "capacity characterization; set STRESS_CAPACITY_STAGE=10k and STRESS_MANIFEST_OUT"]
+async fn capacity_stage_10k_short_correctness() {
+    run_short_capacity_cell(CapacityStage::TEN_K).await;
+}
+
+/// 25k short correctness run. Opt-in only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "capacity characterization; set STRESS_CAPACITY_STAGE=25k and STRESS_MANIFEST_OUT"]
+async fn capacity_stage_25k_short_correctness() {
+    run_short_capacity_cell(CapacityStage::TWENTY_FIVE_K).await;
+}
+
+/// 50k short correctness run. Opt-in only; never executed by default CI.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "capacity characterization; set STRESS_CAPACITY_STAGE=50k and STRESS_MANIFEST_OUT"]
+async fn capacity_stage_50k_short_correctness() {
+    run_short_capacity_cell(CapacityStage::FIFTY_K).await;
 }

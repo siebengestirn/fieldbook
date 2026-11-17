@@ -5,6 +5,7 @@
 //! production behavior.
 
 pub mod backpressure;
+pub mod capacity;
 pub mod faults;
 pub mod host;
 pub mod lifecycle;
