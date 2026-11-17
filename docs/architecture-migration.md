@@ -30,9 +30,9 @@ and normalized persistence) is complete.
 | M5.5 — backpressure and boundedness | Complete (`14b8a94`) |
 | M5.6 — stage timing histograms | Complete (`0137b95`); synthetic measurements only |
 | M5.7 — capacity stages | Test stages complete (`0efc74e`); 25k/50k opt-in, no capacity claim |
-| Platform M2 — persistent instrument identity | Unresolved; ADR 0001 is design-only |
-| Platform M3 — subscription and feed capability contracts | Unresolved |
-| Platform M4 — canonical events and normalized persistence | Unresolved |
+| Platform M2 — persistent instrument identity | Additive foundation implemented (`432cd32`); collector ownership migration unresolved |
+| Platform M3 — typed product/capability contracts | Additive foundation implemented (`69f87c9`); not consumed by live session boundary |
+| Platform M4 — canonical events | Additive taxonomy implemented (`a9a6b23`); not authoritative live pipeline; normalized durable store unresolved |
 | Hyperliquid H0-H3 | Implemented (`8538cab` through `372da5b`); synthetic loopback evidence only |
 | Research M7 — immutable datasets and experiment registry | Design only |
 | Execution M8 | Deferred |
