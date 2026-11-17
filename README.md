@@ -66,6 +66,7 @@ intent; it is not a claim that those capabilities are implemented.
 8. [Event accounting contract](docs/EVENT_ACCOUNTING_CONTRACT.md), [engineering guarantees](docs/ENGINEERING_GUARANTEES.md), and [durability contract](docs/DURABILITY_CONTRACT.md) — implemented versus intended guarantees.
 9. [Universal platform architecture](docs/UNIVERSAL_PLATFORM_ARCHITECTURE.md), [architecture evolution](docs/ARCHITECTURE_EVOLUTION.md), and [state of the art roadmap](docs/STATE_OF_THE_ART_ROADMAP.md) — direction, not implemented capability.
 10. [Hyperliquid integration plan](docs/HYPERLIQUID_INTEGRATION_PLAN.md) — staged, evidence-gated design for the next exchange; H0-H3 implemented (H3 synthetic loopback capacity cells only, not live certification or a capacity/latency claim).
+11. [Coinbase Exchange integration plan](docs/COINBASE_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same seams; H0 offline reference data implemented, H1-H3 planned (no websocket, book, telemetry, live evidence or performance claim).
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
