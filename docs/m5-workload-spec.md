@@ -10,9 +10,11 @@ authoritative design for the stress laboratory remains
 [`stress-lab-design.md`](stress-lab-design.md); the canonical starting point is
 [`baseline-post-m4.md`](baseline-post-m4.md).
 
-The current scenario schema is **v9** (M5.2 = 6, M5.3 = 7, M5.4 = 8, M5.5 = 9).
+The current scenario schema is **v12** (M5.2 = 6, M5.3 = 7, M5.4 = 8,
+M5.5 = 9, M5.6 = 10, M5.7 = 11; v12 is the combined integrated schema that
+folds the disconnect, burst, backpressure and capacity profiles together).
 Earlier v3-v5 evidence files are retained byte-for-byte and are never
-overwritten by a v9 run; cell ids carry the scenario version suffix.
+overwritten by a v12 run; cell ids carry the scenario version suffix.
 
 ## Invariants
 
@@ -52,8 +54,8 @@ overwritten by a v9 run; cell ids carry the scenario version suffix.
 | `hot_quiet` exact | **Implemented in M5.1** | Same roles, but event assignment is an exact shuffled quota: 320 of 400 deltas are hot and 80 are cold, reproducible under the seed. Used as the frozen reference profile. |
 | `burst` | **Implemented in M5.2** | Four deterministic profiles (`step`, `impulse`, `repeated_impulses`, `ramp`) that partition the same 400 logical deltas into publish phases. No sleeps, timing instrumentation or performance claims. |
 | `lifecycle` | Planned | Add/remove/settle universe churn through the mock's lifecycle channel. |
-| `disconnect` | Planned | Deterministic replica/source closure and re-anchoring sweep. |
-| `backpressure` | **Implemented in M5.5 (`scenario_version = 9`)** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
+| `disconnect` | **Implemented in M5.4** | Seed-derived explicit fault schedule (D1-D10) that closes replicas/sockets through the mock's `close_book_connections()` / `close_all_connections()`, measures incident-detection → valid re-anchor, and records the schedule in the manifest. |
+| `backpressure` | **Implemented in M5.5** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
 | `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell (M5.5 adds only the single-injection hot/quiet + writer-queue cell, not the full mixed profile). |
 
 ## M5.2 burst profiles
@@ -116,7 +118,7 @@ v5 disposition-certified manifests remain immutable historical evidence.
 | Eligible instruments | 4,000 (`decoy_fraction_ppm = 20_000`) |
 | Hot instruments | 200 (5% of eligible, `hot_fraction_ppm = 50_000`) |
 | Hot event share | 80% (`hot_event_share_pct = 80`); exact mode pins 320/400 |
-| Selection mode | `hot_selection = weighted` or `exact_quota` (`scenario_version = 6`; burst profiles are v6-only) |
+| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 12`) |
 | Logical deltas | 400 |
 | Topology | 2 shards × 2 replicas + 1 lifecycle connection |
 | Journal | enabled |
@@ -128,7 +130,7 @@ decoys, and reproducible by
 Bumping the generator or scenario schema version is required before changing the
 semantics of this table.
 
-## Backpressure profiles (M5.5, `scenario_version = 9`)
+## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 12`)
 
 Each profile is one boundary, one injection and one terminal disposition. The
 runner derives the profile from `CellConfig` before the run, reconciles the five
@@ -254,6 +256,53 @@ frames; core-ingress counters are sampled separately under distinct metric
 names. The full contract is in
 [`EVENT_ACCOUNTING_CONTRACT.md`](EVENT_ACCOUNTING_CONTRACT.md).
 
+## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 12`)
+
+The disconnect sweep is an **explicit, seed-derived schedule**, not random
+chaos. `tests/stress_support/faults.rs` derives a `Vec<FaultStep>` from the cell
+seed via a dedicated PRNG stream; each step is replayed in order by
+`tests/stress_support/runner.rs` and copied verbatim into the manifest's
+`fault_schedule` field. Every step records: fault ID, affected source and
+instruments, start epoch, failure time (offset from anchor completion), fault
+type, expected action and outcome, and deadline. An empty `fault_schedule`
+means the cell ran no faults.
+
+Recovery is measured as **incident detection → valid re-anchor**, never as a
+socket reconnect alone. The runner samples the existing production counters
+`collector_discontinuity_incidents_total` (detection) and
+`collector_failover_snapshots_total` plus `collector_symbols_resyncing == 0`
+and full `collector_symbols_anchored` (valid re-anchor). The manifest's
+`recovery` array exports both endpoints, the observed connection count, and a
+duration in milliseconds. The poll granularity is 25 ms, so a zero duration
+means "within one poll". When no valid re-anchor occurs (or a standby loss
+opens no incident), `duration_ms` is `null` with an explicit
+`duration_unavailable_reason` — it is never fabricated as zero.
+
+| ID | Scenario | Mock action | Expected action / outcome | Harness status |
+|---|---|---|---|---|
+| D1 | Standby replica loss | Close the newest book socket | Surviving active book keeps the symbol anchored; replacement socket is opened. No continuity incident is expected, so duration may be unavailable with a reason. | Driven |
+| D2 | Active replica loss | Close the oldest book socket | One discontinuity incident; shadow truth promoted by one failover snapshot; ledger reconciles. | Driven |
+| D3 | Both replicas lost | `close_book_connections()` | Incident per previously active symbol; fresh snapshots re-anchor every book with new epochs. | Driven |
+| D4 | Reconnect new epoch | Close one replica after recovery | New connection id/epoch; stale frames cannot satisfy the fence. | Driven |
+| D5 | Delayed old snapshot | None (reference-only) | Old-epoch snapshot rejected before any book or incident mutation. | Honest regression against the production core |
+| D6 | Delayed old delta | None (reference-only) | Same fence contract for a stale delta. | Honest regression |
+| D7 | Many instruments requiring recovery | `close_book_connections()` on a 500-symbol cell | All 500 instruments re-anchor; exact coverage certifies with no drops. | Driven |
+| D8 | Recovery timeout | `close_book_connections()` + reject replacements | Run is incomplete with resyncing symbols and unexplained drops; no silent success. | Driven |
+| D9 | Recovery exhaustion | None (reference-only) | Bounded attempt budget is an explicit, non-escalating outcome. | Honest regression |
+| D10 | Repeated reconnects | Cycle all sockets repeatedly | Independent generations, bounded queues, healthy instruments, monotonic SBE receive times, reconciled accounting/dispositions. | Driven |
+
+The first-connected book socket deterministically wins the active-source race
+(the mock delays later sockets' initial snapshots), so D1 and D2 target stable
+roles. The mock venue clock is monotonic across connection epochs while
+per-socket `seq` resets, matching a real exchange and preventing a false
+maintenance-epoch reconnect storm.
+
+Limitations: D5, D6 and D9 are not synthesized on the stress harness wire; the
+loopback mock cannot inject a stale-epoch frame or drive the recovery attempt
+budget. They are recorded as `reference_only` steps and certified by named
+regression tests against the production recovery/fence machinery. No
+performance, latency or throughput claim is made by this matrix.
+
 ## Acceptance gates for this increment
 
 | Gate | Proof |
@@ -270,6 +319,7 @@ names. The full contract is in
 | Bounded queues | mock `queue_high_water <= capacity`; writer `queue_high_water <= capacity + 1` (one-slot counter lag); journal queue fixed at one record |
 | Disposition reconciliation | the five manifest state counters are distinct and the dominant state matches the declared disposition; ledger gaps and disposition gaps still block certification |
 | Journal / SBE | every profile manifest records journal state and SBE verdicts; a journal rejection preserves the collector error rather than reporting a generic failure |
+| Disconnect recovery | `disconnect_standby_replica_loss_recovers_and_reconciles`, `disconnect_active_replica_loss_recovers_and_reconciles`, `disconnect_both_replicas_lost_reanchors_all_instruments`, `disconnect_many_instruments_reanchor_certifies_coverage`, `disconnect_recovery_timeout_surfaces_as_incomplete`, `disconnect_recovery_storm_preserves_generations_and_accounting`, `disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence` pass offline |
 
 The earlier `seed-0017-4000-hotquiet.json` manifest was generated by the
 pre-correction sampler (residual draws could include hot instruments, giving
@@ -282,7 +332,7 @@ artifacts are `seed-0007-4000-uniform-v4.json`,
 `seed-0007-4000-uniform-v5.json`, `seed-0017-4000-hotquiet-v5.json`,
 `seed-001d-4000-hotquiet-v5.json` and
 `failed-v5-seed-000b-200-coverage_set_mismatch.json` are tied to `5bb54e6`. Do not use the v2 manifest for comparative
-workload claims. The M5.5 v9 manifests are generated only into a caller-supplied
+workload claims. The M5.5 v12 manifests are generated only into a caller-supplied
 `STRESS_MANIFEST_OUT` directory and are not copied over the v3-v5 artifacts.
 
 Performance gates (p50/p95/p99/p99.9, CPU, RSS, disk, queue wait) are **not**
@@ -313,9 +363,16 @@ STRESS_MANIFEST_OUT=/tmp/stress-v3 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_exact_hot_quiet_manifest_is_reproducible --test-threads=1 --nocapture
 
-STRESS_MANIFEST_OUT=/tmp/stress-v9 \
+STRESS_MANIFEST_OUT=/tmp/stress-v12 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_backpressure_profiles_manifest_is_reproducible --test-threads=1 --nocapture
+
+# M5.4 disconnect sweeps (non-ignored)
+cargo test --test full_universe_stress disconnect_ -- --test-threads=1
+
+STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v12 \
+  cargo test --release --locked --test full_universe_stress -- \
+  --ignored reference_disconnect_sweep_manifest --test-threads=1 --nocapture
 ```
 
 Limitations: the slow-downstream delay is fixed per delta frame and is not a
