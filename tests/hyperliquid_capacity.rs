@@ -53,7 +53,10 @@ async fn h3_balanced_cell_certifies_every_evidence_gate() {
     assert_eq!(outcome.schedule.coins.len(), 10);
     assert_eq!(outcome.coverage_expected, 10);
     assert_eq!(outcome.coverage_anchored, 10);
-    assert_eq!(outcome.ledger.generated_events, outcome.schedule.expected_book_snapshots());
+    assert_eq!(
+        outcome.ledger.generated_events,
+        outcome.schedule.expected_book_snapshots()
+    );
     assert_eq!(outcome.ledger.applied_events, Some(outcome.sbe_messages));
     assert_eq!(outcome.ledger.sbe_deltas, Some(outcome.sbe_messages));
     assert_eq!(outcome.ledger.unexplained_drops, Some(0));
@@ -63,9 +66,18 @@ async fn h3_balanced_cell_certifies_every_evidence_gate() {
     assert_eq!(outcome.ledger.disposition_excess, Some(0));
     assert_eq!(outcome.book_enqueued, outcome.book_transmitted);
     assert_eq!(outcome.sbe_messages, outcome.sbe_snapshots);
-    assert_eq!(outcome.journal_records, outcome.schedule.expected_data_frames());
-    assert_eq!(outcome.telemetry_observations, outcome.schedule.expected_telemetry_frames());
-    assert_eq!(outcome.trade_observations, outcome.schedule.expected_trade_frames());
+    assert_eq!(
+        outcome.journal_records,
+        outcome.schedule.expected_data_frames()
+    );
+    assert_eq!(
+        outcome.telemetry_observations,
+        outcome.schedule.expected_telemetry_frames()
+    );
+    assert_eq!(
+        outcome.trade_observations,
+        outcome.schedule.expected_trade_frames()
+    );
 
     // Three-set coverage hashes agree with the independent coverage certificate.
     assert_eq!(outcome.expected_set_sha256, outcome.acknowledged_set_sha256);
@@ -89,7 +101,10 @@ async fn h3_balanced_cell_certifies_every_evidence_gate() {
     );
     assert_eq!(manifest["scenario_version"].as_u64(), Some(16));
     assert_eq!(manifest["run_status"].as_str(), Some("success"));
-    assert_eq!(manifest["evidence_class"].as_str(), Some("synthetic-loopback"));
+    assert_eq!(
+        manifest["evidence_class"].as_str(),
+        Some("synthetic-loopback")
+    );
     assert!(manifest::missing_required_fields(&manifest).is_empty());
     assert_eq!(manifest["hyperliquid"]["live_certification"], false);
     assert_eq!(manifest["hyperliquid"]["latency_or_capacity_claim"], false);
@@ -110,8 +125,14 @@ async fn h3_telemetry_heavy_profile_keeps_telemetry_out_of_books() {
         outcome.telemetry_observations > outcome.schedule.expected_book_snapshots(),
         "the telemetry-heavy profile must fan out more telemetry frames than book snapshots"
     );
-    assert_eq!(outcome.telemetry_observations, outcome.schedule.expected_telemetry_frames());
-    assert_eq!(outcome.sbe_messages, outcome.schedule.expected_book_snapshots());
+    assert_eq!(
+        outcome.telemetry_observations,
+        outcome.schedule.expected_telemetry_frames()
+    );
+    assert_eq!(
+        outcome.sbe_messages,
+        outcome.schedule.expected_book_snapshots()
+    );
     assert_eq!(outcome.sbe_snapshots, outcome.sbe_messages);
     assert_eq!(outcome.ledger.transmit_decode_excess, Some(0));
     assert_eq!(outcome.ledger.transmit_decode_shortfall, Some(0));
@@ -130,9 +151,18 @@ async fn h3_book_refresh_burst_profile_reconciles_and_recovers() {
         outcome.schedule.expected_book_snapshots() > 20,
         "the burst profile must issue multiple refreshes per instrument across epochs"
     );
-    assert_eq!(outcome.book_enqueued as u64, outcome.schedule.expected_book_snapshots());
-    assert_eq!(outcome.book_transmitted as u64, outcome.schedule.expected_book_snapshots());
-    assert_eq!(outcome.sbe_messages, outcome.schedule.expected_book_snapshots());
+    assert_eq!(
+        outcome.book_enqueued as u64,
+        outcome.schedule.expected_book_snapshots()
+    );
+    assert_eq!(
+        outcome.book_transmitted as u64,
+        outcome.schedule.expected_book_snapshots()
+    );
+    assert_eq!(
+        outcome.sbe_messages,
+        outcome.schedule.expected_book_snapshots()
+    );
     assert!(outcome.ws_connections >= 2);
     assert!(outcome.writer_queue_high_water <= 129);
 }
@@ -144,15 +174,23 @@ async fn h3_book_refresh_burst_profile_reconciles_and_recovers() {
 fn h3_schedule_is_seed_deterministic_and_profile_distinct() {
     let a = derive_schedule(HyperliquidProfile::Balanced, 0xABCD);
     let b = derive_schedule(HyperliquidProfile::Balanced, 0xABCD);
-    assert_eq!(a, b, "the same profile and seed must reproduce the same schedule");
+    assert_eq!(
+        a, b,
+        "the same profile and seed must reproduce the same schedule"
+    );
     assert_eq!(a.workload_id(), "hyperliquid-balanced-seed-abcd");
     assert_eq!(a.coins.len(), 10);
     assert!(a.expected_book_snapshots() >= 20); // 10 instruments x 2 epochs
     assert_eq!(a.expected_telemetry_frames(), 6); // allMids + fastAssetCtxs
 
     let different_seed = derive_schedule(HyperliquidProfile::Balanced, 0xABCE);
-    assert_ne!(a.frames().map(|frame| &frame.payload).collect::<Vec<_>>(),
-        different_seed.frames().map(|frame| &frame.payload).collect::<Vec<_>>());
+    assert_ne!(
+        a.frames().map(|frame| &frame.payload).collect::<Vec<_>>(),
+        different_seed
+            .frames()
+            .map(|frame| &frame.payload)
+            .collect::<Vec<_>>()
+    );
 
     let heavy = derive_schedule(HyperliquidProfile::TelemetryHeavy, 0xABCD);
     assert!(
@@ -174,7 +212,8 @@ fn h3_schedule_is_seed_deterministic_and_profile_distinct() {
 #[ignore = "reference artifact generator; run explicitly with STRESS_MANIFEST_OUT"]
 async fn reference_hyperliquid_manifest_is_versioned() {
     let out = PathBuf::from(
-        std::env::var("STRESS_MANIFEST_OUT").expect("set STRESS_MANIFEST_OUT to produce the artifact"),
+        std::env::var("STRESS_MANIFEST_OUT")
+            .expect("set STRESS_MANIFEST_OUT to produce the artifact"),
     );
     let directory = tempfile::tempdir().unwrap();
     let outcome = run_hyperliquid_cell(directory.path(), HyperliquidProfile::Balanced, 0x0B).await;
@@ -206,11 +245,18 @@ async fn reference_hyperliquid_manifest_is_versioned() {
         .get("cells")
         .and_then(|cells| cells.get(published.as_str()))
         .expect("published cell entry");
-    assert_eq!(entry["publication_state"].as_str(), Some(manifest::PUBLICATION_PUBLISHED));
+    assert_eq!(
+        entry["publication_state"].as_str(),
+        Some(manifest::PUBLICATION_PUBLISHED)
+    );
     let body = out.join(entry["path"].as_str().unwrap());
     let document: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&body).expect("manifest body")).expect("manifest JSON");
+        serde_json::from_slice(&std::fs::read(&body).expect("manifest body"))
+            .expect("manifest JSON");
     assert_eq!(document["scenario_version"].as_u64(), Some(16));
-    assert_eq!(document["evidence_class"].as_str(), Some("synthetic-loopback"));
+    assert_eq!(
+        document["evidence_class"].as_str(),
+        Some("synthetic-loopback")
+    );
     assert_eq!(document["hyperliquid"]["live_certification"], false);
 }

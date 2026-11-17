@@ -164,7 +164,6 @@ impl HyperliquidSchedule {
         self.frames().count() as u64
     }
 
-    #[must_use]
     pub fn frames(&self) -> impl Iterator<Item = &ScheduledFrame> {
         self.epoch_one.iter().chain(self.epoch_two.iter())
     }
@@ -205,7 +204,10 @@ fn format_quarters(quarters: u64) -> String {
 }
 
 fn base_tenths(coins: &[String], coin: &str) -> i64 {
-    let index = coins.iter().position(|candidate| candidate == coin).unwrap_or(0) as i64;
+    let index = coins
+        .iter()
+        .position(|candidate| candidate == coin)
+        .unwrap_or(0) as i64;
     (100 + index * 10) * 10
 }
 
@@ -287,7 +289,10 @@ fn trades_payload(coin: &str, ordinal: u64, coins: &[String], rng: &mut SplitMix
 /// is seeded from the public seed and a per-stage domain constant, so adding or
 /// changing one stage cannot silently alter another stage's stream.
 pub fn derive_schedule(profile: HyperliquidProfile, seed: u64) -> HyperliquidSchedule {
-    let coins: Vec<String> = SELECTED_COINS.iter().map(|coin| (*coin).to_owned()).collect();
+    let coins: Vec<String> = SELECTED_COINS
+        .iter()
+        .map(|coin| (*coin).to_owned())
+        .collect();
     let (mids, ctxs, refreshes, bursts) = profile.intensities();
 
     // Deterministic global ordinal: telemetry first, then books, then trades,
@@ -304,7 +309,9 @@ pub fn derive_schedule(profile: HyperliquidProfile, seed: u64) -> HyperliquidSch
         epoch_one.push(ScheduledFrame {
             seq: ordinal,
             epoch: 1,
-            kind: ScheduledKind::AllMids { coins: coins.clone() },
+            kind: ScheduledKind::AllMids {
+                coins: coins.clone(),
+            },
             payload,
         });
         ordinal += 1;
@@ -315,7 +322,9 @@ pub fn derive_schedule(profile: HyperliquidProfile, seed: u64) -> HyperliquidSch
         epoch_one.push(ScheduledFrame {
             seq: ordinal,
             epoch: 1,
-            kind: ScheduledKind::FastCtx { coins: coins.clone() },
+            kind: ScheduledKind::FastCtx {
+                coins: coins.clone(),
+            },
             payload,
         });
         ordinal += 1;
@@ -324,7 +333,11 @@ pub fn derive_schedule(profile: HyperliquidProfile, seed: u64) -> HyperliquidSch
     // Every selected coin is anchored in every epoch. Extra refreshes exercise
     // the l2Book refresh cadence and produce additional deterministic snapshots.
     for epoch in [1u32, 2] {
-        let target = if epoch == 1 { &mut epoch_one } else { &mut epoch_two };
+        let target = if epoch == 1 {
+            &mut epoch_one
+        } else {
+            &mut epoch_two
+        };
         for _ in 0..refreshes {
             for coin in &coins {
                 let payload = l2_book_payload(coin, ordinal, &coins);
@@ -344,7 +357,11 @@ pub fn derive_schedule(profile: HyperliquidProfile, seed: u64) -> HyperliquidSch
 
     let mut trade_rng = SplitMix64::new(seed ^ 0x5452_4144_4553_0000);
     for epoch in [1u32, 2] {
-        let target = if epoch == 1 { &mut epoch_one } else { &mut epoch_two };
+        let target = if epoch == 1 {
+            &mut epoch_one
+        } else {
+            &mut epoch_two
+        };
         for _ in 0..bursts {
             // Each burst fans a trade print across the selected universe.
             for coin in &coins {
@@ -487,8 +504,16 @@ impl HyperliquidMock {
                 .collect(),
         ];
         let is_book: Vec<Vec<bool>> = vec![
-            schedule.epoch_one.iter().map(ScheduledFrame::is_book).collect(),
-            schedule.epoch_two.iter().map(ScheduledFrame::is_book).collect(),
+            schedule
+                .epoch_one
+                .iter()
+                .map(ScheduledFrame::is_book)
+                .collect(),
+            schedule
+                .epoch_two
+                .iter()
+                .map(ScheduledFrame::is_book)
+                .collect(),
         ];
 
         // Two websocket accept loops mirror the H2 mock and allow a reconnect
@@ -576,7 +601,10 @@ impl Drop for HyperliquidMock {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "loopback connection handler takes the script and its shared counters explicitly"
+)]
 async fn serve_connection(
     id: usize,
     socket: tokio::net::TcpStream,
@@ -749,7 +777,10 @@ fn collect_snapshots(events: &[WorkerEvent]) -> Vec<ExchangeEvent> {
     snapshots
 }
 
-fn write_capture(directory: &Path, messages: &[engineering_challenge::model::OutputMessage]) -> (PathBuf, WriterStats) {
+fn write_capture(
+    directory: &Path,
+    messages: &[engineering_challenge::model::OutputMessage],
+) -> (PathBuf, WriterStats) {
     let path = directory.join("capture.sbe");
     let mut writer = DirectWriter::create(WriterOptions {
         path: path.to_str().unwrap().to_owned(),
@@ -801,7 +832,9 @@ fn write_sidecars(
         ReportConfig::from_settings(&settings, 1),
     );
     report.acknowledged_symbols = acknowledged.to_vec();
-    report.write(&directory.join("report.json")).expect("write report");
+    report
+        .write(&directory.join("report.json"))
+        .expect("write report");
 }
 
 /// Validate the exact subscribe/unsubscribe command set recorded by the mock.
@@ -824,8 +857,14 @@ fn exact_subscriptions(commands: &[Vec<Value>], coins: &[String]) -> bool {
     for connection in commands {
         for command in connection {
             let method = command["method"].as_str().unwrap_or("").to_owned();
-            let kind = command["subscription"]["type"].as_str().unwrap_or("").to_owned();
-            let coin = command["subscription"]["coin"].as_str().unwrap_or("").to_owned();
+            let kind = command["subscription"]["type"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
+            let coin = command["subscription"]["coin"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned();
             observed.insert((method, kind, coin));
         }
     }
@@ -865,7 +904,11 @@ pub struct HyperliquidCellOutcome {
 /// Drive one complete deterministic Hyperliquid capacity cell through the real
 /// adapter, worker, journal and core. Acceptance is fail-closed: every evidence
 /// check must hold before `acceptance_valid` is true.
-pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed: u64) -> HyperliquidCellOutcome {
+pub async fn run_hyperliquid_cell(
+    root: &Path,
+    profile: HyperliquidProfile,
+    seed: u64,
+) -> HyperliquidCellOutcome {
     let schedule = derive_schedule(profile, seed);
     let mut reasons: Vec<String> = Vec::new();
     let mut check = |condition: bool, reason: &str| {
@@ -966,14 +1009,15 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
     drop(cmd_tx);
 
     let snapshots = collect_snapshots(&seen);
-    let zero_level_changes = snapshots.iter().all(|event| {
-        !matches!(event, ExchangeEvent::LevelChange { .. })
-    }) && !seen.iter().any(|event| match event {
-        WorkerEvent::Events { events, .. } => events
-            .iter()
-            .any(|normalized| matches!(normalized, ExchangeEvent::LevelChange { .. })),
-        _ => false,
-    });
+    let zero_level_changes = snapshots
+        .iter()
+        .all(|event| !matches!(event, ExchangeEvent::LevelChange { .. }))
+        && !seen.iter().any(|event| match event {
+            WorkerEvent::Events { events, .. } => events
+                .iter()
+                .any(|normalized| matches!(normalized, ExchangeEvent::LevelChange { .. })),
+            _ => false,
+        });
     check(zero_level_changes, "level_change_produced");
     check(
         snapshots.len() as u64 == schedule.expected_book_snapshots(),
@@ -983,7 +1027,12 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
     let mut anchored = BTreeSet::new();
     let mut saw_epoch_two = false;
     for snapshot in &snapshots {
-        if let ExchangeEvent::Snapshot { native_symbol, meta, .. } = snapshot {
+        if let ExchangeEvent::Snapshot {
+            native_symbol,
+            meta,
+            ..
+        } = snapshot
+        {
             anchored.insert(native_symbol.clone());
             if meta.connection_epoch == 2 {
                 saw_epoch_two = true;
@@ -1004,7 +1053,9 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
     check(ws_connections >= 2, "no_reconnect");
 
     // Journal: exact raw bytes and typed observation signals.
-    let summary = journal.shutdown(Duration::from_secs(5)).expect("journal shutdown");
+    let summary = journal
+        .shutdown(Duration::from_secs(5))
+        .expect("journal shutdown");
     let records = read_records(&run_directory).expect("read journal records");
     check(
         summary.record_count == schedule.expected_data_frames(),
@@ -1021,7 +1072,9 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
             break;
         }
         let expected_decode = match frame.kind {
-            ScheduledKind::L2Book { .. } => matches!(record.outcome, DecodeOutcome::Decoded { events: 1 }),
+            ScheduledKind::L2Book { .. } => {
+                matches!(record.outcome, DecodeOutcome::Decoded { events: 1 })
+            }
             _ => matches!(record.outcome, DecodeOutcome::Ignored { .. }),
         };
         if !expected_decode {
@@ -1081,14 +1134,12 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
     let mut core_settings = Settings::for_exchange(ExchangeKind::Hyperliquid);
     core_settings.collector.shards = 1;
     core_settings.collector.replicas = 1;
-    let config = CoreConfig::from_settings(
-        &core_settings,
-        1,
-        exchange::hyperliquid::capabilities(),
-    )
-    .expect("core config");
+    let config =
+        CoreConfig::from_settings(&core_settings, 1, exchange::hyperliquid::capabilities())
+            .expect("core config");
     let mut core = CollectorCore::new(config).expect("collector core");
-    core.apply_discovery(1_000_000, markets.clone()).expect("apply discovery");
+    core.apply_discovery(1_000_000, markets.clone())
+        .expect("apply discovery");
     let mut outputs = Vec::new();
     for snapshot in &snapshots {
         outputs.extend(core.handle_event(SourceId::new(0, 0), snapshot.clone()));
@@ -1097,7 +1148,12 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
     let sbe_messages = outputs.len() as u64;
     let sbe_snapshots = outputs
         .iter()
-        .filter(|message| matches!(message, engineering_challenge::model::OutputMessage::Snapshot(_)))
+        .filter(|message| {
+            matches!(
+                message,
+                engineering_challenge::model::OutputMessage::Snapshot(_)
+            )
+        })
         .count() as u64;
     let (capture, writer_stats) = write_capture(root, &outputs);
     check(
@@ -1119,8 +1175,14 @@ pub async fn run_hyperliquid_cell(root: &Path, profile: HyperliquidProfile, seed
     )
     .expect("coverage run");
     check(coverage_summary.valid, "coverage_invalid");
-    check(coverage_summary.expected == desired.len(), "coverage_expected");
-    check(coverage_summary.anchored == desired.len(), "coverage_anchored");
+    check(
+        coverage_summary.expected == desired.len(),
+        "coverage_expected",
+    );
+    check(
+        coverage_summary.anchored == desired.len(),
+        "coverage_anchored",
+    );
 
     let completeness = completeness::run(&capture, CHUNK_STR, false).expect("completeness run");
     check(completeness.valid, "completeness_invalid");
@@ -1249,7 +1311,11 @@ pub fn assert_certified(outcome: &HyperliquidCellOutcome) {
         outcome.acceptance_reasons, outcome.ledger
     );
     assert!(outcome.ledger.reconciled(), "ledger: {:?}", outcome.ledger);
-    assert!(outcome.coverage_valid && outcome.coverage_expected == 10 && outcome.coverage_anchored == 10);
+    assert!(
+        outcome.coverage_valid
+            && outcome.coverage_expected == 10
+            && outcome.coverage_anchored == 10
+    );
     assert!(outcome.completeness_valid && outcome.verify_valid && outcome.journal_complete);
     assert_eq!(outcome.sbe_messages, outcome.sbe_snapshots);
     assert!(outcome.zero_level_changes, "a LevelChange was produced");
@@ -1257,10 +1323,7 @@ pub fn assert_certified(outcome: &HyperliquidCellOutcome) {
     assert!(outcome.exact_subscriptions, "subscription set mismatch");
     assert!(outcome.ws_connections >= 2, "no reconnect occurred");
     assert!(outcome.writer_queue_high_water <= WRITER_QUEUE as u64 + 1);
-    assert_eq!(
-        outcome.expected_set_sha256,
-        outcome.acknowledged_set_sha256
-    );
+    assert_eq!(outcome.expected_set_sha256, outcome.acknowledged_set_sha256);
     assert_eq!(outcome.acknowledged_set_sha256, outcome.anchored_set_sha256);
 }
 
@@ -1268,7 +1331,9 @@ pub fn assert_certified(outcome: &HyperliquidCellOutcome) {
 /// shared manifest schema and scenario version (`16`) and fills every required
 /// field. Synthetic evidence never satisfies a live tier.
 #[must_use]
-pub fn build_hyperliquid_manifest(outcome: &HyperliquidCellOutcome) -> serde_json::Map<String, Value> {
+pub fn build_hyperliquid_manifest(
+    outcome: &HyperliquidCellOutcome,
+) -> serde_json::Map<String, Value> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let mut document = serde_json::Map::new();
@@ -1281,35 +1346,78 @@ pub fn build_hyperliquid_manifest(outcome: &HyperliquidCellOutcome) -> serde_jso
             .map(|duration| duration.as_nanos())
             .unwrap_or(0)
     );
-    document.insert("schema_version".to_owned(), json!(manifest::STRESS_MANIFEST_SCHEMA_VERSION));
+    document.insert(
+        "schema_version".to_owned(),
+        json!(manifest::STRESS_MANIFEST_SCHEMA_VERSION),
+    );
     document.insert("run_id".to_owned(), json!(run_id));
     document.insert(
         "cell_id".to_owned(),
-        json!(hyperliquid_cell_id(outcome.schedule.profile, outcome.schedule.seed)),
+        json!(hyperliquid_cell_id(
+            outcome.schedule.profile,
+            outcome.schedule.seed
+        )),
     );
     document.insert("evidence_class".to_owned(), json!("synthetic-loopback"));
     document.insert("execution_mode".to_owned(), json!("stress"));
     document.insert(
         "run_status".to_owned(),
-        json!(if outcome.acceptance_valid { "success" } else { "failed" }),
+        json!(if outcome.acceptance_valid {
+            "success"
+        } else {
+            "failed"
+        }),
     );
     document.insert("failure_class".to_owned(), Value::Null);
     document.insert("scenario_version".to_owned(), json!(SCENARIO_VERSION));
-    document.insert("generator_version".to_owned(), json!(super::universe::GENERATOR_VERSION));
-    document.insert("prng_algorithm_version".to_owned(), json!(super::rng::PRNG_ALGORITHM_VERSION));
-    document.insert("build_profile".to_owned(), json!(option_env!("PROFILE").unwrap_or("test")));
-    document.insert("target_triple".to_owned(), json!(option_env!("TARGET").unwrap_or("unknown")));
-    document.insert("configuration_sha256".to_owned(), manifest::unavailable("test harness"));
-    document.insert("stress_harness_binary_sha256".to_owned(), manifest::unavailable("test harness"));
-    document.insert("collector_binary_sha256".to_owned(), manifest::unavailable("test harness"));
-    document.insert("source_commit".to_owned(), manifest::unavailable("test harness"));
-    document.insert("host".to_owned(), json!({"evidence_class": "synthetic-loopback"}));
-    document.insert("provenance".to_owned(), json!({"evidence_class": "synthetic-loopback"}));
-    document.insert("scenario".to_owned(), json!({
-        "venue": "hyperliquid",
-        "lifecycle_scenario": "none",
-        "profile": outcome.schedule.profile,
-    }));
+    document.insert(
+        "generator_version".to_owned(),
+        json!(super::universe::GENERATOR_VERSION),
+    );
+    document.insert(
+        "prng_algorithm_version".to_owned(),
+        json!(super::rng::PRNG_ALGORITHM_VERSION),
+    );
+    document.insert(
+        "build_profile".to_owned(),
+        json!(option_env!("PROFILE").unwrap_or("test")),
+    );
+    document.insert(
+        "target_triple".to_owned(),
+        json!(option_env!("TARGET").unwrap_or("unknown")),
+    );
+    document.insert(
+        "configuration_sha256".to_owned(),
+        manifest::unavailable("test harness"),
+    );
+    document.insert(
+        "stress_harness_binary_sha256".to_owned(),
+        manifest::unavailable("test harness"),
+    );
+    document.insert(
+        "collector_binary_sha256".to_owned(),
+        manifest::unavailable("test harness"),
+    );
+    document.insert(
+        "source_commit".to_owned(),
+        manifest::unavailable("test harness"),
+    );
+    document.insert(
+        "host".to_owned(),
+        json!({"evidence_class": "synthetic-loopback"}),
+    );
+    document.insert(
+        "provenance".to_owned(),
+        json!({"evidence_class": "synthetic-loopback"}),
+    );
+    document.insert(
+        "scenario".to_owned(),
+        json!({
+            "venue": "hyperliquid",
+            "lifecycle_scenario": "none",
+            "profile": outcome.schedule.profile,
+        }),
+    );
     document.insert("workload_schedule".to_owned(), json!({
         "workload_id": outcome.schedule.workload_id(),
         "profile": outcome.schedule.profile,
@@ -1330,110 +1438,146 @@ pub fn build_hyperliquid_manifest(outcome: &HyperliquidCellOutcome) -> serde_jso
         "expected_total_events": outcome.schedule.expected_book_snapshots(),
         "fault_schedule": ["reconnect_recovery"],
     }));
-    document.insert("capacity".to_owned(), json!({"claim": "none", "evidence_class": "synthetic-loopback"}));
-    document.insert("collector".to_owned(), json!({
-        "desired_topology": {"shards": 1, "replicas": 1},
-        "actual_topology": {"shards": 1, "replicas": 1},
-    }));
-    document.insert("counts".to_owned(), json!({
-        "generated_events": outcome.ledger.generated_events,
-        "applied_events": outcome.ledger.applied_events,
-    }));
-    document.insert("mock_transport".to_owned(), json!({
-        "book_enqueued": outcome.book_enqueued,
-        "book_transmitted": outcome.book_transmitted,
-        "data_frames": outcome.telemetry_observations,
-        "connections": outcome.ws_connections,
-    }));
+    document.insert(
+        "capacity".to_owned(),
+        json!({"claim": "none", "evidence_class": "synthetic-loopback"}),
+    );
+    document.insert(
+        "collector".to_owned(),
+        json!({
+            "desired_topology": {"shards": 1, "replicas": 1},
+            "actual_topology": {"shards": 1, "replicas": 1},
+        }),
+    );
+    document.insert(
+        "counts".to_owned(),
+        json!({
+            "generated_events": outcome.ledger.generated_events,
+            "applied_events": outcome.ledger.applied_events,
+        }),
+    );
+    document.insert(
+        "mock_transport".to_owned(),
+        json!({
+            "book_enqueued": outcome.book_enqueued,
+            "book_transmitted": outcome.book_transmitted,
+            "data_frames": outcome.telemetry_observations,
+            "connections": outcome.ws_connections,
+        }),
+    );
     let ledger = &outcome.ledger;
-    document.insert("event_ledger".to_owned(), json!({
-        "generated_events": ledger.generated_events,
-        "expected_applied": ledger.expected_applied,
-        "applied_events": ledger.applied_events,
-        "enqueued_deltas": ledger.enqueued_deltas,
-        "transmitted_deltas": ledger.transmitted_deltas,
-        "received_frames": ledger.received_frames,
-        "decode_errors": ledger.decode_errors,
-        "data_frames_received": ledger.received_frames,
-        "delta_events_decoded": ledger.delta_events_decoded,
-        "core_ingress_events": ledger.core_ingress_events,
-        "core_delta_events": ledger.core_delta_events,
-        "no_active_source": ledger.no_active_source,
-        "unknown_symbol": ledger.unknown_symbol,
-        "non_live": ledger.non_live,
-        "unassigned_source": ledger.unassigned_source,
-        "invalid_book": ledger.invalid_book,
-        "shadow_clock_regression": ledger.shadow_clock_regression,
-        "zero_noop": ledger.zero_noop,
-        "sbe_conversion_failed": ledger.sbe_conversion_failed,
-        "disposition_shortfall": ledger.disposition_shortfall,
-        "disposition_excess": ledger.disposition_excess,
-        "writer_delta_admissions": ledger.writer_delta_admissions,
-        "writer_delta_writes": ledger.writer_delta_writes,
-        "sbe_deltas": ledger.sbe_deltas,
-        "journaled_records": ledger.journaled_records,
-        "injected_pre_wire_drops": ledger.injected_pre_wire_drops,
-        "suppressed_replica_duplicates": ledger.suppressed_replica_duplicates,
-        "unexplained_drops": ledger.unexplained_drops,
-        "application_shortfall": ledger.application_shortfall,
-        "over_applied": ledger.over_applied,
-        "persistence_gap": ledger.persistence_gap,
-        "persistence_excess": ledger.persistence_excess,
-        "enqueue_transmit_shortfall": ledger.enqueue_transmit_shortfall,
-        "enqueue_transmit_excess": ledger.enqueue_transmit_excess,
-        "transmit_decode_shortfall": ledger.transmit_decode_shortfall,
-        "transmit_decode_excess": ledger.transmit_decode_excess,
-        "writer_admission_shortfall": ledger.writer_admission_shortfall,
-        "writer_admission_excess": ledger.writer_admission_excess,
-        "writer_write_shortfall": ledger.writer_write_shortfall,
-        "writer_write_excess": ledger.writer_write_excess,
-        "decode_failure_count": ledger.decode_failure_count,
-        "reconciled": ledger.reconciled(),
-    }));
-    document.insert("coverage".to_owned(), json!({
-        "expected_set_sha256": outcome.expected_set_sha256,
-        "acknowledged_set_sha256": outcome.acknowledged_set_sha256,
-        "anchored_set_sha256": outcome.anchored_set_sha256,
-        "per_epoch": [
-            {"epoch": 1, "expected": 10, "anchored": 10},
-            {"epoch": 2, "expected": 10, "anchored": 10},
-        ],
-    }));
-    document.insert("verify".to_owned(), json!({
-        "verify_valid": outcome.verify_valid,
-        "completeness_valid": outcome.completeness_valid,
-        "coverage_valid": outcome.coverage_valid,
-        "journal_complete": outcome.journal_complete,
-    }));
-    document.insert("delivery".to_owned(), json!({
-        "anchor_completed": true,
-        "drain_completed": true,
-        "phases": ["steady", "reconnect_recovery"],
-    }));
-    document.insert("performance".to_owned(), json!({
-        "stage_timing": {
-            "boundaries": {"sbe_write": {"state": "unavailable"}},
-            "provenance": {"clock_source": "none", "clock_resolution_ns": 0},
-        },
-        "claim": "none",
-    }));
-    document.insert("disk".to_owned(), json!({
-        "free_bytes_before_start": manifest::unavailable("test harness"),
-        "bytes_written": manifest::unavailable("test harness"),
-    }));
-    document.insert("incidents".to_owned(), json!({
-        "discontinuity_incidents": 0,
-        "unquantifiable_gaps": 0,
-    }));
-    document.insert("hyperliquid".to_owned(), json!({
-        "venue": "hyperliquid",
-        "selected_universe": outcome.schedule.coins,
-        "zero_level_change": outcome.zero_level_changes,
-        "reconnect_recovery": outcome.recovered_epoch_two,
-        "evidence_class": "synthetic-loopback",
-        "live_certification": false,
-        "latency_or_capacity_claim": false,
-    }));
+    document.insert(
+        "event_ledger".to_owned(),
+        json!({
+            "generated_events": ledger.generated_events,
+            "expected_applied": ledger.expected_applied,
+            "applied_events": ledger.applied_events,
+            "enqueued_deltas": ledger.enqueued_deltas,
+            "transmitted_deltas": ledger.transmitted_deltas,
+            "received_frames": ledger.received_frames,
+            "decode_errors": ledger.decode_errors,
+            "data_frames_received": ledger.received_frames,
+            "delta_events_decoded": ledger.delta_events_decoded,
+            "core_ingress_events": ledger.core_ingress_events,
+            "core_delta_events": ledger.core_delta_events,
+            "no_active_source": ledger.no_active_source,
+            "unknown_symbol": ledger.unknown_symbol,
+            "non_live": ledger.non_live,
+            "unassigned_source": ledger.unassigned_source,
+            "invalid_book": ledger.invalid_book,
+            "shadow_clock_regression": ledger.shadow_clock_regression,
+            "zero_noop": ledger.zero_noop,
+            "sbe_conversion_failed": ledger.sbe_conversion_failed,
+            "disposition_shortfall": ledger.disposition_shortfall,
+            "disposition_excess": ledger.disposition_excess,
+            "writer_delta_admissions": ledger.writer_delta_admissions,
+            "writer_delta_writes": ledger.writer_delta_writes,
+            "sbe_deltas": ledger.sbe_deltas,
+            "journaled_records": ledger.journaled_records,
+            "injected_pre_wire_drops": ledger.injected_pre_wire_drops,
+            "suppressed_replica_duplicates": ledger.suppressed_replica_duplicates,
+            "unexplained_drops": ledger.unexplained_drops,
+            "application_shortfall": ledger.application_shortfall,
+            "over_applied": ledger.over_applied,
+            "persistence_gap": ledger.persistence_gap,
+            "persistence_excess": ledger.persistence_excess,
+            "enqueue_transmit_shortfall": ledger.enqueue_transmit_shortfall,
+            "enqueue_transmit_excess": ledger.enqueue_transmit_excess,
+            "transmit_decode_shortfall": ledger.transmit_decode_shortfall,
+            "transmit_decode_excess": ledger.transmit_decode_excess,
+            "writer_admission_shortfall": ledger.writer_admission_shortfall,
+            "writer_admission_excess": ledger.writer_admission_excess,
+            "writer_write_shortfall": ledger.writer_write_shortfall,
+            "writer_write_excess": ledger.writer_write_excess,
+            "decode_failure_count": ledger.decode_failure_count,
+            "reconciled": ledger.reconciled(),
+        }),
+    );
+    document.insert(
+        "coverage".to_owned(),
+        json!({
+            "expected_set_sha256": outcome.expected_set_sha256,
+            "acknowledged_set_sha256": outcome.acknowledged_set_sha256,
+            "anchored_set_sha256": outcome.anchored_set_sha256,
+            "per_epoch": [
+                {"epoch": 1, "expected": 10, "anchored": 10},
+                {"epoch": 2, "expected": 10, "anchored": 10},
+            ],
+        }),
+    );
+    document.insert(
+        "verify".to_owned(),
+        json!({
+            "verify_valid": outcome.verify_valid,
+            "completeness_valid": outcome.completeness_valid,
+            "coverage_valid": outcome.coverage_valid,
+            "journal_complete": outcome.journal_complete,
+        }),
+    );
+    document.insert(
+        "delivery".to_owned(),
+        json!({
+            "anchor_completed": true,
+            "drain_completed": true,
+            "phases": ["steady", "reconnect_recovery"],
+        }),
+    );
+    document.insert(
+        "performance".to_owned(),
+        json!({
+            "stage_timing": {
+                "boundaries": {"sbe_write": {"state": "unavailable"}},
+                "provenance": {"clock_source": "none", "clock_resolution_ns": 0},
+            },
+            "claim": "none",
+        }),
+    );
+    document.insert(
+        "disk".to_owned(),
+        json!({
+            "free_bytes_before_start": manifest::unavailable("test harness"),
+            "bytes_written": manifest::unavailable("test harness"),
+        }),
+    );
+    document.insert(
+        "incidents".to_owned(),
+        json!({
+            "discontinuity_incidents": 0,
+            "unquantifiable_gaps": 0,
+        }),
+    );
+    document.insert(
+        "hyperliquid".to_owned(),
+        json!({
+            "venue": "hyperliquid",
+            "selected_universe": outcome.schedule.coins,
+            "zero_level_change": outcome.zero_level_changes,
+            "reconnect_recovery": outcome.recovered_epoch_two,
+            "evidence_class": "synthetic-loopback",
+            "live_certification": false,
+            "latency_or_capacity_claim": false,
+        }),
+    );
     document
 }
 
