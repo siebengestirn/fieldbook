@@ -1519,6 +1519,10 @@ async fn await_drain(
     addr: SocketAddr,
     base: &DrainBaselines,
     expected: u64,
+    // Absolute minimum decoded-frame total. The mock's send counter leads the
+    // sampled decode counter, so a logical-event barrier alone can pass while
+    // wire frames are still being decoded; requiring this closes that gap.
+    min_decoded_frames: u64,
     in_flight: impl Fn() -> u64,
     deadline: Instant,
     mut last_deltas: Option<f64>,
@@ -1531,12 +1535,18 @@ async fn await_drain(
             }
             match evaluate_barrier(&sample, base, expected as f64, in_flight()) {
                 BarrierState::Satisfied => {
-                    return DrainResult {
-                        completed: true,
-                        detail: None,
-                        evidence_error: None,
-                        last_deltas,
-                    };
+                    let decoded = sample
+                        .count("collector_decoded_delta_events_total")
+                        .unwrap_or(u64::MAX);
+                    if decoded >= min_decoded_frames {
+                        return DrainResult {
+                            completed: true,
+                            detail: None,
+                            evidence_error: None,
+                            last_deltas,
+                        };
+                    }
+                    unavailable = None;
                 }
                 BarrierState::Waiting => unavailable = None,
                 BarrierState::Unavailable(error) => unavailable = Some(error),
@@ -1824,6 +1834,11 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             }
         }
     };
+    // Wire-frame baseline for the decoded-catch-up condition below. The mock
+    // increments its send counter synchronously, while the collector's decoded
+    // total is refreshed from worker status; the latter can briefly lag even
+    // after every logical delta has been applied.
+    let baseline_transmitted_deltas = mock.state().ledger_snapshot().deltas_sent;
 
     // Build the explicit schedule before publishing. Phase event counts are
     // the primary schedule definition: no sleeps or timing instrumentation.
@@ -1884,10 +1899,19 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
 
         let completed =
             if !skip_drain && let (Some(addr), Some(base)) = (metrics_addr, baseline) {
+                let transmitted_now = mock.state().ledger_snapshot().deltas_sent;
+                let min_decoded = baseline
+                    .map(|base| {
+                        base.delta_events_decoded.unwrap_or(0).saturating_add(
+                            transmitted_now.saturating_sub(baseline_transmitted_deltas),
+                        )
+                    })
+                    .unwrap_or(0);
                 let result = await_drain(
                     addr,
                     &base,
                     target,
+                    min_decoded,
                     || mock.state().in_flight(),
                     Instant::now() + drain_limit,
                     last_deltas,
