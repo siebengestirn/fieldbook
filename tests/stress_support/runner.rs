@@ -713,6 +713,16 @@ pub fn ledger_acceptance_reasons(ledger: &EventLedger, queue_saturated: u64) -> 
     reasons
 }
 
+/// Publish and drain evidence for one schedule phase. The cumulative expected
+/// count is the drain barrier's target at the end of this phase.
+#[derive(Debug, Clone)]
+pub struct PhaseOutcome {
+    pub name: &'static str,
+    pub published: usize,
+    pub cumulative_expected: u64,
+    pub drain_completed: bool,
+}
+
 /// Full result of one cell run — raw verifier digests included for the manifest.
 pub struct CellOutput {
     pub report: RunReport,
@@ -760,6 +770,10 @@ pub struct CellOutput {
     /// Continuity incidents observed at the end of the run.
     pub incidents: IncidentCounters,
     pub ledger: EventLedger,
+    /// Explicit deterministic workload schedule used by this run.
+    pub schedule: WorkloadSchedule,
+    /// Per-phase publish + drain evidence (one entry for a steady workload).
+    pub phase_results: Vec<PhaseOutcome>,
 }
 
 /// One finished cell: output plus the runner's acceptance verdict plus the
@@ -1170,11 +1184,15 @@ fn exact_event_targets(events: usize, hot_share_pct: u32, rng: &mut SplitMix64) 
     targets
 }
 
+/// Publish exactly `events` logical deltas and return the derived plan. The RNG
+/// is threaded through phases so the whole workload is one deterministic stream
+/// derived from the seed; phase boundaries do not reset it.
 fn publish_events(
     mock: &MockKalshi,
     tickers: &[String],
     hot: &BTreeSet<String>,
     config: &CellConfig,
+    events: usize,
     rng: &mut SplitMix64,
     skip_ticker: Option<&str>,
 ) -> PublishPlan {
@@ -1195,7 +1213,7 @@ fn publish_events(
     let role_based =
         config.hot_fraction_ppm > 0 && !hot_indices.is_empty() && !cold_indices.is_empty();
     let exact_targets = (role_based && config.hot_selection == HotSelection::ExactQuota)
-        .then(|| exact_event_targets(config.events, config.hot_event_share_pct, rng));
+        .then(|| exact_event_targets(events, config.hot_event_share_pct, rng));
     let initial_generated = generated;
     let mut hot_events = 0usize;
     let mut cold_events: usize =
@@ -1206,7 +1224,7 @@ fn publish_events(
         } else {
             0
         };
-    while generated < config.events {
+    while generated < events {
         let draw = generated - initial_generated;
         let index = if role_based {
             let use_hot = exact_targets.as_ref().is_some_and(|targets| targets[draw])
@@ -1482,6 +1500,76 @@ async fn capture_baseline_until(
     }
 }
 
+/// Outcome of one drain barrier invocation. `completed` is false on a timeout,
+/// unavailable evidence or a counter reset; `detail` and `evidence_error`
+/// attribute the reason.
+struct DrainResult {
+    completed: bool,
+    detail: Option<String>,
+    evidence_error: Option<String>,
+    last_deltas: Option<f64>,
+}
+
+/// Wait until every production counter has caught up with `expected` new
+/// deltas since `base` and the mock's outbound queue is empty. `expected` is
+/// cumulative across phases: the baseline is captured once, before any phase,
+/// so each later barrier waits for a larger count. No fixed sleep is part of
+/// the schedule; `METRICS_POLL` is only the observation cadence.
+async fn await_drain(
+    addr: SocketAddr,
+    base: &DrainBaselines,
+    expected: u64,
+    in_flight: impl Fn() -> u64,
+    deadline: Instant,
+    mut last_deltas: Option<f64>,
+) -> DrainResult {
+    let mut unavailable: Option<String> = None;
+    loop {
+        if let Some(sample) = scrape_metrics(addr).await {
+            if let MetricRead::Present(deltas) = sample.read("collector_deltas_emitted_total") {
+                last_deltas = Some(deltas);
+            }
+            match evaluate_barrier(&sample, base, expected as f64, in_flight()) {
+                BarrierState::Satisfied => {
+                    return DrainResult {
+                        completed: true,
+                        detail: None,
+                        evidence_error: None,
+                        last_deltas,
+                    };
+                }
+                BarrierState::Waiting => unavailable = None,
+                BarrierState::Unavailable(error) => unavailable = Some(error),
+                BarrierState::CounterReset(metric) => {
+                    return DrainResult {
+                        completed: false,
+                        detail: Some(format!("counter `{metric}` moved backwards during the run")),
+                        evidence_error: Some("counter_reset".to_owned()),
+                        last_deltas,
+                    };
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        sleep(METRICS_POLL).await;
+    }
+    let (detail, evidence_error) = match unavailable {
+        Some(error) => (Some(error), Some("drain_metrics_unavailable".to_owned())),
+        None => (
+            Some("drain deadline exceeded before every frame was accounted for".to_owned()),
+            None,
+        ),
+    };
+    DrainResult {
+        completed: false,
+        detail,
+        evidence_error,
+        last_deltas,
+    }
+}
+
 pub async fn run_cell(
     directory: &Path,
     config: &CellConfig,
@@ -1495,12 +1583,16 @@ pub async fn run_cell(
 /// the body and in the index entry.
 fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
     if outcome.acceptance.valid {
-        let shape = if config.hot_fraction_ppm > 0 {
-            "hotquiet"
+        // Burst cells get a profile-specific ID so two profiles with the same
+        // seed and universe cannot overwrite one another in the index.
+        let shape = if let Some(burst) = config.burst {
+            burst.label().to_owned()
+        } else if config.hot_fraction_ppm > 0 {
+            "hotquiet".to_owned()
         } else if config.hot_pair {
-            "zipf"
+            "zipf".to_owned()
         } else {
-            "uniform"
+            "uniform".to_owned()
         };
         let suffix = if SCENARIO_VERSION > 2 {
             format!("{shape}-v{SCENARIO_VERSION}")
@@ -1733,23 +1825,28 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         }
     };
 
-    // Publish the synthetic workload and derive what *must* be applied.
+    // Build the explicit schedule before publishing. Phase event counts are
+    // the primary schedule definition: no sleeps or timing instrumentation.
+    let schedule = build_schedule(config, Some(canonical_set_sha256(&hot)));
     let skip_ticker = skip_target(config, &eligible);
-    let plan = publish_events(
-        &mock,
-        &eligible,
-        &hot,
-        config,
-        &mut SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E),
-        skip_ticker.as_deref(),
-    );
+    let mut publish_rng = SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E);
 
-    // Drain barrier: every frame must leave the mock's outbound queue, be
-    // socket-written, reach the collector and be accounted for by the core
-    // and the writer before shutdown is requested. A timeout classifies the
-    // run as incomplete; a missing or malformed metric classifies the
-    // evidence path as unavailable. No fixed sleep is involved.
-    let mut drain_completed = false;
+    // Aggregate plan over all phases. The ledger still reconciles the whole
+    // run once, at final, so every existing disposition check is preserved.
+    let mut plan = PublishPlan {
+        generated: 0,
+        hot_events: 0,
+        cold_events: 0,
+        expected_applied: 0,
+        drain_target: 0,
+    };
+    let mut phase_results: Vec<PhaseOutcome> = Vec::new();
+    let mut cumulative_expected = 0u64;
+    let mut cumulative_extra_frames = 0u64;
+
+    let skip_drain = matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain))
+        || baseline_error.is_some();
+    let mut drain_completed = !skip_drain;
     let mut drain_detail: Option<String> = None;
     let mut drain_evidence_error: Option<String> = None;
     let mut last_deltas = baseline.map(|base| base.deltas_emitted);
@@ -1758,57 +1855,62 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     } else if let Some(error) = &baseline_error {
         drain_detail = Some(format!("writer baseline unavailable: {error}"));
         drain_evidence_error = Some("drain_metrics_unavailable".to_owned());
-    } else if let (Some(addr), Some(base)) = (metrics_addr, baseline) {
-        let deadline = Instant::now() + drain_limit;
-        let mut unavailable: Option<String> = None;
-        loop {
-            if let Some(sample) = scrape_metrics(addr).await {
-                if let MetricRead::Present(deltas) = sample.read("collector_deltas_emitted_total") {
-                    last_deltas = Some(deltas);
-                }
-                match evaluate_barrier(
-                    &sample,
-                    &base,
-                    plan.drain_target as f64,
-                    mock.state().in_flight(),
-                ) {
-                    BarrierState::Satisfied => {
-                        drain_completed = true;
-                        break;
-                    }
-                    BarrierState::Waiting => {
-                        unavailable = None;
-                    }
-                    BarrierState::Unavailable(error) => {
-                        unavailable = Some(error);
-                    }
-                    BarrierState::CounterReset(metric) => {
-                        drain_detail =
-                            Some(format!("counter `{metric}` moved backwards during the run"));
-                        drain_evidence_error = Some("counter_reset".to_owned());
-                        break;
-                    }
-                }
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            sleep(METRICS_POLL).await;
-        }
-        if !drain_completed && drain_evidence_error.is_none() {
-            match unavailable {
-                Some(error) => {
-                    drain_detail = Some(error);
-                    drain_evidence_error = Some("drain_metrics_unavailable".to_owned());
-                }
-                None => {
-                    drain_detail = Some(
-                        "drain deadline exceeded before every frame was accounted for".to_owned(),
-                    );
-                }
-            }
-        }
     }
+
+    // Publish each phase, then drain with a cumulative expected count before
+    // the next phase begins. The baseline is captured once at the start, so a
+    // later barrier waits for every event from all preceding phases plus this
+    // one; a burst cannot leave a queue unreconciled into the next phase.
+    for phase in &schedule.phases {
+        let phase_plan = publish_events(
+            &mock,
+            &eligible,
+            &hot,
+            config,
+            phase.events,
+            &mut publish_rng,
+            skip_ticker.as_deref(),
+        );
+        plan.generated = plan.generated.saturating_add(phase_plan.generated);
+        plan.hot_events = plan.hot_events.saturating_add(phase_plan.hot_events);
+        plan.cold_events = plan.cold_events.saturating_add(phase_plan.cold_events);
+        plan.expected_applied = plan
+            .expected_applied
+            .saturating_add(phase_plan.expected_applied);
+        cumulative_expected = cumulative_expected.saturating_add(phase_plan.expected_applied);
+        cumulative_extra_frames = cumulative_extra_frames
+            .saturating_add(phase_plan.drain_target.saturating_sub(phase_plan.expected_applied));
+        let target = cumulative_expected.saturating_add(cumulative_extra_frames);
+
+        let completed =
+            if !skip_drain && let (Some(addr), Some(base)) = (metrics_addr, baseline) {
+                let result = await_drain(
+                    addr,
+                    &base,
+                    target,
+                    || mock.state().in_flight(),
+                    Instant::now() + drain_limit,
+                    last_deltas,
+                )
+                .await;
+                last_deltas = result.last_deltas;
+                if !result.completed && drain_detail.is_none() {
+                    drain_detail = result.detail;
+                    drain_evidence_error = result.evidence_error;
+                }
+                result.completed
+            } else {
+                false
+            };
+        drain_completed &= completed;
+        phase_results.push(PhaseOutcome {
+            name: phase.name,
+            published: phase_plan.generated,
+            cumulative_expected: target,
+            drain_completed: completed,
+        });
+    }
+    plan.drain_target = cumulative_expected.saturating_add(cumulative_extra_frames);
 
     // Final scrape before shutdown: applied counter and incident counters.
     let final_sample = match metrics_addr {
@@ -2247,6 +2349,8 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             sbe_messages,
             incidents,
             ledger,
+            schedule,
+            phase_results,
             mock: transmit,
         }),
     }
