@@ -1,8 +1,10 @@
-# M5 workload specification (frozen for the first evidence increment)
+# M5 workload specification (frozen workload, versioned evidence increments)
 
-This document freezes the first M5 workload before results are collected. It
-describes what the harness produces, not what has been measured. The
-authoritative design for the stress laboratory remains
+This document freezes the M5 workload before results are collected. It
+describes what the harness produces, not what has been measured. M5.2 adds
+deterministic burst schedules without changing the frozen 4,000-instrument
+exact/weighted workload, its seed, its hot-set definition or its event budget.
+The authoritative design for the stress laboratory remains
 [`stress-lab-design.md`](stress-lab-design.md); the canonical starting point is
 [`baseline-post-m4.md`](baseline-post-m4.md).
 
@@ -31,11 +33,63 @@ authoritative design for the stress laboratory remains
 | `zipf_hot_pair` | Existing legacy fixture-only profile | First 10% of markets receive 80% of events; retained for compatibility, not an M5 characterization profile. |
 | `hot_quiet` weighted | **Implemented, corrected in M5.1** | Exactly 5% of eligible instruments are designated hot by a derived PRNG stream. Hot and cold indices are disjoint and exhaustive; 80% of draws select from the hot set and 20% from the cold set, so no hot instrument can be chosen through the cold branch. The realized share varies within a finite run. |
 | `hot_quiet` exact | **Implemented in M5.1** | Same roles, but event assignment is an exact shuffled quota: 320 of 400 deltas are hot and 80 are cold, reproducible under the seed. Used as the frozen reference profile. |
-| `burst` | Planned | Short deterministic spikes in publish rate. |
+| `burst` | **Implemented in M5.2** | Four deterministic profiles (`step`, `impulse`, `repeated_impulses`, `ramp`) that partition the same 400 logical deltas into publish phases. No sleeps, timing instrumentation or performance claims. |
 | `lifecycle` | Planned | Add/remove/settle universe churn through the mock's lifecycle channel. |
 | `disconnect` | Planned | Deterministic replica/source closure and re-anchoring sweep. |
 | `backpressure` | Existing failure fixture | Bounded mock/writer queues with explicit saturation classification. |
 | `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell. |
+
+## M5.2 burst profiles
+
+A burst profile changes only the **phase decomposition** of the logical-event
+budget. The seed, universe, hot set, role selection, topology, journal and
+400-event budget are identical to the frozen M5.1 exact workload. The schedule
+is defined by exact event counts; no sleep, wall-clock rate control, timing
+measurement or throughput claim is part of this increment.
+
+| Profile | Phase event counts (400 total) | Declared rate multipliers | Meaning |
+|---|---|---|---|
+| `step` | 100 / 200 / 100 (baseline / burst / recovery) | 1 / 2 / 1 | One sustained doubling of the declared rate. |
+| `impulse` | 40 / 280 / 80 (baseline / impulse / recovery) | 1 / 5 / 1 | One concentrated spike followed by a quiet tail. |
+| `repeated_impulses` | 80 / 80 / 80 / 80 / 80 | 1 / 3 / 3 / 3 / 1 | Several equally sized impulses separated by quiet phases. |
+| `ramp` | 40 / 80 / 80 / 80 / 120 | 1 / 1 / 2 / 3 / 1 | Rising declared multipliers, then a larger recovery phase. |
+
+Counts are derived deterministically by integer weights and always sum to the
+configured event budget; an indivisible remainder is assigned to the
+highest-weight phase (`tests/stress_support/runner.rs` unit tests pin the
+partition). The `target_rate_per_tick` and `rate_multiplier` fields are
+**declared schedule labels** recorded so a manifest reader can reproduce the
+intended shape. They are not measured rates, not latency figures, and not
+performance evidence. The manifest states this under
+`workload_schedule.rate_semantics`; all performance fields remain
+`unavailable`.
+
+Publishing is phased: each phase publishes its exact count, then the existing
+drain barrier waits until every production counter reaches the **cumulative**
+expected count (plus the mock's decoded-frame catch-up) before the next phase
+is published. This is implemented in `run_cell_inner` with `await_drain`; the
+existing one-shot workload is the single `steady` phase with `burst = None`.
+The final event ledger, disposition accounting, coverage and SBE verification
+still run once over the whole cell, so no check is weakened.
+
+The manifest records the explicit schedule under `workload_schedule`:
+
+- `workload_id` — `{profile}-seed-{seed:04x}-{symbols}`;
+- `profile` — `steady | step | impulse | repeated_impulses | ramp`;
+- `seed`, `instrument_count`, `eligible_count`;
+- `hot_set` — `fraction_ppm`, `member_count`, `selection`, `event_share_pct` and
+  the canonical `sha256` of the sorted hot set;
+- `phases` — per-phase `name`, `events`, `target_rate_per_tick`,
+  `rate_multiplier`;
+- `expected_total_events` — sum of all phase counts;
+- `fault_schedule` — empty for M5.2 burst cells (no fault injection is
+  scheduled);
+- `delivery.phases` — actual per-phase `published_events`,
+  `cumulative_expected` and `drain_completed`.
+
+Scenario `scenario_version` is bumped to **6**; burst cell IDs carry the
+profile label so two profiles never overwrite one another in the index. The
+v5 disposition-certified manifests remain immutable historical evidence.
 
 ## Frozen first workload
 
@@ -45,7 +99,7 @@ authoritative design for the stress laboratory remains
 | Eligible instruments | 4,000 (`decoy_fraction_ppm = 20_000`) |
 | Hot instruments | 200 (5% of eligible, `hot_fraction_ppm = 50_000`) |
 | Hot event share | 80% (`hot_event_share_pct = 80`); exact mode pins 320/400 |
-| Selection mode | `hot_selection = weighted` or `exact_quota` (`scenario_version = 5`) |
+| Selection mode | `hot_selection = weighted` or `exact_quota` (`scenario_version = 6`; burst profiles are v6-only) |
 | Logical deltas | 400 |
 | Topology | 2 shards × 2 replicas + 1 lifecycle connection |
 | Journal | enabled |
@@ -142,6 +196,8 @@ names. The full contract is in
 | Continuity | no decoy appears in the capture; journal finalizes completely |
 | Determinism | hot-role unit test pins the 200/4,000 split and rejects a different seed |
 | Evidence | `mixed_hot_quiet_4000_cell_reconciles_and_certifies` passes offline; `reference_mixed_hot_quiet_manifest_is_reproducible` emits a versioned manifest when run explicitly with `STRESS_MANIFEST_OUT` |
+| M5.2 burst phases | `burst_step_cell_reconciles_all_phases` and `burst_impulse_cell_reconciles_all_phases` prove acceptance, exact per-phase counts (100/200/100 and 40/280/80), cumulative drain completion, reconciled ledger, exact 4,000 coverage, SBE/completeness/journal verification, empty fault schedule and a manifest carrying the full workload schedule |
+| M5.2 determinism | `burst_profiles_partition_the_budget_exactly_and_deterministically` and `burst_profile_counts_are_pinned` pin the four partitions; `schedule_records_id_seed_hot_definition_and_empty_faults` pins the recorded schedule fields |
 
 The earlier `seed-0017-4000-hotquiet.json` manifest was generated by the
 pre-correction sampler (residual draws could include hot instruments, giving
@@ -168,6 +224,13 @@ cargo test --test full_universe_stress mixed_hot_quiet_exact_4000_cell_assigns_3
 cargo test --test full_universe_stress stress_support::runner::tests::hot_cold_partition_is_exhaustive_and_disjoint
 cargo test --test full_universe_stress stress_support::runner::tests::exact_event_targets_have_an_exact_quota_and_are_reproducible
 cargo test --test full_universe_stress stress_support::universe::tests::hot_quiet_roles_are_exact_deterministic_and_free_of_decoys
+cargo test --test full_universe_stress burst_step_cell_reconciles_all_phases
+cargo test --test full_universe_stress burst_impulse_cell_reconciles_all_phases
+cargo test --test full_universe_stress stress_support::runner::tests::burst_profiles_partition_the_budget_exactly_and_deterministically
+
+STRESS_MANIFEST_OUT=/tmp/stress-v6 \
+  cargo test --release --locked --test full_universe_stress -- \
+  --ignored reference_burst_step_manifest_is_reproducible --test-threads=1 --nocapture
 
 STRESS_MANIFEST_OUT=/tmp/stress-v3 \
   cargo test --release --locked --test full_universe_stress -- \
