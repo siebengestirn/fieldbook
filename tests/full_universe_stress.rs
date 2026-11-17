@@ -33,7 +33,10 @@ use std::collections::BTreeSet;
 
 use stress_support::{
     rng::SplitMix64,
-    runner::{CellConfig, FailInject, HotSelection, canonical_set_sha256, worktree_provenance},
+    runner::{
+        BurstProfile, CellConfig, CellOutcome, FailInject, HotSelection, canonical_set_sha256,
+        worktree_provenance,
+    },
     universe::{GENERATOR_VERSION, SyntheticUniverse},
 };
 
@@ -1306,4 +1309,227 @@ async fn reference_exact_hot_quiet_manifest_is_reproducible() {
     let output = outcome.output.expect("valid cell must carry output");
     assert_eq!(output.hot_events, 320);
     assert_eq!(output.cold_events, 80);
+}
+
+// ---------- M5.2 deterministic burst workloads ----------
+
+/// The 4,000-instrument exact/role workload reused for burst cells. Only the
+/// phase decomposition changes; seed, universe, hot set and event budget stay
+/// identical to the frozen M5.1 exact profile.
+fn burst_cell_config(profile: BurstProfile, seed: u64, selection: HotSelection) -> CellConfig {
+    CellConfig {
+        seed,
+        symbols: 4_000,
+        decoy_fraction_ppm: 20_000,
+        shards: Some(2),
+        replicas: 2,
+        lifecycle_replicas: 1,
+        events: 400,
+        hot_pair: false,
+        uniform_spread: false,
+        hot_fraction_ppm: 50_000,
+        hot_event_share_pct: 80,
+        hot_selection: selection,
+        burst: Some(profile),
+        journal: true,
+        limits: Some((45, 10)),
+        force_capacity_reject: false,
+        fail_inject: None,
+        writer_queue: None,
+        worktree_dir: None,
+        require_clean_worktree: None,
+    }
+}
+
+/// Drive one burst cell and prove the full M5.2 contract: acceptance, exact
+/// per-phase publication with cumulative drain barriers, reconciled ledger,
+/// exact coverage, SBE/completeness/journal verification, empty fault
+/// schedule and a manifest that records the explicit workload schedule.
+async fn assert_burst_cell(
+    profile: BurstProfile,
+    seed: u64,
+    selection: HotSelection,
+    manifest_out: Option<&std::path::Path>,
+) -> CellOutcome {
+    let directory = tempfile::tempdir().unwrap();
+    let scratch_manifests = directory.path().join("manifests");
+    let out = manifest_out.unwrap_or(scratch_manifests.as_path());
+    let config = burst_cell_config(profile, seed, selection);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(out)).await;
+    assert!(
+        outcome.acceptance.valid,
+        "burst {profile:?} cell failed acceptance: {:?}; ledger={:?}",
+        outcome.acceptance.reasons,
+        outcome.output.as_ref().map(|o| &o.ledger)
+    );
+    let phase_count = outcome
+        .output
+        .as_ref()
+        .expect("valid cell must carry output")
+        .phase_results
+        .len();
+    {
+        let output = outcome.output.as_ref().expect("valid cell must carry output");
+
+        // Schedule is explicit, deterministic and fault-free for M5.2.
+        assert_eq!(output.schedule.profile, profile.label());
+        assert_eq!(output.schedule.seed, seed);
+        assert_eq!(output.schedule.instrument_count, 4_000);
+        assert_eq!(output.schedule.eligible_count, 4_000);
+        assert_eq!(output.schedule.expected_total_events, 400);
+        assert!(output.schedule.fault_schedule.is_empty());
+        assert_eq!(output.schedule.hot_set.member_count, 200);
+        assert_eq!(output.schedule.phases.len(), phase_count);
+
+        // Every phase published its exact declared count, drained, and the
+        // cumulative drain target matches the events published so far.
+        let mut running = 0u64;
+        for (declared, actual) in output.schedule.phases.iter().zip(&output.phase_results) {
+            assert_eq!(actual.published, declared.events, "phase {} count", actual.name);
+            running += actual.published as u64;
+            assert_eq!(actual.cumulative_expected, running);
+            assert!(actual.drain_completed, "phase {} did not drain", actual.name);
+        }
+        assert_eq!(running, 400);
+        let phase_total: usize = output.phase_results.iter().map(|phase| phase.published).sum();
+        assert_eq!(phase_total, 400);
+        assert_eq!(output.events_published, 400);
+        assert_eq!(output.hot_events + output.cold_events, 400);
+        assert!(output.drain_completed, "final drain did not complete");
+
+        // One final ledger reconciles the whole multi-phase run.
+        assert!(output.ledger.reconciled(), "ledger: {:?}", output.ledger);
+        assert_eq!(output.ledger.unexplained_drops, Some(0));
+        assert_eq!(output.ledger.application_shortfall, Some(0));
+        assert_eq!(output.ledger.over_applied, Some(0));
+        assert_eq!(output.ledger.persistence_gap, Some(0));
+        assert_eq!(output.applied_events, Some(400));
+        assert_eq!(output.sbe_deltas, 400);
+
+        // Exact coverage and independent verification still hold at final.
+        let coverage = output.coverage.as_ref().expect("coverage must be present");
+        assert!(coverage.valid, "coverage invalid: {coverage:?}");
+        assert_eq!(coverage.expected, 4_000);
+        assert_eq!(coverage.acknowledged, 4_000);
+        assert_eq!(coverage.anchored, 4_000);
+        assert!(output.verify_valid, "SBE verification failed");
+        assert!(
+            output.completeness_valid,
+            "completeness verification failed"
+        );
+        assert!(output.journal_complete, "journal did not finalize");
+        assert!(output.decoy_absent, "an MVE/closed decoy entered the capture");
+
+        // Queues drained: no mock frame remains in flight and every wire /
+        // writer stage reconciles in both directions.
+        assert_eq!(output.mock.in_flight, 0);
+        assert_eq!(output.ledger.enqueue_transmit_shortfall, Some(0));
+        assert_eq!(output.ledger.enqueue_transmit_excess, Some(0));
+        assert_eq!(output.ledger.writer_write_shortfall, Some(0));
+        assert_eq!(output.ledger.writer_write_excess, Some(0));
+    }
+
+    // The manifest carries the declared schedule and per-phase drain evidence.
+    let index = stress_support::manifest::read_index(&out.join("index.json")).unwrap();
+    let cells = index["cells"].as_object().expect("cells object");
+    assert_eq!(cells.len(), 1);
+    let (cell_id, entry) = cells.iter().next().expect("one published cell");
+    assert_eq!(entry["publication_state"].as_str(), Some("published"));
+    assert!(
+        cell_id.contains(profile.label()),
+        "cell id {cell_id} must carry the profile label"
+    );
+    let bytes = std::fs::read(out.join(entry["path"].as_str().unwrap())).unwrap();
+    let document: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        stress_support::manifest::missing_required_fields(&document).is_empty(),
+        "burst manifest is incomplete"
+    );
+    let expected_id = format!("{}-seed-{seed:04x}-4000", profile.label());
+    let schedule = &document["workload_schedule"];
+    assert_eq!(schedule["workload_id"].as_str(), Some(expected_id.as_str()));
+    assert_eq!(schedule["profile"].as_str(), Some(profile.label()));
+    assert_eq!(schedule["seed"].as_u64(), Some(seed));
+    assert_eq!(schedule["instrument_count"].as_u64(), Some(4_000));
+    assert_eq!(schedule["expected_total_events"].as_u64(), Some(400));
+    assert_eq!(schedule["phases"].as_array().unwrap().len(), phase_count);
+    assert!(schedule["hot_set"]["sha256"].is_string());
+    assert_eq!(schedule["fault_schedule"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        document["delivery"]["phases"].as_array().unwrap().len(),
+        phase_count
+    );
+    assert_eq!(document["scenario_version"].as_u64(), Some(6));
+    outcome
+}
+
+/// Step: one sustained doubling of the declared rate. Three phases, exact
+/// published counts 100 / 200 / 100, fully drained between phases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn burst_step_cell_reconciles_all_phases() {
+    let outcome = assert_burst_cell(BurstProfile::Step, 31, HotSelection::ExactQuota, None).await;
+    let counts: Vec<usize> = outcome
+        .output
+        .as_ref()
+        .unwrap()
+        .phase_results
+        .iter()
+        .map(|phase| phase.published)
+        .collect();
+    assert_eq!(counts, vec![100, 200, 100]);
+    let multipliers: Vec<u64> = outcome
+        .output
+        .as_ref()
+        .unwrap()
+        .schedule
+        .phases
+        .iter()
+        .map(|phase| u64::from(phase.rate_multiplier))
+        .collect();
+    assert_eq!(multipliers, vec![1, 2, 1]);
+}
+
+/// Impulse: one concentrated spike. Three phases, exact published counts
+/// 40 / 280 / 80, fully drained between phases.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn burst_impulse_cell_reconciles_all_phases() {
+    let outcome = assert_burst_cell(BurstProfile::Impulse, 37, HotSelection::ExactQuota, None).await;
+    let counts: Vec<usize> = outcome
+        .output
+        .as_ref()
+        .unwrap()
+        .phase_results
+        .iter()
+        .map(|phase| phase.published)
+        .collect();
+    assert_eq!(counts, vec![40, 280, 80]);
+    let multipliers: Vec<u64> = outcome
+        .output
+        .as_ref()
+        .unwrap()
+        .schedule
+        .phases
+        .iter()
+        .map(|phase| u64::from(phase.rate_multiplier))
+        .collect();
+    assert_eq!(multipliers, vec![1, 5, 1]);
+}
+
+/// Ignored reference generator for the Step burst manifest. Run explicitly
+/// with `STRESS_MANIFEST_OUT` set; no performance claim is attached to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "reference artifact generator; run explicitly"]
+async fn reference_burst_step_manifest_is_reproducible() {
+    assert!(
+        std::env::var("STRESS_MANIFEST_OUT").is_ok(),
+        "set STRESS_MANIFEST_OUT to produce the artifact"
+    );
+    assert_burst_cell(
+        BurstProfile::Step,
+        31,
+        HotSelection::ExactQuota,
+        Some(manifest_out().as_path()),
+    )
+    .await;
 }
