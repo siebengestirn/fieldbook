@@ -70,12 +70,14 @@ intent; it is not a claim that those capabilities are implemented.
 12. [Kraken integration plan](docs/KRAKEN_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same gates; H0 reference data implemented (offline fixtures only, no websocket/book/telemetry/live evidence), H1-H3 planned.
 13. [OKX integration plan](docs/OKX_INTEGRATION_PLAN.md) — staged, evidence-gated design for OKX; H0 reference data implemented (offline, no socket), H1-H3 planned. No live or performance claim.
 14. [Binance integration plan](docs/BINANCE_INTEGRATION_PLAN.md) — staged, evidence-gated design; H0 reference data implemented (offline fixture, exact numeric specs, no-network session stub), H1-H3 planned; no websocket, live, latency or capacity claim.
+15. [JSONL -> PostgreSQL reference application](docs/JSONL_POSTGRES_REFERENCE.md) — Platform P5 second, non-market-data application proving source/target independence; parameterized SQL contract plus deterministic in-memory simulator, no driver or live DB, no performance claim.
 
 **Programme status:** see [`docs/PROGRAMME_STATUS.md`](docs/PROGRAMME_STATUS.md) — the authoritative, multi-dimensional status record.
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
-and [operating envelope](docs/operating-envelope.md).
+[operating envelope](docs/operating-envelope.md), and the
+[JSONL/PostgreSQL reference application](docs/JSONL_POSTGRES_REFERENCE.md).
 
 ## What it does
 

@@ -53,6 +53,8 @@ SOURCE_RESPONSIBILITIES = {
     "src/persistence.rs": "latest-wins metadata/catalog background writer and lifecycle status",
     "src/products.rs": "typed data-product and source-capability contracts, deterministic subscription keys, and explicit subscription state transitions",
     "src/canonical.rs": "canonical event envelope and normalized event taxonomy with deterministic opaque ids, explicit provenance, schema-versioned fail-closed reading, and a conceptual normalized store contract with a test-only in-memory implementation",
+    "src/application.rs": "generic non-market-data source/target reference application: SourceAdapter, JsonlSource with exact bytes/sequence/rejection evidence and duplicate detection, deterministic CanonicalBusinessEvent transform, five-way TargetConnector receipts, DeliveryObligation accounting, checkpointed runner, and side-effect-free replay connector",
+    "src/application/postgres.rs": "parameterized PostgreSQL SQL contract and deterministic in-memory simulator with idempotency by event id, transaction commit/rollback and unavailable/ack-lost fault injection; no driver or live connection",
     "src/collector/mod.rs": "collector core module boundary",
     "src/collector/state.rs": "serialized per-symbol/source state machine, discovery and failover decisions",
     "src/collector/state/tests.rs": "collector state-machine tests for discovery, ordering, capabilities, snapshots, recovery, and readiness",
@@ -209,7 +211,61 @@ REQUIRED_ANCHORS = {
         "pub struct RecoveryCoordinator",
     ],
     "src/util/build.rs": ["generate_str_to_out_dir", "GenerationConfig"],
+    "src/application.rs": [
+        "pub trait SourceAdapter",
+        "pub trait TargetConnector",
+        "pub struct JsonlSource",
+        "pub struct RawObservation",
+        "pub enum SourceError",
+        "pub struct CanonicalBusinessEvent",
+        "pub enum DeliveryReceipt",
+        "pub struct DeliveryObligation",
+        "pub enum DeliveryState",
+        "pub struct Checkpoint",
+        "pub struct ImportReport",
+        "pub struct ReplayConnector",
+        "pub fn run_jsonl_to_target",
+        "pub fn transform_observation",
+        "pub mod postgres",
+    ],
+    "src/application/postgres.rs": [
+        "pub const INSERT_SQL",
+        "pub struct ParameterizedStatement",
+        "pub enum SqlValue",
+        "pub fn generate_insert_statement",
+        "pub fn generate_batch_statements",
+        "pub enum PostgresFault",
+        "pub struct PostgresSimulator",
+        "pub struct PostgresTarget",
+        "impl TargetConnector for PostgresSimulator",
+        "impl TargetConnector for PostgresTarget",
+    ],
 }
+
+# The P5 reference application must stay independent of market-data modules.
+# These tokens are checked only against the two new source files.
+REFERENCE_APP_SOURCES = (
+    "src/application.rs",
+    "src/application/postgres.rs",
+)
+REFERENCE_APP_FORBIDDEN_TOKENS = (
+    "crate::model",
+    "crate::coordinator",
+    "crate::collector",
+    "crate::exchange",
+    "crate::journal",
+    "crate::replay",
+    "crate::catalog",
+    "crate::orderbook",
+    "crate::writer",
+    "crate::products",
+    "ExchangeEvent",
+    "MarketInfo",
+    "MarketDataSession",
+    "BookSnapshot",
+    "LevelChange",
+    "OrderBook",
+)
 
 MERMAID_RE = re.compile(r"```mermaid\s*\n(.*?)\n```", re.DOTALL)
 NODE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\n]*\]|\([^\n]*\)|\{[^\n]*\})\s*$")
@@ -288,6 +344,21 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
     return errors
 
 
+def reference_app_independence_errors(root: Path = ROOT) -> list[str]:
+    """Fail if the P5 reference app imports market-data modules or concepts."""
+    errors: list[str] = []
+    for rel in REFERENCE_APP_SOURCES:
+        path = root / rel
+        if not path.exists():
+            errors.append(f"P5 reference source is missing: {rel}")
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in REFERENCE_APP_FORBIDDEN_TOKENS:
+            if token in source:
+                errors.append(f"{rel} contains market-data dependency token {token!r}")
+    return errors
+
+
 def collect_sources() -> list[str]:
     return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "src").rglob("*.rs"))
 
@@ -356,6 +427,7 @@ def main() -> int:
 
     errors: list[str] = []
     errors.extend(module_integration_errors())
+    errors.extend(reference_app_independence_errors())
     actual_sources = set(collect_sources())
     documented_sources = set(SOURCE_RESPONSIBILITIES)
     missing_docs = sorted(actual_sources - documented_sources)
@@ -382,6 +454,7 @@ def main() -> int:
     for required_text in [
         "docs/requirement-test-matrix.md",
         "docs/CANONICAL_EVENT_MODEL.md",
+        "docs/JSONL_POSTGRES_REFERENCE.md",
         "Current operational caveat",
         "not a production certification",
     ]:
