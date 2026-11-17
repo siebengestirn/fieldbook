@@ -5,6 +5,8 @@ pub use coinbase::CoinbaseExchange;
 pub mod hyperliquid;
 pub use hyperliquid::HyperliquidExchange;
 pub mod kalshi;
+pub mod kraken;
+pub use kraken::KrakenExchange;
 pub mod polymarket;
 
 use std::{sync::Arc, time::Instant};
@@ -51,6 +53,7 @@ pub fn capabilities_for(kind: ExchangeKind) -> ExchangeCapabilities {
         ExchangeKind::Polymarket => ExchangeCapabilities::new(false),
         ExchangeKind::Hyperliquid => hyperliquid::capabilities(),
         ExchangeKind::Coinbase => coinbase::capabilities(),
+        ExchangeKind::Kraken => kraken::capabilities(),
     }
 }
 

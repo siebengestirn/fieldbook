@@ -137,7 +137,11 @@ finite book set, emits only full snapshots from `l2Book`, maps `trades` to
 telemetry, and uses the existing `Control::{RequestSnapshot,Recover}` fences for
 recovery; `has_sequence_clock` stays `false`. H3 adds a test-only loopback wire
 mock that reuses the shared stress ledger, coverage hashes and manifest schema;
-it produces no production behavior and no live or capacity claim.
+it produces no production behavior and no live or capacity claim. Kraken
+implements H0 reference data in `src/exchange/kraken/`: namespaced `AssetPairs`
+decoding with exact scales and an active-only filter, offline-fixture and
+read-only REST discovery, and a no-network session seam. H1-H3 remain planned;
+no Kraken socket, book, telemetry or live evidence exists.
 
 Ownership and dependency direction are deliberate:
 
@@ -217,6 +221,7 @@ flowchart LR
 | Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance. Hyperliquid's session subscribes to H1 telemetry (`allMids`/`fastAssetCtxs`) plus H2 `l2Book`/`trades` for the exact selected perpetuals; `request_snapshot` resubscribes/wait-for-next-push and `Recover` fences by the existing receive epoch/sequence. |
 | Adapter telemetry | `exchange/hyperliquid/telemetry.rs` | H1 exact-decimal decoding of venue-wide `allMids`/`fastAssetCtxs` statistics into typed `ProtocolControl` observations; unknown additive fields ignored, inexact numbers rejected; no depth, `Snapshot`, `LevelChange` or heartbeat acknowledgement |
 | Adapter books | `exchange/hyperliquid/books.rs` | H2 exact-decimal decoding of full two-sided `l2Book` pushes into `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; `trades` stay `ProtocolControl` telemetry; identity is `hyperliquid:perp:<dex>:<coin>`; no spot books, no `LevelChange`, no full universe |
+| Adapter reference (Kraken) | `exchange/kraken/{mod,codec,discovery,session}.rs` | H0 namespaced `kraken:spot:BASE/QUOTE` identity from `wsname` or normalized legacy base/quote; exact `tick_size`/`lot_decimals` scales with precision rejection; `status == "online"` active filter; offline-fixture and read-only REST `AssetPairs` discovery; H0 no-network session with disabled heartbeat. H1-H3 planned, no live claim. |
 | Stress lab (test-only) | `tests/stress_support/{mock,hyperliquid,runner,manifest}.rs`, `tests/full_universe_stress.rs`, `tests/hyperliquid_capacity.rs` | Deterministic loopback venues (Kalshi, Hyperliquid) and a shared fail-closed cell runner. The Hyperliquid H3 mock serves `meta` discovery, WS subscribe/unsubscribe, `allMids`, `fastAssetCtxs`, `l2Book`, trades and a scripted reconnect from a seed-derived explicit schedule; three profiles drive mid fan-out, fast-context rate, book refresh cadence and trade bursts. The cell reuses the event ledger, dispositions, three-set coverage hashes and v16 manifest schema. Evidence is synthetic loopback: not live certification and no latency/capacity claim. |
 | Control plane | `exchange/kalshi/session.rs` (`SessionMode::Lifecycle`), `coordinator.rs`, `collector/state.rs` | Dedicated Kalshi `market_lifecycle_v2` subscription, cross-connection dedup, reconciliation triggers |
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |

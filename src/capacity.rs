@@ -83,7 +83,8 @@ pub fn plan(settings: &Settings, markets: &[MarketInfo]) -> anyhow::Result<Capac
         // sockets would reject valid full-universe runs.
         crate::config::ExchangeKind::Polymarket
         | crate::config::ExchangeKind::Hyperliquid
-        | crate::config::ExchangeKind::Coinbase => 0,
+        | crate::config::ExchangeKind::Coinbase
+        | crate::config::ExchangeKind::Kraken => 0,
     };
     let total_connections = shards
         .saturating_mul(replicas)
@@ -383,6 +384,20 @@ mod tests {
         let settings = settings(2, 5_000, 64);
         // The knob exists in the shared settings but charges nothing:
         // Polymarket has no separate lifecycle channel.
+        assert_eq!(settings.collector.lifecycle_replicas, 1);
+        let plan = plan(&settings, &markets(10)).unwrap();
+        assert_eq!(plan.lifecycle_connections, 0);
+        assert_eq!(plan.total_connections, 4);
+    }
+
+    #[test]
+    fn kraken_plan_ignores_the_lifecycle_plane() {
+        let mut settings = Settings::for_exchange(crate::config::ExchangeKind::Kraken);
+        settings.collector.shards = 2;
+        settings.collector.max_symbols_per_socket = 5_000;
+        settings.collector.max_shards = 64;
+        // Kraken has no separate lifecycle channel, so the shared knob charges
+        // nothing even when configured.
         assert_eq!(settings.collector.lifecycle_replicas, 1);
         let plan = plan(&settings, &markets(10)).unwrap();
         assert_eq!(plan.lifecycle_connections, 0);

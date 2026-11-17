@@ -27,7 +27,7 @@ use crate::{
     config::{CatalogMode, ExchangeKind, JournalSyncMode, Settings},
     exchange::{
         CoinbaseExchange, DiscoveryResult, DiscoveryStats, Exchange, HyperliquidExchange,
-        KalshiExchange, PolymarketExchange,
+        KalshiExchange, KrakenExchange, PolymarketExchange,
     },
     histogram::{Histogram, StageTimings},
     journal::{JournalConfig, JournalHandle, JournalMeta, SyncMode},
@@ -137,6 +137,7 @@ pub fn build_exchange(
             settings.network.clone(),
         )?)),
         ExchangeKind::Coinbase => Ok(Arc::new(CoinbaseExchange::new(settings.coinbase.clone())?)),
+        ExchangeKind::Kraken => Ok(Arc::new(KrakenExchange::new(settings.kraken.clone())?)),
     }
 }
 

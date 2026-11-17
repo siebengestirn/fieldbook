@@ -194,6 +194,7 @@ fn default_target(settings: &Settings) -> String {
         ExchangeKind::Polymarket => settings.polymarket.ws_url.clone(),
         ExchangeKind::Hyperliquid => settings.hyperliquid.info_url.clone(),
         ExchangeKind::Coinbase => settings.coinbase.rest_url.clone(),
+        ExchangeKind::Kraken => settings.kraken.asset_pairs_url.clone(),
     }
 }
 
