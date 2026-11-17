@@ -52,6 +52,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/catalog.rs": "versioned discovery checkpoint with integrity envelope, age, and counts",
     "src/persistence.rs": "latest-wins metadata/catalog background writer and lifecycle status",
     "src/products.rs": "typed data-product and source-capability contracts, deterministic subscription keys, and explicit subscription state transitions",
+    "src/canonical.rs": "canonical event envelope and normalized event taxonomy with deterministic opaque ids, explicit provenance, schema-versioned fail-closed reading, and a conceptual normalized store contract with a test-only in-memory implementation",
     "src/collector/mod.rs": "collector core module boundary",
     "src/collector/state.rs": "serialized per-symbol/source state machine, discovery and failover decisions",
     "src/collector/state/tests.rs": "collector state-machine tests for discovery, ordering, capabilities, snapshots, recovery, and readiness",
@@ -181,6 +182,13 @@ REQUIRED_ANCHORS = {
         "pub enum DataProduct", "pub enum ProductKind", "pub struct SubscriptionSet",
         "pub struct SourceCapabilities", "pub fn from_legacy", "pub enum SubscriptionState",
         "pub struct SubscriptionLease",
+    ],
+    "src/canonical.rs": [
+        "pub const CANONICAL_SCHEMA_VERSION", "pub struct EventId",
+        "pub struct SequenceMetadata", "pub enum CanonicalKind",
+        "pub enum CanonicalEvent", "pub struct CanonicalEnvelope",
+        "pub struct NormalizationContext", "pub struct CanonicalReader",
+        "pub trait NormalizedStore", "pub struct InMemoryNormalizedStore",
     ],
     "src/exchange/mod.rs": [
         "pub fn capabilities_for", "pub fn source_capabilities_for",
@@ -373,6 +381,7 @@ def main() -> int:
                 errors.append(f"source anchor `{anchor}` not found in `{anchor_path}`")
     for required_text in [
         "docs/requirement-test-matrix.md",
+        "docs/CANONICAL_EVENT_MODEL.md",
         "Current operational caveat",
         "not a production certification",
     ]:
