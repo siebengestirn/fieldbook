@@ -25,6 +25,7 @@ use tracing::{error, info};
 
 use crate::{
     config::{Settings, rotation_manifest_path},
+    histogram::WriterTimings,
     metrics::{WriterCounters, WriterStats},
     model::OutputMessage,
     report::{serialize_json_pretty, write_bytes_atomic},
@@ -69,7 +70,13 @@ impl WriterOptions {
 }
 
 enum WriterCommand {
-    Message(OutputMessage),
+    /// One output message plus the monotonic instant it was admitted to the
+    /// queue. The writer records admission-to-dequeue wait from this value;
+    /// `Instant` is inline so the hot path performs no heap allocation.
+    Message {
+        message: OutputMessage,
+        admitted_at: Instant,
+    },
     Flush(oneshot::Sender<Result<(), String>>),
     Shutdown(oneshot::Sender<Result<(), String>>),
 }
@@ -674,26 +681,56 @@ impl WriterHandle {
     /// empty, valid file exists even if the process is interrupted during
     /// startup.
     pub fn start(options: WriterOptions) -> anyhow::Result<Self> {
+        Self::start_with_timings(options, Arc::new(WriterTimings::default()))
+    }
+
+    /// Start the writer thread with shared stage-timing histograms. The same
+    /// counters are later read by the coordinator's run report.
+    pub fn start_with_timings(
+        options: WriterOptions,
+        timings: Arc<WriterTimings>,
+    ) -> anyhow::Result<Self> {
         let sink = Sink::open(&options)?;
-        Self::start_with_sink(
+        Self::start_with_sink_timed(
             Box::new(sink),
             options.queue,
             options.sync_on_close,
             &options.path,
+            timings,
         )
     }
 
-    /// Start the writer thread over an injected sink. Production callers pass
-    /// a file or stdout sink; tests pass fault-injecting sinks to exercise the
-    /// durability contract.
+    /// Test-only helper to start the writer thread over an injected sink with
+    /// fresh timing histograms, so fault-injection tests exercise the
+    /// durability contract without sharing production evidence counters.
+    #[cfg(test)]
     fn start_with_sink(
         sink: Box<dyn MessageSink>,
         queue: usize,
         sync_on_close: bool,
         path: &str,
     ) -> anyhow::Result<Self> {
+        Self::start_with_sink_timed(
+            sink,
+            queue,
+            sync_on_close,
+            path,
+            Arc::new(WriterTimings::default()),
+        )
+    }
+
+    fn start_with_sink_timed(
+        sink: Box<dyn MessageSink>,
+        queue: usize,
+        sync_on_close: bool,
+        path: &str,
+        timings: Arc<WriterTimings>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(queue > 0, "writer queue must be positive");
-        let counters = Arc::new(WriterCounters::default());
+        let counters = Arc::new(WriterCounters {
+            timings,
+            ..WriterCounters::default()
+        });
         let writer_counters = Arc::clone(&counters);
         let (sender, mut receiver) = mpsc::channel::<WriterCommand>(queue);
         let fatal = Arc::new(Mutex::new(None));
@@ -706,9 +743,22 @@ impl WriterHandle {
                 let mut explicit_shutdown = false;
                 while let Some(command) = receiver.blocking_recv() {
                     match command {
-                        WriterCommand::Message(message) => {
+                        WriterCommand::Message {
+                            message,
+                            admitted_at,
+                        } => {
+                            writer_counters
+                                .timings
+                                .queue_wait
+                                .record(admitted_at.elapsed());
                             writer_counters.queue_depth.fetch_sub(1, Ordering::Relaxed);
-                            if let Err(error) = sink.write(&message) {
+                            let write_started = Instant::now();
+                            let write_result = sink.write(&message);
+                            writer_counters
+                                .timings
+                                .sbe_write
+                                .record(write_started.elapsed());
+                            if let Err(error) = write_result {
                                 let text = format!("{error:#}");
                                 error!(error = %text, "SBE writer failed");
                                 set_fatal(&writer_fatal, &text);
@@ -738,7 +788,12 @@ impl WriterHandle {
                                 .store(sink.segments(), Ordering::Relaxed);
                         }
                         WriterCommand::Flush(ack) => {
+                            let flush_started = Instant::now();
                             let result = sink.flush().map_err(|error| format!("{error:#}"));
+                            writer_counters
+                                .timings
+                                .flush
+                                .record(flush_started.elapsed());
                             if let Err(error) = &result {
                                 writer_counters.errors.fetch_add(1, Ordering::Relaxed);
                                 set_fatal(&writer_fatal, error);
@@ -833,7 +888,13 @@ impl WriterHandle {
         };
         self.counters
             .note_enqueued(matches!(&message, OutputMessage::PriceLevelUpdate(_)));
-        permit.send(WriterCommand::Message(message));
+        // Admission is the moment the reserved slot is filled. The writer
+        // stamps dequeuing with the same monotonic clock, giving a real
+        // queue-wait sample without allocating on this path.
+        permit.send(WriterCommand::Message {
+            message,
+            admitted_at: Instant::now(),
+        });
         Ok(())
     }
 

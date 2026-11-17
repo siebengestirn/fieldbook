@@ -23,6 +23,7 @@ use tracing::{debug, warn};
 
 use crate::{
     exchange::DiscoveryStats,
+    histogram::WriterTimings,
     model::{SourceId, SourceStatus},
     persistence::PersistenceStatus,
     time::now_us,
@@ -164,6 +165,9 @@ pub struct WriterCounters {
     /// above it (the writer frees the slot before its decrement lands).
     pub queue_high_water: AtomicU64,
     pub segments: AtomicU64,
+    /// Shared stage-timing histograms for writer boundaries. These are
+    /// evidence counters, not part of the serialized `WriterStats`.
+    pub timings: Arc<WriterTimings>,
 }
 
 impl WriterCounters {

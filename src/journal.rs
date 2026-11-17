@@ -60,6 +60,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
+    histogram::Histogram,
     model::SourceId,
     protocol::{
         ControlOpcode, FrameClassification, FrameDirection, HeartbeatMechanism, SendResult,
@@ -344,6 +345,9 @@ struct Inner {
     shutdown: Mutex<bool>,
     admission: Mutex<Admission>,
     admission_cv: Condvar,
+    /// Shared journal-append latency histogram, when instrumentation is
+    /// requested by the caller. Read only by the writer thread.
+    append_latency: Option<Arc<Histogram>>,
     #[cfg(test)]
     record_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -402,10 +406,29 @@ impl JournalHandle {
         Self::start_inner(config, meta, None)
     }
 
+    /// Start with a shared append-latency histogram. The same counters are
+    /// later read by the coordinator's stage-timing report.
+    pub fn start_with_timing(
+        config: JournalConfig,
+        meta: JournalMeta,
+        append_latency: Arc<Histogram>,
+    ) -> anyhow::Result<Self> {
+        Self::start_inner_timed(config, meta, None, Some(append_latency))
+    }
+
     fn start_inner(
         config: JournalConfig,
         meta: JournalMeta,
         fault: Option<FaultHook>,
+    ) -> anyhow::Result<Self> {
+        Self::start_inner_timed(config, meta, fault, None)
+    }
+
+    fn start_inner_timed(
+        config: JournalConfig,
+        meta: JournalMeta,
+        fault: Option<FaultHook>,
+        append_latency: Option<Arc<Histogram>>,
     ) -> anyhow::Result<Self> {
         config.validate()?;
         anyhow::ensure!(!meta.run_id.is_empty(), "journal run id must not be empty");
@@ -450,6 +473,7 @@ impl JournalHandle {
                 active: 0,
             }),
             admission_cv: Condvar::new(),
+            append_latency,
             #[cfg(test)]
             record_hook: Mutex::new(None),
         });
@@ -1396,10 +1420,22 @@ fn run_writer(
         select! {
             recv(queue) -> message => match message {
                 Ok(Command::Record(mut job)) => {
-                    let result = job
+                    let sequenced = job
                         .assign_sequences(&mut sequences)
-                        .and_then(|()| run_fault(fault.as_ref(), FaultPoint::Write))
-                        .and_then(|()| segment.write_record(&job));
+                        .and_then(|()| run_fault(fault.as_ref(), FaultPoint::Write));
+                    // Measure only the segment append itself: sequencing and
+                    // fault-injection hooks are not production I/O latency.
+                    let result = match sequenced {
+                        Ok(()) => {
+                            let append_started = Instant::now();
+                            let appended = segment.write_record(&job);
+                            if let Some(histogram) = inner.append_latency.as_ref() {
+                                histogram.record(append_started.elapsed());
+                            }
+                            appended
+                        }
+                        Err(error) => Err(error),
+                    };
                     match result {
                         Ok(framed) => {
                             {
