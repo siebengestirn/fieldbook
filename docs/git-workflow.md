@@ -1,4 +1,4 @@
-# Git workflow and integration governance
+# Git workflow
 
 The canonical repository is
 `siebengestirn/engineering-challenge-template`. The ZIP exports and the

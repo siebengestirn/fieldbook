@@ -1,4 +1,4 @@
-# PR #42 — Deterministic full-universe stress laboratory (design)
+# Stress laboratory design
 
 **Status:** design approved in principle; **this revision incorporates every review amendment**.
 **Branch:** `feat/full-universe-stress-lab` · **Base:** `b66fdbd`

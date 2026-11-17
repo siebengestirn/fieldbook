@@ -1,4 +1,4 @@
-# Latency experiment (Extension 4)
+# Latency experiment
 
 ## What is measured
 

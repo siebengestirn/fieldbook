@@ -11,7 +11,7 @@
 - **Related:** [Raw-frame journal](../raw-frame-journal.md),
   [requirement/test matrix](../requirement-test-matrix.md),
   [architecture](../architecture.md),
-  [feed-continuity migration](../architecture-migration.md).
+  [programme status](../programme-status.md).
 
 ## 1. Context
 

@@ -1,4 +1,4 @@
-# Hyperliquid Integration Plan
+# Hyperliquid integration plan
 
 - **Status:** H0 reference data, H1 telemetry, H2 selected books/trades and H3 capacity expansion (synthetic loopback) implemented. This document defined the staging contract before implementation.
 - **Branch:** `feat/hyperliquid-telemetry` (H1), `feat/hyperliquid-books` (H2), `feat/hyperliquid-capacity` (H3); the plan originated on `docs/hyperliquid-integration-plan`.
@@ -32,7 +32,7 @@ Inventory taken from the code on this branch. These are the only sanctioned exte
 | Protocol vocabulary | `src/protocol.rs` | `FrameKind`, `FrameDirection`, `ControlOpcode`, `FrameClassification`, `HeartbeatMechanism::{ApplicationText,WebSocketControl,Disabled}`, `SessionSignal::{MarketData,HeartbeatRequest,HeartbeatAck{correlation},PeerPing,PeerPong,ProtocolControl}`, `SendResult`, `TransportObservation`. |
 | Normalized events | `src/model.rs` | `ExchangeEvent::{Snapshot,LevelChange,Lifecycle,StreamReset}`; `MarketInfo`; `NumericSpec`; `Price`/`Quantity`/`QuantityDelta`; `PriceBand`; `Ratio`; `EventMeta`; `Control::{SetSubscriptions,RequestSnapshot,Recover,Reconnect,Shutdown}`; `OutputMessage`; `SourceId`; `SourceStatus`; continuity/heartbeat state enums. |
 | Numeric pipeline | `src/fixed.rs`, `src/util/numeric.rs` | `SCALE = 1_000_000`, `DECIMALS = 6`, `MAX_SCALE = 18`; `parse_scaled`, `rescale_exact`; `price_to_sbe`/`quantity_to_sbe`/`level_to_sbe` rescale exactly and **reject inexact** values. |
-| Composition | `src/coordinator.rs`, `src/config.rs` | `build_exchange(settings, require_auth) -> Arc<dyn Exchange>` matches `ExchangeKind::{Kalshi,Polymarket}`; `ExchangeKind`, `FileConfig`/`Settings`, `COLLECTOR_EXCHANGE` env, per-venue settings. |
+| Composition | `src/coordinator.rs`, `src/config.rs` | `build_exchange(settings, require_auth) -> Arc<dyn Exchange>` matches the configured `ExchangeKind`; `ExchangeKind`, `FileConfig`/`Settings`, `COLLECTOR_EXCHANGE` env, per-venue settings. |
 | Adapter layout | `src/exchange/kalshi/{mod,auth,codec,discovery,session}.rs`, `src/exchange/polymarket/{mod,codec,discovery,session}.rs` | One module per venue; `codec` decodes wire→`ExchangeEvent`, `discovery` builds `MarketInfo`, `session` implements both session traits. Kalshi additionally provides a credentialed lifecycle plane. |
 | Journal | `src/journal.rs` | `JOURNAL_SCHEMA_VERSION = 2`, `DecodeOutcome::{Decoded,Ignored,Rejected}`, `RawFrame`, `JournalHandle`; `read_records()` is data-only, `read_observations()` includes typed data/control observations; checksummed segments and manifest. |
 | Recovery | `src/recovery.rs` | `RecoveryAction::{RefreshInstruments,ReconnectSource}`, `RecoveryCause`, `RecoverySignals`, `RecoveryDecision`, pure `decide()`; bounded, fenced by `(source, instrument, generation)`. |
@@ -46,7 +46,7 @@ the state machine.
 
 ## 2. Staged deliverables, gates, and non-goals
 
-| Stage | Planned deliverable | Evidence gate (all required to advance) | Stage non-goals |
+| Stage | Deliverable | Evidence gate | Stage non-goals |
 |---|---|---|---|
 | **H0 — reference data** | `HyperliquidSettings` and `ExchangeKind::Hyperliquid` in `config.rs`; `build_exchange`/`capabilities_for` arms; `src/exchange/hyperliquid/{mod,codec,discovery,session}.rs` skeleton; REST `/info` discovery for `meta` (every configured DEX) and `spotMeta`; emit validated `MarketInfo` with DEX/spot-qualified `native_symbol` and full `NumericSpec`; catalog checkpoint round-trip. | `discover` produces a deterministic catalog; every `MarketInfo` passes `MarketInfo::validate()` and `NumericSpec::validate()`; record/outcome counts reconcile with `DiscoveryStats`; golden `meta`/`spotMeta` fixtures include two DEXs sharing a coin name and spot token-index forms; no socket is opened. | No subscriptions, no book events, no live claim, no ADR-0001 reference-model migration, no spot book. |
 | **H1 — low-complexity feeds — IMPLEMENTED** | Subscribe and decode `allMids` and `fastAssetCtxs`; classify as telemetry only; journal typed observation evidence with exact raw bytes; heartbeat policy is `Disabled` (no fixture proves a venue heartbeat, and telemetry must not satisfy one). `assetCtxs` is **not subscribed**: no golden fixture pins its wire shape, so adding it is deferred. | Golden fixtures for mid maps and context arrays with unknown additive fields and malformed numeric values; codec table tests; journal v2 round-trip; **zero** new `Snapshot`/`LevelChange` events and **zero** new coverage anchors proved by `tests/hyperliquid_telemetry.rs`; numeric strings parsed exactly or rejected. | No claim of book coverage, no depth derivation, no market-order/execution view, no synthetic books, no `assetCtxs` subscription. |
@@ -167,14 +167,14 @@ reconstruction; the journal records what the wire actually said. A mid price is 
   `verify` for reconstruction, `completeness` for anchoring, `coverage` for the exact expected
   set, and recovery evidence for continuity across incidents.
 
-## 4. Identity mapping (Planned; finalized at H0)
+## 4. Identity mapping
 
 `native_symbol` is the key of `CollectorCore.markets` and the subscription unit; `symbol` is the
 namespaced SBE serialization identity. Neither is an ADR-0001 instrument identity.
 
 **4.1 Perpetual (DEX + coin).** Identity scope is `(hyperliquid, perp, dex, coin)`. The DEX is
 part of the key because the same coin text may exist on more than one DEX; a bare `BTC` would
-collide in the book map. Planned `native_symbol = "hyperliquid:perp:<dex>:<coin>"`. Set
+collide in the book map. `native_symbol = "hyperliquid:perp:<dex>:<coin>"`. Set
 `exchange_market_id = None` for perps (there is no parent grouping): `count_selected_markets`
 then falls back to `native_symbol` and counts each perpetual once. Only explicitly configured
 DEXs are discovered; an unconfigured DEX is out of universe, not silently added.
@@ -182,7 +182,7 @@ DEXs are discovered; an unconfigured DEX is out of universe, not silently added.
 **4.2 Spot (base/quote).** Identity scope is `(hyperliquid, spot, base, quote)` with token
 indices retained as mapping metadata. Wire coins may appear as `<BASE>/<QUOTE>` or as token
 indices such as `@<n>` — **verify at H0** against `spotMeta`. Discovery must resolve token index
-→ token name and normalize to base/quote. Planned `native_symbol = "hyperliquid:spot:<BASE>/<QUOTE>"`.
+→ token name and normalize to base/quote. `native_symbol = "hyperliquid:spot:<BASE>/<QUOTE>"`.
 Where a base/quote pair has canonical and non-canonical variants, default to canonical only;
 non-canonical pairs are excluded or suffixed with the index — never merged silently. `outcome`
 is `None` (this is not a prediction market), and `exchange_market_id` is `None`.
@@ -206,7 +206,7 @@ would then be ambiguous. The output symbol remains a serialization mapping, not 
 identity (ADR-0001). Freeze the format in H0 — later changes invalidate catalog checksums and
 break comparison against earlier evidence.
 
-## 5. Capability declaration for Hyperliquid (Planned)
+## 5. Capability declaration for Hyperliquid
 
 **Current:** `ExchangeCapabilities` has only `has_sequence_clock`, and `capabilities_for` is a
 two-arm match. Hyperliquid's planned value is `false`: public feeds publish no cross-replica

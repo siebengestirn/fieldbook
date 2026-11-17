@@ -486,8 +486,8 @@ def main() -> int:
                 errors.append(f"source anchor `{anchor}` not found in `{anchor_path}`")
     for required_text in [
         "docs/requirement-test-matrix.md",
-        "docs/CANONICAL_EVENT_MODEL.md",
-        "docs/JSONL_POSTGRES_REFERENCE.md",
+        "docs/canonical-event-model.md",
+        "docs/jsonl-postgres-reference.md",
         "Current operational caveat",
         "not a production certification",
     ]:

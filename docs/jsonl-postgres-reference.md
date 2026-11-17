@@ -1,9 +1,9 @@
-# JSONL -> PostgreSQL reference application (Platforms P5 and P6)
+# JSONL-to-target reference application
 
 This document records a **second, genuinely non-market-data reference
 application** built on the generic canonical envelope. Its purpose is to prove
 source/target independence: the same
-[`CanonicalEnvelope<T>`](CANONICAL_EVENT_MODEL.md) that the market-data
+[`CanonicalEnvelope<T>`](canonical-event-model.md) that the market-data
 collector uses can carry a different payload, from a different source, into a
 different target, without touching collector core, exchange adapters, SBE, the
 raw-frame journal, replay or the catalog.

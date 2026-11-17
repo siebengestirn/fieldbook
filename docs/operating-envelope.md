@@ -1,4 +1,4 @@
-# Operating Envelope
+# Operating envelope
 
 This document records the measured capacity envelope of the collector, the capacity math that derives hard limits, and the gate status for production readiness.
 
@@ -28,7 +28,7 @@ The collector enforces hard startup gates via [`capacity::plan`](../src/capacity
 | Limit | Formula | Default | Rationale |
 |-------|---------|---------|-----------|
 | `max_symbols_per_socket` | `symbols / shards` | 5,000 | Polymarket WebSocket frame size limits; empirical stability ceiling. |
-| `max_total_connections` | `shards × replicas + lifecycle_connections` (Kalshi: `+ lifecycle_replicas`, default 1) | 64 | Built-in planning default; deployment overrides must be stated separately. |
+| `max_total_connections` | `shards × replicas + lifecycle_connections` (Kalshi: `+ lifecycle_replicas`, default 1) | 512 | Built-in planning default; deployment overrides must be stated separately. |
 | `max_initial_subscription_bytes` | `overhead + max_symbols_per_socket × (longest_symbol + 3)` | 1 MiB | Initial `market` subscribe frame must fit in one WebSocket message. |
 | `max_estimated_book_memory_mb` | `outcome_symbols × 4096 bytes` | 1 GiB | Planning estimate, not an RSS ceiling: book level maps are unbounded. |
 | `max_snapshot_bytes_per_sec` | `outcome_symbols × snapshot_size / snapshot_interval` | 16 MiB/s | Planning estimate for periodic snapshot bandwidth. |

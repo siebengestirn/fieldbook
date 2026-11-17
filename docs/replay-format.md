@@ -1,4 +1,4 @@
-# Normalized replay fixture format
+# Replay fixture format
 
 `replay` consumes one JSON object per line (JSONL). Blank lines and lines whose
 first non-whitespace character is `#` are ignored. Every record carries a local
@@ -7,7 +7,7 @@ first non-whitespace character is `#` are ignored. Every record carries a local
 The non-decreasing rule is a replay-input convenience for a deterministic
 event timeline; live SBE file order is the single writer's processing order and
 can contain cross-symbol receive-timestamp regressions (see the
-timestamp/ordering contract in the [README](../README.md#ordering-and-timestamp-contract)).
+timestamp semantics in the [raw-frame journal](raw-frame-journal.md#ordering-and-time)).
 
 The replay path feeds the same `CollectorCore` used by live collection. It does
 not sleep or contact an exchange. Snapshot scheduling, source selection, and

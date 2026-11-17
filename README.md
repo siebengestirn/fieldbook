@@ -43,9 +43,8 @@ source-scoped reconnects are owned by independent bounded queues keyed by
 exact `(source, instrument, generation)` and `(source, generation)` targets.
 Recovery acknowledgements enumerate the instruments they cover and are fenced
 to those exact targets; stale generations, old connection epochs, and unknown
-targets fence nothing. See the
-[architecture migration status](docs/architecture-migration.md) for the
-milestone map and blast-radius evidence.
+targets fence nothing. Milestone and evidence status is in
+[`docs/programme-status.md`](docs/programme-status.md).
 Kalshi's margin (perps) API is a separate surface with its own wire contract
 and is not covered by these adapters.
 
@@ -56,28 +55,21 @@ intent; it is not a claim that those capabilities are implemented.
 
 ## Review path
 
-1. [Platform charter](docs/platform-charter.md) — target domain and boundaries, explicitly separate from current support.
+1. [Programme status](docs/programme-status.md) — what is implemented, tested and certified.
 2. [Architecture](docs/architecture.md) — current topology and failure model.
-3. [Requirement-to-test matrix](docs/requirement-test-matrix.md) — exact test evidence per requirement.
-4. [Verification](docs/verification.md) — gate results, exact commits, limits.
+3. [Requirement-to-test matrix](docs/requirement-test-matrix.md) — test evidence per requirement.
+4. [Programme status](docs/programme-status.md) — current gate and certification status.
 5. [Design decisions](docs/design-decisions.md) — why the boundaries exist.
-6. [ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md) — accepted journal observation contract; S1a/S1b implemented (journal v2 with typed data/control observations, v1 readers preserved).
-7. [PR #45 engineering review](docs/reviews/PR45-review-2026-11-16.md) and [file-by-file audit](docs/reviews/PR45-file-audit-2026-11-16.csv) — findings, scores, verification limits, and package inventory.
-8. [Event accounting contract](docs/EVENT_ACCOUNTING_CONTRACT.md), [engineering guarantees](docs/ENGINEERING_GUARANTEES.md), and [durability contract](docs/DURABILITY_CONTRACT.md) — implemented versus intended guarantees.
-9. [Universal platform architecture](docs/UNIVERSAL_PLATFORM_ARCHITECTURE.md) — implemented contracts and intended layering, with current limitations stated explicitly.
-10. [Hyperliquid integration plan](docs/HYPERLIQUID_INTEGRATION_PLAN.md) — staged, evidence-gated design for the next exchange; H0-H3 implemented (H3 synthetic loopback capacity cells only, not live certification or a capacity/latency claim).
-11. [Coinbase Exchange integration plan](docs/COINBASE_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same seams; H0 offline reference data implemented, H1-H3 planned (no websocket, book, telemetry, live evidence or performance claim).
-12. [Kraken integration plan](docs/KRAKEN_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same gates; H0 reference data implemented (offline fixtures only, no websocket/book/telemetry/live evidence), H1-H3 planned.
-13. [OKX integration plan](docs/OKX_INTEGRATION_PLAN.md) — staged, evidence-gated design for OKX; H0 reference data implemented (offline, no socket), H1-H3 planned. No live or performance claim.
-14. [Binance integration plan](docs/BINANCE_INTEGRATION_PLAN.md) — staged, evidence-gated design; H0 reference data implemented (offline fixture, exact numeric specs, no-network session stub), H1-H3 planned; no websocket, live, latency or capacity claim.
-15. [JSONL -> PostgreSQL reference application](docs/JSONL_POSTGRES_REFERENCE.md) — Platform P5 second, non-market-data application proving source/target independence; parameterized SQL contract plus deterministic in-memory simulator, no driver or live DB, no performance claim.
+6. [ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md) — journal observation contract.
+7. [Hyperliquid integration](docs/hyperliquid-integration-plan.md) — reference venue design; H0-H3 are synthetic-loopback evidence only.
+8. [JSONL-to-target reference](docs/jsonl-postgres-reference.md) — non-market-data source/target pipeline.
+9. [PR #45 engineering review](docs/reviews/pr45-review-2026-11-16.md) — review findings and verification limits.
 
-**Programme status:** see [`docs/PROGRAMME_STATUS.md`](docs/PROGRAMME_STATUS.md) — the authoritative, multi-dimensional status record.
-
-Implementation contracts: [replay format](docs/replay-format.md),
-[raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
-[operating envelope](docs/operating-envelope.md), and the
-[JSONL/PostgreSQL reference application](docs/JSONL_POSTGRES_REFERENCE.md).
+Format contracts: [replay format](docs/replay-format.md),
+[raw-frame journal](docs/raw-frame-journal.md),
+[event accounting](docs/event-accounting-contract.md),
+[durability](docs/durability-contract.md), and
+[operating envelope](docs/operating-envelope.md).
 
 ## What it does
 

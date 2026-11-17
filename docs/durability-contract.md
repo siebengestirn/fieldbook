@@ -1,4 +1,4 @@
-# Durability Contract
+# Durability contract
 
 ## Current implementation
 

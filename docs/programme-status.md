@@ -1,4 +1,4 @@
-# Programme Status (authoritative)
+# Programme status
 
 This is the definitive status record for the engineering programme. Other
 documents may describe design, history or intent; when a status statement here
@@ -47,9 +47,9 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `69f87c9` | PR #68 — Platform M3 typed data products |
 | `a9a6b23` | PR #69 — Platform M4 canonical events |
 | `127e926` | PR #70 — P5 JSONL-to-target reference application |
-| `339b4ad` | PR #71 — final status reconciliation (current integrated head) |
-| `a1b302a` | P6 durable file-to-target pipeline (local branch `feat/p6-durable-pipeline`; **not merged/pushed**) |
-| `60ac021` | P6 architecture/matrix gate extensions (local branch; **not merged/pushed**) |
+| `339b4ad` | PR #71 — final status reconciliation |
+| `56d5960` | PR #72 — comment audit and duplicate roadmap removal |
+| `0c669a2` | PR #74 — P6 durable file-to-target pipeline (current integrated head) |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -79,7 +79,7 @@ twice.
 | Platform M3 products (Phase 1) | Yes | Yes | N/A | Product/capability/state-machine tests | No | N/A |
 | Platform M4 canonical events (Phase 1) | Yes | Yes | N/A | Canonical conversion/schema tests | No | N/A |
 | P5 JSONL-to-target | Yes (simulator + SQL contract) | Yes | N/A | 24 application tests | No | No |
-| P6 durable file-to-target | Yes (real local durable store + streaming source + SQL executor contract) | Local gate commands pass; no remote CI run for this unmerged branch | N/A | 549 unit + 8 P6 integration tests, all offline/deterministic | No (no live DB/driver) | No |
+| P6 durable file-to-target | Yes (real local durable store + streaming source + SQL executor contract) | Yes, PR #74 CI | N/A | 8 P6 integration tests plus P5 suite, offline/deterministic | No (no live DB/driver) | No |
 
 ## Contract foundation vs live integration
 
@@ -136,4 +136,4 @@ subscription consumption or the SBE writer. P5 is a deterministic simulator
 plus SQL contract, not a live database integration. P6 adds a **real local
 durable store** and a **PostgreSQL contract plus `SqlExecutor` trait**, but it
 still has no driver and no live database. It is not wired into the market-data
-collector, makes no performance claim and is not merged into `main`.
+collector, makes no performance claim, and is not wired into the market-data collector.
