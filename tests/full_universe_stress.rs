@@ -1499,7 +1499,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(12));
+    assert_eq!(document["scenario_version"].as_u64(), Some(13));
     outcome
 }
 
@@ -1589,7 +1589,7 @@ fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
 }
 
 fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
-    assert_eq!(document["scenario_version"], 12);
+    assert_eq!(document["scenario_version"], 13);
     assert_eq!(document["backpressure"]["profile"], profile);
     let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
     assert!(!boundary.is_empty(), "boundary must be named");
@@ -2020,7 +2020,7 @@ async fn reference_backpressure_profiles_manifest_is_reproducible() {
         let outcome =
             stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
         let document = build_cell_manifest_for_reference(&out, seed);
-        assert_eq!(document["scenario_version"], 12);
+        assert_eq!(document["scenario_version"], 13);
         assert_eq!(document["backpressure"]["profile"], expected);
         assert!(
             !outcome.acceptance.valid || expected == "writer_queue_saturation",
@@ -2043,7 +2043,7 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
 }
 
 // ---------------------------------------------------------------------------
-// M5.4 deterministic disconnect and recovery sweeps (scenario_version 12).
+// M5.4 deterministic disconnect and recovery sweeps (scenario_version 13).
 // ---------------------------------------------------------------------------
 
 fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {

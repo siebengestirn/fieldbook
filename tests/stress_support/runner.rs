@@ -1302,6 +1302,10 @@ fn exact_event_targets(events: usize, hot_share_pct: u32, rng: &mut SplitMix64) 
 /// Publish exactly `events` logical deltas and return the derived plan. The RNG
 /// is threaded through phases so the whole workload is one deterministic stream
 /// derived from the seed; phase boundaries do not reset it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the publish call threads the workload, cumulative lifecycle base and callback explicitly so each evidence input is visible at the call site"
+)]
 fn publish_events(
     mock: &MockKalshi,
     tickers: &[String],
