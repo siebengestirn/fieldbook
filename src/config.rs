@@ -138,30 +138,61 @@ impl Default for PolymarketSettings {
     }
 }
 
-/// Reference-data settings for Hyperliquid (H0).
+/// Telemetry subscription settings for Hyperliquid (H1).
+///
+/// Subscriptions are channel-level and venue-wide: `allMids` and
+/// `fastAssetCtxs` are statistics feeds, never book subscriptions. `assetCtxs`
+/// is deliberately absent — no checked-in golden fixture pins its wire shape,
+/// so H1 does not subscribe to it. Adding it is a later, fixture-gated change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HyperliquidTelemetrySettings {
+    /// Telemetry channels to subscribe to on each connection. Only `allMids`
+    /// and `fastAssetCtxs` are supported in H1; any other value is rejected
+    /// rather than silently ignored.
+    pub subscriptions: Vec<String>,
+}
+
+impl Default for HyperliquidTelemetrySettings {
+    fn default() -> Self {
+        Self {
+            subscriptions: vec!["allMids".to_owned(), "fastAssetCtxs".to_owned()],
+        }
+    }
+}
+
+/// Reference-data and telemetry settings for Hyperliquid (H0 reference data,
+/// H1 telemetry).
 ///
 /// `reference_fixture` is an explicitly configured offline source for
 /// deterministic discovery. When absent, discovery uses the `info_url` REST
-/// endpoint. No websocket is opened during H0 discovery.
+/// endpoint. `ws_url` and `telemetry` are added with backward-compatible
+/// defaults: an H0 configuration that predates them still deserializes and
+/// now opens a telemetry-only websocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HyperliquidSettings {
     pub info_url: String,
+    /// Public websocket endpoint used by the H1 telemetry session.
+    pub ws_url: String,
     /// Perpetual DEX names to include. The empty string is the main DEX.
     pub dexs: Vec<String>,
     pub spot_enabled: bool,
     pub reference_fixture: Option<PathBuf>,
     pub request_timeout_secs: u64,
+    pub telemetry: HyperliquidTelemetrySettings,
 }
 
 impl Default for HyperliquidSettings {
     fn default() -> Self {
         Self {
             info_url: "https://api.hyperliquid.xyz/info".to_owned(),
+            ws_url: "wss://api.hyperliquid.xyz/ws".to_owned(),
             dexs: vec![String::new()],
             spot_enabled: false,
             reference_fixture: None,
             request_timeout_secs: 20,
+            telemetry: HyperliquidTelemetrySettings::default(),
         }
     }
 }

@@ -134,6 +134,7 @@ pub fn build_exchange(
         )?)),
         ExchangeKind::Hyperliquid => Ok(Arc::new(HyperliquidExchange::new(
             settings.hyperliquid.clone(),
+            settings.network.clone(),
         )?)),
     }
 }

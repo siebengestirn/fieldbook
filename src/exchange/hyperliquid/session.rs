@@ -1,63 +1,386 @@
-//! Hyperliquid session stub for H0.
+//! Hyperliquid telemetry websocket session (H1).
 //!
-//! H0 opens no websocket and produces no market events. The stub exists so the
-//! exchange adapter satisfies the composition seam without pretending that
-//! book or telemetry feeds are implemented.
+//! Connects to the public websocket and subscribes to the fixture-proven
+//! telemetry channels `allMids` and `fastAssetCtxs`. Frames are decoded by
+//! [`super::telemetry`] and surfaced as raw journal data with typed
+//! `SessionSignal::ProtocolControl` observations. No `Snapshot`, no
+//! `LevelChange`, no book anchor and no heartbeat acknowledgement is ever
+//! produced from telemetry: these feeds are statistics, not depth. `assetCtxs`
+//! is not subscribed in H1 because no golden fixture pins its wire shape.
 
+use std::collections::BTreeSet;
+
+use anyhow::Context;
 use async_trait::async_trait;
+use serde_json::Value;
 
 use crate::{
+    config::{HyperliquidSettings, NetworkSettings},
+    exchange::hyperliquid::telemetry::{TelemetryFrame, decode_telemetry, subscription_request},
+    journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
+    protocol::{HeartbeatMechanism, SessionSignal},
     session::{
         HeartbeatRequest, HeartbeatSpec, MarketDataSession, SessionFactory, SessionFailure,
         SessionFrame,
     },
+    time::now_us,
+    ws::{self, ConnectOptions, WsPayload, WsStream},
 };
 
-/// H0 no-network session.
-pub struct HyperliquidSession;
+/// Unique per-connection ordinal used to derive distinct pinned source ports.
+/// Mirrors the Kalshi and Polymarket adapters.
+fn source_ordinal(source: SourceId) -> u32 {
+    u32::from(source.shard) * 256 + u32::from(source.replica)
+}
+
+/// Factory for H1 telemetry sessions. Holds only configuration; transport
+/// options are derived per source so egress policy is honoured identically to
+/// the other venues.
+pub struct HyperliquidSessionFactory {
+    settings: HyperliquidSettings,
+    network: NetworkSettings,
+}
+
+impl HyperliquidSessionFactory {
+    pub fn new(settings: HyperliquidSettings, network: NetworkSettings) -> Self {
+        Self { settings, network }
+    }
+}
+
+#[async_trait]
+impl SessionFactory for HyperliquidSessionFactory {
+    async fn create_session(&self, source: SourceId) -> anyhow::Result<Box<dyn MarketDataSession>> {
+        let connect_options = self
+            .network
+            .connect_options()
+            .with_context(|| format!("deriving transport options for source {source}"))?
+            .for_ordinal(source_ordinal(source))
+            .with_context(|| format!("deriving connect options for source {source}"))?;
+        Ok(Box::new(HyperliquidSession::new(
+            self.settings.clone(),
+            connect_options,
+        )))
+    }
+}
+
+/// One telemetry-only Hyperliquid websocket connection.
+pub struct HyperliquidSession {
+    settings: HyperliquidSettings,
+    connect_options: ConnectOptions,
+    stream: Option<WsStream>,
+    subscribed: bool,
+}
+
+impl HyperliquidSession {
+    pub fn new(settings: HyperliquidSettings, connect_options: ConnectOptions) -> Self {
+        Self {
+            settings,
+            connect_options,
+            stream: None,
+            subscribed: false,
+        }
+    }
+
+    fn stream_mut(&mut self) -> Result<&mut WsStream, SessionFailure> {
+        self.stream.as_mut().ok_or_else(|| {
+            SessionFailure::Reconnect(anyhow::anyhow!("Hyperliquid session is not connected"))
+        })
+    }
+
+    async fn send_json(&mut self, value: Value) -> Result<(), SessionFailure> {
+        let text = serde_json::to_string(&value)
+            .context("serializing Hyperliquid command")
+            .map_err(SessionFailure::Reconnect)?;
+        ws::send_text(self.stream_mut()?, text)
+            .await
+            .map_err(SessionFailure::Reconnect)
+    }
+
+    /// Decode one application payload. Telemetry is accepted and journaled
+    /// with its exact bytes but never becomes a market event or a heartbeat.
+    fn decode_text(
+        &self,
+        text: String,
+        kind: FrameKind,
+        received_at_us: i64,
+    ) -> Result<SessionFrame, SessionFailure> {
+        let bytes = text.len();
+        let decoded = decode_telemetry(&text);
+        let raw = RawFrame {
+            kind,
+            payload: text.into_bytes(),
+        };
+        match decoded {
+            Ok(frame) => {
+                let decode = match frame {
+                    TelemetryFrame::Ignored(reason) => DecodeOutcome::ignored(&reason),
+                    TelemetryFrame::AllMids(_) | TelemetryFrame::FastAssetCtxs(_) => {
+                        DecodeOutcome::ignored("hyperliquid_telemetry")
+                    }
+                };
+                // `SessionFrame::data` builds the inbound data observation from
+                // the exact payload; `with_signal` retypes the frame and its
+                // observation to ProtocolControl. Events stay empty, so the
+                // worker emits no book event and creates no coverage anchor.
+                Ok(
+                    SessionFrame::data(Vec::new(), bytes, raw, decode, received_at_us)
+                        .with_signal(SessionSignal::ProtocolControl),
+                )
+            }
+            Err(error) => Err(SessionFailure::Decode {
+                error: error.context("decoding Hyperliquid telemetry frame"),
+                frame: Some(raw),
+                received_at_us,
+            }),
+        }
+    }
+}
 
 #[async_trait]
 impl MarketDataSession for HyperliquidSession {
     fn heartbeat_spec(&self) -> HeartbeatSpec {
+        // No fixture proves a venue heartbeat in H1. Liveness comes from frame
+        // receipt and the worker's idle timeout; telemetry never satisfies a
+        // heartbeat or a stale-probe budget.
         HeartbeatSpec::disabled()
     }
 
     async fn connect(&mut self) -> Result<(), SessionFailure> {
+        self.close().await;
+        let stream = ws::connect(&self.settings.ws_url, &[], &self.connect_options)
+            .await
+            .map_err(|error| {
+                SessionFailure::Reconnect(error.context("connecting to Hyperliquid websocket"))
+            })?;
+        self.stream = Some(stream);
+        self.subscribed = false;
         Ok(())
     }
 
     async fn apply_subscriptions(
         &mut self,
-        _desired: &std::collections::BTreeSet<String>,
+        _desired: &BTreeSet<String>,
     ) -> Result<(), SessionFailure> {
+        // Telemetry is venue-wide, not symbol-scoped. `desired` contains the
+        // discovered book symbols; none of them is subscribed in H1. Send the
+        // configured channel subscriptions exactly once per connection.
+        if self.subscribed {
+            return Ok(());
+        }
+        let channels = self.settings.telemetry.subscriptions.clone();
+        for channel in &channels {
+            let request = subscription_request(channel).map_err(SessionFailure::Fatal)?;
+            self.send_json(request).await?;
+        }
+        self.subscribed = true;
         Ok(())
     }
 
     async fn next_frame(&mut self) -> Result<SessionFrame, SessionFailure> {
-        Ok(SessionFrame::idle(0))
+        let read = ws::next_payload(self.stream_mut()?)
+            .await
+            .map_err(SessionFailure::Reconnect)?;
+        let received_at_us = now_us().unwrap_or(0);
+        match read.payload {
+            // Native controls are transport plumbing. A PONG is not an
+            // acknowledgement: the H1 heartbeat mechanism is Disabled.
+            WsPayload::Ping(payload) => Ok(SessionFrame::native_control(
+                WsPayload::Ping(payload),
+                read.response,
+                HeartbeatMechanism::Disabled,
+                SessionSignal::ProtocolControl,
+                received_at_us,
+            )),
+            WsPayload::Pong(payload) => Ok(SessionFrame::native_control(
+                WsPayload::Pong(payload),
+                None,
+                HeartbeatMechanism::Disabled,
+                SessionSignal::ProtocolControl,
+                received_at_us,
+            )),
+            WsPayload::Text(text) => self.decode_text(text, FrameKind::Text, received_at_us),
+            WsPayload::Binary(bytes) => match String::from_utf8(bytes.clone()) {
+                Ok(text) => self.decode_text(text, FrameKind::Binary, received_at_us),
+                Err(error) => Err(SessionFailure::Decode {
+                    error: anyhow::Error::new(error)
+                        .context("Hyperliquid binary frame was not UTF-8 JSON"),
+                    frame: Some(RawFrame {
+                        kind: FrameKind::Binary,
+                        payload: bytes,
+                    }),
+                    received_at_us,
+                }),
+            },
+        }
     }
 
     async fn send_keepalive(&mut self) -> Result<HeartbeatRequest, SessionFailure> {
+        // Never called: the heartbeat spec is Disabled. Returning a default
+        // keeps the seam total without inventing a venue heartbeat.
         Ok(HeartbeatRequest::default())
     }
 
     async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
+        // H1 has no book feed, so there is no snapshot to request. A recovery
+        // control cannot manufacture an anchor from telemetry.
         Ok(())
     }
 
-    async fn close(&mut self) {}
+    async fn close(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            let _ = ws::close(stream).await;
+        }
+        self.subscribed = false;
+    }
 }
 
-/// Factory for H0 sessions.
-pub struct HyperliquidSessionFactory;
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
 
-#[async_trait]
-impl SessionFactory for HyperliquidSessionFactory {
-    async fn create_session(
-        &self,
-        _source: SourceId,
-    ) -> anyhow::Result<Box<dyn MarketDataSession>> {
-        Ok(Box::new(HyperliquidSession))
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+
+    use super::*;
+    use crate::{
+        journal::FrameKind as JournalFrameKind,
+        protocol::{FrameClassification, FrameDirection},
+    };
+
+    type ServerWs = WebSocketStream<tokio::net::TcpStream>;
+
+    const ALL_MIDS: &str = include_str!("../../../fixtures/hyperliquid/all_mids.json");
+    const FAST_CTX: &str = include_str!("../../../fixtures/hyperliquid/fast_asset_ctxs.json");
+
+    async fn read_subscribe(ws: &mut ServerWs) -> String {
+        let message = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("server read timed out")
+            .expect("server stream ended")
+            .expect("server websocket error");
+        match message {
+            Message::Text(text) => text.to_string(),
+            other => panic!("expected a subscription text frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscription_frames_and_telemetry_decode_produce_no_book_events() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+
+            let first: Value = serde_json::from_str(&read_subscribe(&mut ws).await)
+                .expect("first subscription is JSON");
+            let second: Value = serde_json::from_str(&read_subscribe(&mut ws).await)
+                .expect("second subscription is JSON");
+            assert_eq!(first["method"], "subscribe");
+            assert_eq!(first["subscription"]["type"], "allMids");
+            assert_eq!(second["method"], "subscribe");
+            assert_eq!(second["subscription"]["type"], "fastAssetCtxs");
+
+            ws.send(Message::Text(ALL_MIDS.to_owned().into()))
+                .await
+                .unwrap();
+            ws.send(Message::Text(FAST_CTX.to_owned().into()))
+                .await
+                .unwrap();
+            // Keep the socket open while the client reads both frames.
+            while let Some(message) = ws.next().await {
+                if message.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let settings = HyperliquidSettings {
+            ws_url: format!("ws://{address}"),
+            ..HyperliquidSettings::default()
+        };
+        let mut session = HyperliquidSession::new(settings, ConnectOptions::default());
+        assert_eq!(
+            session.heartbeat_spec().mechanism,
+            HeartbeatMechanism::Disabled
+        );
+        session.connect().await.unwrap();
+        session.apply_subscriptions(&BTreeSet::new()).await.unwrap();
+
+        for fixture in [ALL_MIDS, FAST_CTX] {
+            let frame = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+                .await
+                .expect("client frame timed out")
+                .expect("client frame failed");
+            assert!(frame.events.is_empty(), "telemetry produced a book event");
+            assert_eq!(frame.signal, SessionSignal::ProtocolControl);
+            assert_eq!(frame.mechanism, HeartbeatMechanism::Disabled);
+            assert_eq!(
+                frame.decode,
+                DecodeOutcome::ignored("hyperliquid_telemetry")
+            );
+            assert_eq!(
+                frame.raw.as_ref().map(|raw| raw.payload.as_slice()),
+                Some(fixture.as_bytes()),
+                "the exact received bytes must be retained for the journal"
+            );
+            let observation = frame
+                .observations
+                .first()
+                .expect("inbound data observation");
+            assert_eq!(observation.direction, FrameDirection::Inbound);
+            assert_eq!(
+                observation.classification,
+                FrameClassification::Data {
+                    frame_kind: JournalFrameKind::Text
+                }
+            );
+            assert_eq!(observation.signal, SessionSignal::ProtocolControl);
+            assert_eq!(observation.mechanism, HeartbeatMechanism::Disabled);
+            assert_eq!(observation.payload, fixture.as_bytes());
+        }
+
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_numeric_is_a_decode_failure_with_exact_raw_bytes() {
+        const MALFORMED: &str =
+            include_str!("../../../fixtures/hyperliquid/all_mids_malformed.json");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let _ = read_subscribe(&mut ws).await;
+            let _ = read_subscribe(&mut ws).await;
+            ws.send(Message::Text(MALFORMED.to_owned().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let settings = HyperliquidSettings {
+            ws_url: format!("ws://{address}"),
+            ..HyperliquidSettings::default()
+        };
+        let mut session = HyperliquidSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        session.apply_subscriptions(&BTreeSet::new()).await.unwrap();
+        let failure = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("client frame timed out")
+            .expect_err("an inexact numeric value must be rejected");
+        match failure {
+            SessionFailure::Decode {
+                frame: Some(raw), ..
+            } => assert_eq!(raw.payload, MALFORMED.as_bytes()),
+            other => panic!("expected a decode failure with the raw frame, got {other:?}"),
+        }
+        session.close().await;
+        server.await.unwrap();
     }
 }
