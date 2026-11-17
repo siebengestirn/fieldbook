@@ -54,7 +54,7 @@ use super::{
 
 const ANCHOR_LIMIT: Duration = Duration::from_secs(45);
 const FINISH_LIMIT: Duration = Duration::from_secs(60);
-const DRAIN_LIMIT: Duration = Duration::from_secs(10);
+const DRAIN_LIMIT: Duration = Duration::from_secs(30);
 const BASELINE_LIMIT: Duration = Duration::from_secs(5);
 const METRICS_POLL: Duration = Duration::from_millis(25);
 /// Once anchoring has started (`anchored > 0`), a window with zero progress

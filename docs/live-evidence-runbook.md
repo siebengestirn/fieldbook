@@ -246,6 +246,21 @@ output directory contains the same verification reports and a hash manifest as
 the dual-venue workflow, plus `evidence.json` with the source commit and the
 SHA-256 of every artifact.
 
+A controlled reconnect drill uses a reviewed config with a short refresh
+interval and changes the evidence tier to `HL_LIVE_RECOVERY_OK`:
+
+```bash
+HYPERLIQUID_READ_ONLY_ACCESS_CONFIRMED=1 \
+  HL_RECOVERY_DRILL=1 HL_CONFIG=config.hyperliquid-recovery.example.toml \
+  HL_DURATION_SECS=300 scripts/run-hyperliquid-evidence.sh
+```
+
+That tier requires reconnects to have occurred and exchange-originated
+snapshots to exceed the reconnect count, while still requiring zero decode,
+protocol and writer errors and a valid expected/acknowledged/anchored set.
+This is evidence that a fresh `l2Book` re-anchors books in a new connection
+epoch; it is not a claim about venue availability.
+
 `--max-markets 0` (the default) discovers the full venue universe before
 selection. A smaller cap can truncate the configured selected set because the
 venue publishes hundreds of perpetuals; do not treat a reduced expected count

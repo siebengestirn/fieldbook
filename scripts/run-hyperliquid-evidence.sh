@@ -20,8 +20,13 @@ MAX_MARKETS="${HL_MAX_MARKETS:-0}"
 SHARDS="${HL_SHARDS:-1}"
 REPLICAS="${HL_REPLICAS:-1}"
 CONFIG="${HL_CONFIG:-}"
+RECOVERY="${HL_RECOVERY_DRILL:-0}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT="${HL_EVIDENCE_DIR:-$ROOT/captures/live-hyperliquid-$STAMP}"
+if [[ "$RECOVERY" == 1 ]]; then
+  OUT="${HL_EVIDENCE_DIR:-$ROOT/captures/live-hyperliquid-recovery-$STAMP}"
+else
+  OUT="${HL_EVIDENCE_DIR:-$ROOT/captures/live-hyperliquid-$STAMP}"
+fi
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
 BIN="$ROOT/target/release/engineering-challenge"
 
@@ -58,6 +63,10 @@ if [[ ! "$REPLICAS" =~ ^[0-9]+$ ]] || (( REPLICAS < 1 || REPLICAS > 4 )); then
   echo "ERROR: HL_REPLICAS must be an integer in [1, 4]." >&2
   exit 2
 fi
+case "$RECOVERY" in
+  0|1) ;;
+  *) echo "ERROR: HL_RECOVERY_DRILL must be 0 or 1." >&2; exit 2 ;;
+esac
 
 COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"
 if [[ -z "$COMMIT" ]]; then
@@ -67,6 +76,11 @@ fi
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "ERROR: the working tree must be clean so the commit identifies the exact source." >&2
   git status --short >&2
+  exit 2
+fi
+
+if [[ "$RECOVERY" == 1 && -z "$CONFIG" ]]; then
+  echo "ERROR: a recovery drill requires HL_CONFIG with a short reconnect_after_secs." >&2
   exit 2
 fi
 
@@ -138,10 +152,11 @@ fi
 if [[ "$JOURNAL_RUN" != /* ]]; then JOURNAL_RUN="$ROOT/$JOURNAL_RUN"; fi
 "$BIN" journal verify "$JOURNAL_RUN" >"$OUT/journal-verify.json" 2>"$OUT/journal-verify.log"
 
-if ! python3 - "$REPORT" "$OUT/sbe-verify.json" "$OUT/completeness.json" \
+if ! python3 - "$RECOVERY" "$REPORT" "$OUT/sbe-verify.json" "$OUT/completeness.json" \
     "$OUT/coverage.json" "$OUT/journal-verify.json" <<'PY'
 import json, sys
-report_path, sbe_path, complete_path, coverage_path, journal_path = sys.argv[1:]
+recovery, report_path, sbe_path, complete_path, coverage_path, journal_path = sys.argv[1:]
+recovery = recovery == "1"
 load = lambda path: json.load(open(path, encoding="utf-8"))
 report, sbe, complete, coverage, journal = map(load, (report_path, sbe_path, complete_path, coverage_path, journal_path))
 core = report.get("core", {})
@@ -163,18 +178,23 @@ checks = {
     "no_writer_errors": int(writer.get("errors", 0)) == 0,
     "no_decode_errors": all(int(source.get("decode_errors", 0)) == 0 for source in sources),
     "no_protocol_errors": all(int(source.get("protocol_errors", 0)) == 0 for source in sources),
-    "no_reconnects": all(int(source.get("reconnects", 0)) == 0 for source in sources),
 }
+reconnects = [int(source.get("reconnects", 0)) for source in sources]
+if recovery:
+    checks["reconnect_drill_occurred"] = bool(reconnects) and min(reconnects) > 0
+    checks["fresh_snapshots_after_reconnect"] = int(core.get("exchange_snapshots", 0)) > max(reconnects)
+else:
+    checks["no_reconnects"] = all(value == 0 for value in reconnects)
 for name, passed in checks.items():
     print(f"{name}: {'PASS' if passed else 'FAIL'}")
 if not all(checks.values()):
     sys.exit(1)
 print(
-    f"HL_LIVE_OK discovered={report['discovered_symbols']} "
+    f"{'HL_LIVE_RECOVERY_OK' if recovery else 'HL_LIVE_OK'} discovered={report['discovered_symbols']} "
     f"expected={coverage['expected']} acknowledged={coverage['acknowledged']} "
     f"anchored={coverage['anchored']} exchange_snapshots={core['exchange_snapshots']} "
     f"deltas={core.get('deltas_emitted', 0)} sbe_messages={writer['messages']} "
-    f"journal_records={journal['record_count']}"
+    f"journal_records={journal['record_count']} reconnects={reconnects}"
 )
 PY
 then
@@ -184,9 +204,10 @@ fi
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 python3 - "$OUT" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" \
-  "$DURATION_SECS" "$MAX_MARKETS" "$SHARDS" "$REPLICAS" "$JOURNAL_RUN" <<'PY'
+  "$DURATION_SECS" "$MAX_MARKETS" "$SHARDS" "$REPLICAS" "$JOURNAL_RUN" "$RECOVERY" "$CONFIG" <<'PY'
 import hashlib, json, pathlib, sys
-out, commit, started, completed, duration, max_markets, shards, replicas, journal_run = sys.argv[1:]
+out, commit, started, completed, duration, max_markets, shards, replicas, journal_run, recovery, config = sys.argv[1:]
+recovery = recovery == "1"
 root = pathlib.Path(out)
 journal_root = pathlib.Path(journal_run)
 def sha(path):
@@ -203,8 +224,10 @@ report, sbe, complete, coverage, journal = map(
 journal_files = [journal_root / "manifest.json", *sorted(journal_root.glob("*.pmj"))]
 manifest = {
     "schema_version": 1,
-    "evidence_tier": "HL_LIVE_OK",
-    "classification": "real-direct-hyperliquid-mainnet-readonly",
+    "evidence_tier": "HL_LIVE_RECOVERY_OK" if recovery else "HL_LIVE_OK",
+    "classification": "real-direct-hyperliquid-mainnet-readonly-reconnect-drill" if recovery else "real-direct-hyperliquid-mainnet-readonly",
+    "recovery_drill": recovery,
+    "config_file": config or None,
     "access": "direct public market data; no proxy, VPN, alternate DNS, hosted runner, credentials or orders",
     "source_commit": commit,
     "started_at_utc": started,
