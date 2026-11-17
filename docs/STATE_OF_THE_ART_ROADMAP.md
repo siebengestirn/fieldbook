@@ -18,10 +18,9 @@ the next evidence gates. It does not claim future work is complete.
 
 | Gate | Exit condition |
 |---|---|
-| Platform M2 | Persistent instrument and reference identity (ADR-0001) |
-| Platform M3 | Typed data-product and capability contracts |
-| Platform M4 | Canonical event model and normalized persistence |
-| P5 | Independent JSONL-to-PostgreSQL reference application |
+| Platform M2/M3/M4 + P5 | Additive contracts landed; next gate is rewiring live ingest to consume them |
+| P5 live DB | Real PostgreSQL driver and controlled database environment (dependency decision) |
+| P8 | Replicated durability profiles with explicit failure models |
 | P8 | Replicated durability profiles with explicit failure models |
 | Performance | End-to-end reproducible measurements; current histograms are stage-only |
 
