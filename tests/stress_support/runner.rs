@@ -2578,10 +2578,30 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         lifecycle_publisher(usize::MAX);
         let expected_wire =
             lifecycle_schedule.events.len() as u64 * config.lifecycle_replicas.max(1) as u64;
+        let final_active = (eligible.len() as i64
+            + lifecycle_schedule
+                .events
+                .iter()
+                .map(|event| match event.catalog_effect {
+                    crate::stress_support::lifecycle::CatalogEffect::Add => 1,
+                    crate::stress_support::lifecycle::CatalogEffect::Retire => -1,
+                    crate::stress_support::lifecycle::CatalogEffect::None => 0,
+                })
+                .sum::<i64>())
+        .max(0) as f64;
         let deadline = Instant::now() + drain_limit;
-        while mock.state().ledger_snapshot().lifecycle_sent < expected_wire
-            && Instant::now() < deadline
-        {
+        loop {
+            let sent = mock.state().ledger_snapshot().lifecycle_sent;
+            let active = match metrics_addr {
+                Some(addr) => scrape_metric(addr, "collector_symbols_active").await,
+                None => None,
+            };
+            if sent >= expected_wire && active == Some(final_active) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
             sleep(METRICS_POLL).await;
         }
     }
