@@ -615,7 +615,7 @@ pub async fn run_worker(
         status.transport_state = TransportState::Connected;
         // A fresh connection has answered nothing yet: the heartbeat state
         // honestly says so instead of claiming health. Book continuity is
-        // intentionally untouched - a reconnect can only re-anchor books
+        // untouched: a reconnect can only re-anchor books
         // through accepted recovery snapshots, never through connection
         // success.
         status.missed_heartbeats = 0;

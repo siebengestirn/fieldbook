@@ -77,7 +77,7 @@ pub struct HyperliquidSession {
     telemetry_subscribed: bool,
     /// Desired native symbols reported by the supervisor.
     desired: BTreeSet<String>,
-    /// Native symbols actually subscribed to `l2Book` on this connection.
+    /// Native symbols with an acknowledged `l2Book` subscription on this connection.
     subscribed_books: BTreeSet<String>,
 }
 

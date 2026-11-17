@@ -103,7 +103,7 @@ pub struct CollectorStats {
     pub crossed_snapshots_skipped: u64,
     pub duplicate_events: u64,
     /// Delta events delivered to a non-active replica: applied to that
-    /// replica's private book and deliberately not emitted. This is a
+    /// replica's private book but not emitted. This is a
     /// transport duplicate, distinct from a duplicate application.
     #[serde(default)]
     pub suppressed_replica_duplicates: u64,
@@ -160,7 +160,7 @@ pub struct WriterCounters {
     pub errors: AtomicU64,
     pub queue_depth: AtomicU64,
     /// Highest `queue_depth` observed when a message was accepted. Proves
-    /// whether the configured writer queue bound was actually reached. The
+    /// whether the configured writer queue bound was reached. The
     /// channel enforces the bound; this counter may transiently read one
     /// above it (the writer frees the slot before its decrement lands).
     pub queue_high_water: AtomicU64,

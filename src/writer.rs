@@ -871,7 +871,7 @@ impl WriterHandle {
     }
 
     /// Send one message, waiting for queue capacity. A timeout prevents a
-    /// wedged writer from deadlocking the whole collector forever.
+    /// stalled writer from blocking collector shutdown indefinitely.
     ///
     /// Capacity is reserved before the message is handed over, so a timed-out
     /// send cannot have enqueued the message and cannot leave the queue-depth

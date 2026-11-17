@@ -1475,9 +1475,8 @@ fn blocked_writer_bounds_shutdown() {
         DecodeOutcome::decoded(1),
     );
 
-    // The writer is stuck in a write and the queue is full: shutdown must
-    // still return close to its deadline instead of blocking on the
-    // bounded channel forever.
+    // A blocked write fills the queue; shutdown must remain within its
+    // deadline instead of waiting for queue capacity.
     let started = Instant::now();
     let shutdown = handle.shutdown(Duration::from_millis(300));
     let elapsed = started.elapsed();

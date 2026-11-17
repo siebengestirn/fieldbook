@@ -253,11 +253,9 @@ fn scalar_string(value: &Value) -> Option<String> {
 
 /// Convert one discovery page, isolating malformed records.
 ///
-/// A record that fails conversion is counted and skipped with a warning so a
-/// single bad entry cannot abort reconciliation for every valid market. If
-/// every record on a non-empty page fails, the response is untrustworthy and
-/// an error is returned so the round is retried instead of silently
-/// reconciling a partial set.
+/// A malformed record is counted and skipped with a warning. If every record
+/// on a non-empty page fails conversion, the response is untrustworthy; return
+/// an error so the round is retried rather than reconciling a partial set.
 ///
 /// `max_markets` caps selected venue market records, not outcome tokens. A
 /// selected market contributes its complete outcome set, so the cap only ever

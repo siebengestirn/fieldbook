@@ -111,7 +111,7 @@ pub struct FaultStep {
     /// Planned offset from anchor completion, in milliseconds.
     pub failure_time_ms: u64,
     /// Recovery deadline measured from the fault, in milliseconds. `None`
-    /// means the scenario intentionally has no recovery (timeout/exhaustion).
+    /// means the scenario has no recovery (timeout/exhaustion).
     pub deadline_ms: Option<u64>,
     /// Target replica ordinal when `fault_type == ReplicaLoss`.
     pub connection_ordinal: Option<ConnectionOrdinal>,
@@ -129,7 +129,7 @@ pub struct FaultSchedule {
 }
 
 impl FaultSchedule {
-    /// Steps the cell runner actually drives through the mock.
+    /// Steps executed by the cell runner through the mock.
     #[must_use]
     pub fn driven_steps(&self) -> Vec<&FaultStep> {
         self.steps
@@ -164,7 +164,7 @@ pub enum SweepProfile {
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the fault matrix fields are intentionally flat so each manifest column is explicit at the call site"
+    reason = "flat arguments keep each manifest column explicit at the call site"
 )]
 fn step(
     fault_id: FaultId,

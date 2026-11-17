@@ -1,6 +1,6 @@
 //! Generic source/target reference application (Platform P5).
 //!
-//! This module is deliberately additive and non-market-data. It proves that the
+//! This module is independent of market-data processing. It demonstrates that the
 //! canonical envelope in [`crate::canonical`] is reusable by a second, unrelated
 //! application: newline-delimited JSON observations in, typed business events
 //! out, delivered to a target through an explicit idempotent delivery contract.
@@ -282,7 +282,7 @@ impl SourceAdapter for JsonlSource {
 // Typed, non-market business payload and deterministic transformation
 // ---------------------------------------------------------------------------
 
-/// Minimal typed business event. It deliberately has no price, side, venue,
+/// Typed business event with no price, side, venue,
 /// book or instrument concept: it is an entity, a kind, an exact integer value
 /// and the observation time supplied by the source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

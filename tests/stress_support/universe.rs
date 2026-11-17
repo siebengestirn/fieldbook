@@ -48,7 +48,7 @@ impl SyntheticMarket {
 
     /// REST discovery record for the mock's `/markets` pages.
     ///
-    /// The synthetic records mirror the field names our adapter reads:
+    /// The synthetic records use the field names read by the adapter:
     /// `ticker`, `event_ticker`, `title`, `status`, `close_time`,
     /// `price_ranges`, `price_level_structure`. Eligible records carry no
     /// `market_type`/`mve_*` fields at all.

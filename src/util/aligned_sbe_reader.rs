@@ -44,12 +44,9 @@ pub type PrefetchTask = Box<dyn FnOnce() + Send + 'static>;
 /// The [`AlignedSbeReader`] solves the problem of partial messages in SBE flat
 /// files.
 ///
-/// The design targets aeron-spec SBE reads from disk at very high rates -- 100M
-/// messages/sec on a single reader thread, with another prefetch thread/task in
-/// the background -- through a small API: reads are prefetched and the file is
-/// read in big chunks ([`DEFAULT_CHUNK_SIZE`]). Reading in chunks alone allows a
-/// message to tear across a chunk boundary, which forces the prefetch logic and
-/// the reader to coordinate finishing the truncated message on the next chunk.
+/// Reads are prefetched in chunks of [`DEFAULT_CHUNK_SIZE`]. A message can
+/// cross a chunk boundary, so the prefetch task and reader coordinate to finish
+/// the message from the next chunk.
 ///
 /// The aligned format removes that coordination: **Write the encoded SBE
 /// messages all-or-nothing, aligned to the chunk size.** If the next message

@@ -3,7 +3,7 @@
 #
 # Sourced, not executed. Every gate is fail-closed: a step that cannot run
 # is a failure, never an implicit pass. A failing step marks the whole gate
-# failed, and the remaining steps still run, so one bad step cannot hide
+# failed, and the remaining steps still run, so one failed step cannot hide
 # another.
 
 # shellcheck shell=bash

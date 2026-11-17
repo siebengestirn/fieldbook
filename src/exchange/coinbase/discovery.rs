@@ -1,6 +1,6 @@
 //! Coinbase Exchange reference-data discovery (H0).
 //!
-//! Discovery is deliberately separate from the websocket path: H0 opens no
+//! Discovery is separate from the websocket path: H0 opens no
 //! socket. Reference data comes either from an explicitly configured offline
 //! `products` fixture or from the public `/products` REST endpoint.
 
@@ -44,8 +44,8 @@ pub async fn discover(
 }
 
 /// Discover with page/record telemetry. H0 has a single products document, so
-/// `pages` is always one; malformed and retry counters stay zero because a bad
-/// record rejects the round rather than being dropped.
+/// `pages` is one. A malformed record rejects the round, so malformed and
+/// retry counters remain zero.
 pub async fn discover_with_stats(
     settings: &CoinbaseSettings,
     client: &Client,

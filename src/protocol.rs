@@ -1,6 +1,6 @@
 //! Transport and session protocol facts shared by adapters and the journal.
 //!
-//! These types are deliberately small and venue-neutral. Adapters assign the
+//! These types are venue-neutral. Adapters assign the
 //! venue-specific interpretation (heartbeat mechanism, session signal) at the
 //! boundary where the frame is observed; the journal stores that interpretation
 //! instead of inferring it from payload bytes during replay.

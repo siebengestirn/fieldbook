@@ -268,7 +268,7 @@ fn cli_exits_non_zero_when_a_selected_symbol_is_unanchored() {
 #[test]
 fn truncated_capture_cannot_certify_complete_coverage() {
     let directory = tempfile::tempdir().unwrap();
-    // Write enough data that an abrupt end removes messages, not just
+    // Write enough data for an abrupt end to remove complete messages, not
     // trailing pad bytes.
     let messages: Vec<_> = (0..100)
         .map(|index| snapshot("A", index, index % 2 == 0))

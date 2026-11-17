@@ -1,6 +1,6 @@
 //! Kraken reference-data discovery (H0).
 //!
-//! Discovery is deliberately separate from the websocket path: H0 opens no
+//! Discovery is separate from the websocket path: H0 opens no
 //! socket. Reference data comes either from an explicitly configured offline
 //! `AssetPairs`-style fixture or from a read-only GET against the public REST
 //! endpoint.

@@ -267,7 +267,7 @@ impl PersistenceHandle {
                 ),
             }
         }
-        // Retire the completion receiver only after it actually completed.
+        // Retire the completion receiver after completion.
         done_guard.take();
         drop(done_guard);
         if let Some(join) = self.join.lock().unwrap_or_else(|e| e.into_inner()).take() {

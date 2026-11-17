@@ -35,8 +35,8 @@ use crate::{
 };
 
 /// Maximum distinct lifecycle (market, kind, exchange timestamp) triples kept
-/// for cross-connection deduplication. Lifecycle traffic is tiny; 4096 keys
-/// cover days of notifications across every replica.
+/// for cross-connection deduplication. The cache holds 4096 keys, bounding
+/// memory while retaining recent notifications across replicas.
 const LIFECYCLE_SEEN_CAPACITY: usize = 4096;
 
 /// Record exactly one terminal disposition for a decoded delta. Keeping this

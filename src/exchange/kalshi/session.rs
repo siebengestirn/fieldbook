@@ -603,7 +603,7 @@ impl MarketDataSession for KalshiSession {
             }
             SessionMode::Lifecycle => {
                 // The lifecycle plane carries no order-book subscriptions.
-                // `desired` is intentionally ignored so a stray
+                // `desired` is ignored so a stray
                 // SetSubscriptions can never fan the book universe into the
                 // control socket.
                 self.desired.clear();
@@ -830,7 +830,7 @@ impl MarketDataSession for KalshiSession {
                 // with `ok`, not a fresh `subscribed`. Resolve those
                 // acknowledgements here so the tracked set, the pending map
                 // and the 15 s acknowledgement deadline stay consistent
-                // with what the venue actually holds.
+                // with the venue's acknowledged subscription state.
                 if let Some(id) = id
                     && let Some(markets) = self.pending_subscribes.remove(&id)
                 {
@@ -1964,7 +1964,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let mut ws = accept(listener).await;
-            // The very first command must carry only the orderbook channel;
+            // The initial command must carry only the orderbook channel;
             // the lifecycle plane owns market_lifecycle_v2.
             let first = read_json(&mut ws).await;
             assert_eq!(

@@ -179,8 +179,8 @@ fn start_journal(
         .unwrap_or("unknown");
     let config_sha256 = settings.capture_config_sha256()?;
     // Settings validation has already run at load time; a failure here means
-    // the proxy environment changed underneath us and the run must stop
-    // rather than record a misleading provenance.
+    // the proxy environment changed after validation. Stop rather than record
+    // provenance for a route that was not validated.
     let route = Some(
         crate::egress::EgressRoute::from_network(&settings.network)
             .context("resolving egress route for journal provenance")?

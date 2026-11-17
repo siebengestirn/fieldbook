@@ -1,6 +1,6 @@
 //! Hyperliquid reference-data discovery (H0).
 //!
-//! Discovery is deliberately separate from the websocket path: H0 opens no
+//! Discovery is separate from the websocket path: H0 opens no
 //! socket. Reference data comes either from an explicitly configured offline
 //! fixture or from the `/info` REST endpoint.
 

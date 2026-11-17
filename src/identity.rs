@@ -1,6 +1,6 @@
 //! Persistent instrument and reference identity (Platform M2, ADR-0001).
 //!
-//! This module is deliberately additive. `MarketInfo.native_symbol` and
+//! These identity types are additive. `MarketInfo.native_symbol` and
 //! `MarketInfo.symbol` remain the bounded migration seam and the only bridge
 //! to the SBE wire format. Nothing here changes journal, replay, catalog
 //! checksums or collector behavior.

@@ -133,7 +133,7 @@ def _prose_lines(text: str, source: str) -> list[tuple[int, str]]:
         return [(1, value) for value in visible]
 
     if suffix == ".rs":
-        # Scan line comments; Rust identifiers and units such as `us` are not prose.  # english-audit-ignore: literal identifier example
+        # Scan line comments; Rust identifiers and time-unit suffixes are not prose.  # english-audit-ignore: literal identifier example
         return [(n, line.lstrip()[2:].strip()) for n, line in enumerate(lines, 1)
                 if line.lstrip().startswith("//")]
 
@@ -161,7 +161,7 @@ def _prose_lines(text: str, source: str) -> list[tuple[int, str]]:
             clean = re.sub(r"https?://\S+", "", clean)
             # Inline code is a literal value or identifier, not prose.
             clean = re.sub(r"`[^`]*`", "", clean)
-            # Mermaid node identifiers such as `I --> J` are diagram symbols.  # english-audit-ignore: literal diagram identifier example
+            # Mermaid node identifiers such as `Source --> Target` are diagram symbols.  # english-audit-ignore: literal diagram identifier example
             clean = re.sub(r"(?<!\w)I(?=\s*(?:-->|---|==>|-.->|\[|\{))", "NODE", clean)
             clean = re.sub(r"(?<=-->)\s*I(?=\s*(?:-->|---|==>|-.->|\[|\{))", "NODE", clean)
             visible.append((n, clean))

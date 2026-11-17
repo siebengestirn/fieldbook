@@ -158,7 +158,7 @@ pub fn parse_instruments_document(
         } else {
             Quantity::new(lot.raw())?
         };
-        // We filtered to SPOT/SWAP above, so the else branch is SWAP.
+        // Only SPOT and SWAP reach this branch; the remaining case is SWAP.
         let (price_unit, quantity_unit) = if inst_type == INST_TYPE_SPOT {
             (
                 PriceUnit::Currency(currency(entry, "quoteCcy", &quote)?),

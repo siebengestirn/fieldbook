@@ -92,7 +92,7 @@ model is implemented; no new external dependency without the existing dependency
   `(connection_epoch, receive_seq)`. Unknown additive fields are ignored; price/size strings
   are parsed exactly at SBE scale 6 or the whole frame is rejected. Empty and one-sided books
   are still snapshots and still anchor.
-- Trades are decoded and validated by the same exact numeric rules, then surfaced as a raw
+- Trades are decoded and validated using the same numeric rules, then surfaced as a raw
   `SessionSignal::ProtocolControl` observation with zero events. No `LevelChange` is ever
   constructed: the H2 codec has no delta path at all.
 - `apply_subscriptions` reconciles to the exact desired set (subscribe additions,

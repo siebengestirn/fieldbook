@@ -1,6 +1,6 @@
 //! Loopback mock of the Kalshi REST + WebSocket protocols.
 //!
-//! The mock speaks just enough of the real wire to drive the production
+//! The mock implements the wire messages required to drive the production
 //! adapter end-to-end:
 //!
 //! - REST `/markets` with cursor pagination and the exact field names the
@@ -18,8 +18,7 @@
 //! reconciles generated vs written vs applied events from these counters
 //! alone.
 //!
-//! This module is the largest piece of the laboratory. It is deliberately
-//! built first and exercised by its own tests before the stress suite uses it.
+//! This module is exercised by its own tests before the stress suite uses it.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -79,7 +78,7 @@ pub struct MockLedger {
     /// is written once per subscribed lifecycle replica.
     pub lifecycle_sent: u64,
     pub acks_sent: u64,
-    /// Frames the harness deliberately dropped before the wire (injection).
+    /// Frames dropped by the harness before transmission (injection).
     pub injected_pre_wire_drops: u64,
     /// Frames that found a connection's outbound queue at capacity. Each one
     /// is a real drop; the harness must never classify such a run as clean.
@@ -145,7 +144,7 @@ pub struct MockState {
     sent_lifecycle: AtomicU64,
     sent_acks: AtomicU64,
     transmitted_bytes: AtomicU64,
-    /// Frames deliberately dropped by injection before the wire.
+    /// Frames dropped by injection before transmission.
     injected_drops: AtomicU64,
     /// Maximum observed pending-send queue depth across all connections.
     queue_high_water: AtomicU64,
@@ -633,7 +632,7 @@ impl MockState {
     }
 
     /// Close exactly one book connection by id. Returns whether a live socket
-    /// was actually signalled. Used to distinguish standby- versus active-role
+    /// was signalled. Distinguishes standby- from active-role
     /// replica loss from the harness (the mock itself does not assign roles).
     pub fn close_book_connection(&self, id: usize) -> bool {
         let mut close = self.close.lock().unwrap();
@@ -1003,10 +1002,9 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
                                         (Vec::new(), Vec::new())
                                     }
                                 };
-                                // A discovery-added market must be snapshot
-                                // anchored just like one added at subscribe
-                                // time; otherwise it is acknowledged but never
-                                // becomes a live book.
+                                // A discovery-added market needs the same
+                                // snapshot anchor as a newly subscribed market;
+                                // acknowledgement alone does not make its book live.
                                 for ticker in &newly_added {
                                     let seq = next_seq(&state, id);
                                     state.send_json(id, state.snapshot_body(ticker, sid, seq));

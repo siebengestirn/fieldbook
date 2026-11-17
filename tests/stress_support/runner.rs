@@ -268,7 +268,7 @@ fn profile_phases(profile: BurstProfile, total: usize) -> Vec<WorkloadPhase> {
 }
 
 /// The single-phase schedule used when no burst profile is configured. It is
-/// deliberately identical to the pre-M5.2 workload: one `steady` phase with
+/// equivalent to the pre-M5.2 workload: one `steady` phase with
 /// every logical delta.
 fn steady_phases(total: usize) -> Vec<WorkloadPhase> {
     vec![WorkloadPhase {
@@ -554,7 +554,7 @@ pub struct EventLedger {
     pub journaled_records: Option<u64>,
     /// Frames the mock dropped before the wire (injected fixture).
     pub injected_pre_wire_drops: u64,
-    /// Deltas applied to a non-active replica and deliberately suppressed.
+    /// Deltas applied to a non-active replica and suppressed from output.
     /// `None` when the dedup counter could not be scraped. This is a
     /// transport duplicate, not a duplicate application.
     pub suppressed_replica_duplicates: Option<u64>,
@@ -1056,9 +1056,8 @@ fn settings_for(mock: &MockKalshi, directory: &Path, config: &CellConfig) -> Set
     } else {
         None
     };
-    // Journal-storage admission profile: a one-record queue, a very short
-    // enqueue timeout and an fsync per record make rejection observable
-    // without needing a privileged ENOSPC injection.
+    // A one-record queue and the configured enqueue timeout make admission
+    // failure observable. Always-sync mode requests an fsync for each record.
     if let Some(FailInject::JournalQueuePressure {
         queue_capacity,
         enqueue_timeout_ms,
@@ -1280,7 +1279,7 @@ struct PublishPlan {
     /// baseline, not the number of wire frames.
     expected_applied: u64,
     /// The count the drain barrier waits for. It exceeds `expected_applied`
-    /// only for a fixture that deliberately publishes extra frames.
+    /// only for a fixture that publishes extra frames.
     drain_target: u64,
 }
 
@@ -1426,10 +1425,9 @@ fn publish_events(
         hot_events,
         cold_events,
         expected_applied,
-        // The barrier waits for every frame the fixture actually put on the
-        // wire. For an over-application fixture this is deliberately greater
-        // than the correct ledger, so the run drains before the ledger is
-        // evaluated and the excess is measured rather than raced.
+        // The barrier waits for every frame published by the fixture. An
+        // over-application fixture sets a larger drain target so the run
+        // finishes before the ledger measures the excess.
         drain_target: expected_applied.saturating_add(extra_wire_frames),
     }
 }
@@ -1898,7 +1896,7 @@ fn with_manifest_failure(
 
 /// An aborted cell still gets a boundary-specific failure class. The primary
 /// collector error is kept in the reason list, but a declared backpressure
-/// profile leads so the manifest names the boundary that actually failed.
+/// profile leads so the manifest names the failed boundary.
 fn abort_reasons(reasons: Vec<String>, config: &CellConfig) -> Vec<String> {
     let mut classified = super::backpressure::acceptance_reasons(
         config,
@@ -2036,14 +2034,14 @@ async fn execute_fault_schedule(
         }
         evidence.push(outcome);
     }
-    // The mock is per-cell, so a deliberately latched outage (D8) is left set
+    // The mock is per-cell, so a latched outage (D8) is left set
     // for the rest of this run. Every non-reject step clears it before acting.
     evidence
 }
 
 async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     // Worktree provenance is captured before anything else runs so it
-    // describes the state the cell actually executed in.
+    // describes the state executed by the cell.
     let (provenance, preflight_error) = worktree_preflight(config);
     if let Some(reason) = preflight_error {
         return CellOutcome {
@@ -2506,7 +2504,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     // and wire counters after the drain barrier passes. Sample until the
     // settled values agree before taking the final evidence snapshot; this
     // keeps a refresh edge from looking like a disposition or transmit/decode
-    // defect. Failure fixtures simply consume the short bounded wait and are
+    // defect. Failure fixtures consume the bounded wait and are
     // still evaluated on their real evidence below.
     if !matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain)) {
         let settle_deadline = Instant::now() + Duration::from_secs(3);

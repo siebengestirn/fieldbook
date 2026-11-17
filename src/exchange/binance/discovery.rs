@@ -1,6 +1,6 @@
 //! Binance reference-data discovery (H0).
 //!
-//! H0 is intentionally offline: discovery reads only an explicitly configured
+//! H0 is offline: discovery reads only an explicitly configured
 //! `exchangeInfo`-style fixture. No socket or HTTP client is created, so a
 //! Binance collector cannot silently reach the network before a later stage
 //! implements and gates that boundary.

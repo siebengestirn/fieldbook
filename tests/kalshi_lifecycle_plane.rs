@@ -12,7 +12,7 @@
 
 //! End-to-end tests for the dedicated Kalshi lifecycle control plane.
 //!
-//! A loopback mock speaks just enough of Kalshi's REST and websocket
+//! A loopback mock implements the Kalshi REST and websocket
 //! protocols to prove the connection topology and the event flow:
 //!
 //! - order-book websockets never subscribe to `market_lifecycle_v2`;

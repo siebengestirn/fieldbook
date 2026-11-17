@@ -57,10 +57,10 @@ const fn bucket_bounds() -> [u64; BUCKET_COUNT] {
 /// open-ended overflow bucket (`u64::MAX`).
 pub const BUCKET_UPPER_BOUNDS_NS: [u64; BUCKET_COUNT] = bucket_bounds();
 
-/// Map a duration in nanoseconds onto a fixed bucket. Bucket `i` in `1..=33`
-/// covers `(2^(i-1), 2^i]` (the smallest power of two `>= ns`); bucket 0 covers
-/// `[0, 1]`; the last bucket is overflow. Closed-form, constant time, no
-/// allocation.
+/// Map a duration in nanoseconds to a fixed bucket in constant time without
+/// allocation. Buckets 1 through 33 cover values above the preceding power of
+/// two and at or below the corresponding power. Bucket 0 covers `[0, 1]`; the
+/// final bucket records overflow.
 #[must_use]
 pub fn bucket_index(ns: u64) -> usize {
     if ns <= 1 {

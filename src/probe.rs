@@ -64,7 +64,7 @@ impl ProbeReport {
 
 /// Map a transport failure onto a deterministic reason label.
 ///
-/// The match is intentionally string-based on the anyhow chain we build in
+/// The match uses the anyhow chain constructed in
 /// `ws.rs`; it is a routing aid for humans and CI, not a parser contract.
 /// Authentication rejections win over every other class.
 #[must_use]
@@ -162,7 +162,7 @@ pub async fn run_with_route(
 }
 
 fn failed_config_report(target: &str) -> ProbeReport {
-    // The reason label is deliberately coarse: configuration failures are
+    // The reason label is coarse: configuration failures are
     // corrected by the operator, not classified for machines.
     ProbeReport {
         schema_version: 1,

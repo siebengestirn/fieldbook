@@ -2,7 +2,7 @@
 //!
 //! `completeness` answers whether deltas arrived after a baseline. This report
 //! answers the question a live-evidence claim depends on: **did every symbol
-//! the run was supposed to collect actually get subscribed and snapshot
+//! the run was supposed to collect get subscribed and snapshot
 //! anchored?** It compares three sets and cross-checks the capture against
 //! the run report's writer counter (a truncated capture cannot certify as
 //! complete):
@@ -31,7 +31,7 @@
 //!
 //! - Venue wire acknowledgement. `acknowledged_symbols` records that the
 //!   session successfully applied and transmitted a subscription request; the
-//!   snapshot anchor is the independent proof that data actually arrived.
+//!   snapshot anchor is the independent proof that a book baseline arrived.
 //! - That the venue delivered every event. Checksums and sequence continuity
 //!   belong to `verify` and the raw-frame journal.
 //! - That a periodic snapshot was generated from exchange state rather than

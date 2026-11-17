@@ -191,7 +191,7 @@ fn parent_of(path: &Path) -> PathBuf {
 
 /// Read and parse the stress index.
 ///
-/// `NotFound` and an empty file mean "no index yet". Every other I/O error
+/// `NotFound` and an empty file mean "no index yet". Other I/O errors
 /// and every malformed or non-object document is an error.
 pub fn read_index(index_path: &Path) -> io::Result<Map<String, Value>> {
     let text = match fs::read_to_string(index_path) {

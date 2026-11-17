@@ -76,7 +76,7 @@ impl fmt::Display for SourceId {
 /// one machine word. Prices are signed: negative prices are valid for yield,
 /// spread, and other non-probability instruments.
 ///
-/// `Price` and [`Quantity`] are deliberately not interchangeable:
+/// `Price` and [`Quantity`] have distinct units and cannot be interchanged:
 ///
 /// ```compile_fail
 /// use engineering_challenge::model::{Price, Quantity};
