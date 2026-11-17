@@ -9,6 +9,43 @@ use serde::{Deserialize, Serialize};
 use crate::Side;
 use crate::util::dtos::challenge_orderbook::{PriceLevelUpdateDomain, SnapshotDomain};
 
+/// Terminal disposition of one decoded order-book delta event.
+///
+/// Every `LevelChange` admitted to the collector must reach exactly one of
+/// these outcomes. The variants mirror the existing control-flow branches in
+/// [`crate::collector::state::CollectorCore::handle_level_change`]. Expected
+/// outcomes (for example a suppressed standby replica) are not failures, but
+/// they must be accounted for explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeltaDisposition {
+    Emitted,
+    SuppressedReplica,
+    AppliedWithNoActiveSource,
+    UnknownSymbol,
+    ContinuityNotLive,
+    SourceNotAssigned,
+    InvalidSourceBook,
+    ShadowClockRegression,
+    ApplyRejected,
+    ZeroDeltaNoop,
+    SbeConversionFailed,
+}
+
+impl DeltaDisposition {
+    /// Whether this outcome is expected during normal operation.
+    #[must_use]
+    pub const fn is_expected(self) -> bool {
+        matches!(
+            self,
+            Self::Emitted
+                | Self::SuppressedReplica
+                | Self::AppliedWithNoActiveSource
+                | Self::ZeroDeltaNoop
+        )
+    }
+}
+
 /// Stable identifier of one websocket source (a shard replica).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,

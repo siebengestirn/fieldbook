@@ -25,6 +25,8 @@
 //! CI runs the 4k correctness smoke plus deterministic self-tests of the
 //! failure fixtures. The full matrix is opt-in (`--ignored`).
 
+#![recursion_limit = "512"]
+
 mod stress_support;
 
 use std::collections::BTreeSet;
@@ -971,12 +973,24 @@ fn ledger_reconciliation_is_two_sided() {
             received_frames: Some(100),
             delta_events_decoded: Some(applied),
             decode_errors: Some(0),
+            core_ingress_events: Some(100),
+            core_delta_events: Some(applied),
+            no_active_source: Some(0),
+            unknown_symbol: Some(0),
+            non_live: Some(0),
+            unassigned_source: Some(0),
+            invalid_book: Some(0),
+            shadow_clock_regression: Some(0),
+            zero_noop: Some(0),
+            sbe_conversion_failed: Some(0),
+            disposition_shortfall: Some(0),
+            disposition_excess: Some(0),
             writer_delta_admissions: Some(applied),
             writer_delta_writes: Some(applied),
             enqueue_transmit_shortfall: Some(0),
             enqueue_transmit_excess: Some(0),
-            decode_transmit_shortfall: Some(0),
-            decode_transmit_excess: Some(0),
+            transmit_decode_shortfall: Some(0),
+            transmit_decode_excess: Some(0),
             writer_admission_shortfall: Some(0),
             writer_admission_excess: Some(0),
             writer_write_shortfall: Some(0),
@@ -991,6 +1005,21 @@ fn ledger_reconciliation_is_two_sided() {
     assert_eq!(two_sided(Some(100), Some(95)), (Some(5), Some(0)));
     assert_eq!(two_sided(Some(100), Some(105)), (Some(0), Some(5)));
     assert_eq!(two_sided(None, Some(100)), (None, None));
+
+    // Real ledger-construction helper, with the wire count first.
+    use stress_support::runner::transmit_decode_gaps;
+    assert_eq!(
+        transmit_decode_gaps(Some(100), Some(100)),
+        (Some(0), Some(0))
+    );
+    assert_eq!(
+        transmit_decode_gaps(Some(100), Some(95)),
+        (Some(5), Some(0))
+    );
+    assert_eq!(
+        transmit_decode_gaps(Some(100), Some(105)),
+        (Some(0), Some(5))
+    );
 
     assert!(ledger(100, 100).reconciled(), "exact accounting reconciles");
     assert!(
@@ -1023,7 +1052,7 @@ fn ledger_reconciliation_is_two_sided() {
         (ledger(100, 100), "writer_write_excess"),
         (ledger(100, 100), "writer_admission_evidence_missing"),
         (ledger(100, 100), "writer_write_evidence_missing"),
-        (ledger(100, 100), "decode_transmit_evidence_missing"),
+        (ledger(100, 100), "transmit_decode_evidence_missing"),
         (ledger(100, 100), "replica_duplicate_evidence_missing"),
     ] {
         match reason {
@@ -1038,7 +1067,7 @@ fn ledger_reconciliation_is_two_sided() {
             "writer_write_excess" => bad.writer_write_excess = Some(1),
             "writer_admission_evidence_missing" => bad.writer_delta_admissions = None,
             "writer_write_evidence_missing" => bad.writer_delta_writes = None,
-            "decode_transmit_evidence_missing" => bad.decode_transmit_shortfall = None,
+            "transmit_decode_evidence_missing" => bad.transmit_decode_shortfall = None,
             "replica_duplicate_evidence_missing" => bad.suppressed_replica_duplicates = None,
             _ => unreachable!(),
         }

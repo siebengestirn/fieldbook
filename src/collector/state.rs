@@ -18,9 +18,9 @@ use crate::{
     exchange::ExchangeCapabilities,
     metrics::CollectorStats,
     model::{
-        BookSnapshot, Control, DiscontinuityReason, EventMeta, ExchangeEvent, LifecycleKind,
-        MarketInfo, OutputMessage, Price, PriceBand, PriceRange, Quantity, QuantityChange,
-        ResetReason, SourceId, SourceStatus,
+        BookSnapshot, Control, DeltaDisposition, DiscontinuityReason, EventMeta, ExchangeEvent,
+        LifecycleKind, MarketInfo, OutputMessage, Price, PriceBand, PriceRange, Quantity,
+        QuantityChange, ResetReason, SourceId, SourceStatus,
     },
     orderbook::OrderBook,
     recovery::{RecoveryFence, RecoveryTarget},
@@ -38,6 +38,50 @@ use crate::{
 /// for cross-connection deduplication. Lifecycle traffic is tiny; 4096 keys
 /// cover days of notifications across every replica.
 const LIFECYCLE_SEEN_CAPACITY: usize = 4096;
+
+/// Record exactly one terminal disposition for a decoded delta. Keeping this
+/// mapping in one place makes the partition identity
+/// `decoded deltas == sum of dispositions` mechanically checkable.
+fn note_delta_disposition(stats: &mut CollectorStats, disposition: DeltaDisposition) {
+    match disposition {
+        DeltaDisposition::Emitted => {
+            stats.deltas_emitted = stats.deltas_emitted.saturating_add(1);
+        }
+        DeltaDisposition::SuppressedReplica => {
+            stats.suppressed_replica_duplicates =
+                stats.suppressed_replica_duplicates.saturating_add(1);
+        }
+        DeltaDisposition::ApplyRejected => {
+            stats.deltas_rejected = stats.deltas_rejected.saturating_add(1);
+        }
+        DeltaDisposition::AppliedWithNoActiveSource => {
+            stats.deltas_no_active_source = stats.deltas_no_active_source.saturating_add(1);
+        }
+        DeltaDisposition::UnknownSymbol => {
+            stats.deltas_unknown_symbol = stats.deltas_unknown_symbol.saturating_add(1);
+        }
+        DeltaDisposition::ContinuityNotLive => {
+            stats.deltas_non_live = stats.deltas_non_live.saturating_add(1);
+        }
+        DeltaDisposition::SourceNotAssigned => {
+            stats.deltas_unassigned_source = stats.deltas_unassigned_source.saturating_add(1);
+        }
+        DeltaDisposition::InvalidSourceBook => {
+            stats.deltas_invalid_book = stats.deltas_invalid_book.saturating_add(1);
+        }
+        DeltaDisposition::ShadowClockRegression => {
+            stats.deltas_shadow_clock_regression =
+                stats.deltas_shadow_clock_regression.saturating_add(1);
+        }
+        DeltaDisposition::ZeroDeltaNoop => {
+            stats.deltas_zero_noop = stats.deltas_zero_noop.saturating_add(1);
+        }
+        DeltaDisposition::SbeConversionFailed => {
+            stats.deltas_sbe_conversion_failed =
+                stats.deltas_sbe_conversion_failed.saturating_add(1);
+        }
+    }
+}
 
 /// Per-market high-water mark of applied lifecycle events, by exchange
 /// order (venue timestamp, falling back to local receive time). `terminal`
@@ -722,10 +766,10 @@ impl CollectorCore {
             ExchangeEvent::StreamReset { .. } => false,
         };
         if has_fence {
-            self.stats.data_frames_received = self.stats.data_frames_received.saturating_add(1);
+            self.stats.core_ingress_events = self.stats.core_ingress_events.saturating_add(1);
         }
         if matches!(event, ExchangeEvent::LevelChange { .. }) {
-            self.stats.delta_events_decoded = self.stats.delta_events_decoded.saturating_add(1);
+            self.stats.core_delta_events = self.stats.core_delta_events.saturating_add(1);
         }
         match event {
             ExchangeEvent::Snapshot {
@@ -812,6 +856,7 @@ impl CollectorCore {
         meta: EventMeta,
     ) -> Vec<OutputMessage> {
         let Some(state) = self.markets.get_mut(native) else {
+            note_delta_disposition(&mut self.stats, DeltaDisposition::UnknownSymbol);
             return Vec::new();
         };
         if !state.books.contains_key(&source) {
@@ -1069,24 +1114,28 @@ impl CollectorCore {
         // Only an accepted exchange snapshot (via handle_snapshot) may transition
         // continuity to Live. Deltas cannot re-anchor a book after a possible gap.
         if state.continuity != crate::model::ContinuityState::Live {
+            note_delta_disposition(&mut self.stats, DeltaDisposition::ContinuityNotLive);
             return Vec::new();
         }
         let clock_regression = clock_regressed(state.emitted_clock, meta.clock);
         let (quantity, crossed) = {
             let Some(source_book) = state.books.get_mut(&source) else {
+                note_delta_disposition(&mut self.stats, DeltaDisposition::SourceNotAssigned);
                 return Vec::new();
             };
             if !source_book.valid {
+                note_delta_disposition(&mut self.stats, DeltaDisposition::InvalidSourceBook);
                 return Vec::new();
             }
             // A lower clock on a shadow connection is either stale or belongs
             // to a new maintenance epoch that this source has not established
             // with a snapshot. Never apply it to the shadow book.
             if clock_regression && state.active != Some(source) {
+                note_delta_disposition(&mut self.stats, DeltaDisposition::ShadowClockRegression);
                 return Vec::new();
             }
             if let Err(error) = source_book.book.apply(side, price, change) {
-                self.stats.deltas_rejected = self.stats.deltas_rejected.saturating_add(1);
+                note_delta_disposition(&mut self.stats, DeltaDisposition::ApplyRejected);
                 warn!(%source, native, error = %error, "rejecting order-book delta");
                 source_book.invalidate();
                 if state.active == Some(source) {
@@ -1134,6 +1183,7 @@ impl CollectorCore {
                 if clock_regression {
                     state.emitted_clock = meta.clock;
                 }
+                note_delta_disposition(&mut self.stats, DeltaDisposition::ZeroDeltaNoop);
                 return Vec::new();
             }
             state.emitted_clock = if clock_regression {
@@ -1164,10 +1214,11 @@ impl CollectorCore {
                         error = %error,
                         "rejecting level update that is not exactly representable in SBE"
                     );
+                    note_delta_disposition(&mut self.stats, DeltaDisposition::SbeConversionFailed);
                     return Vec::new();
                 }
             };
-            self.stats.deltas_emitted = self.stats.deltas_emitted.saturating_add(1);
+            note_delta_disposition(&mut self.stats, DeltaDisposition::Emitted);
             vec![OutputMessage::PriceLevelUpdate(update)]
         } else {
             if state.active.is_some() {
@@ -1175,8 +1226,12 @@ impl CollectorCore {
                 // book and suppressed. Counting it keeps a transport
                 // duplicate distinct from a duplicate application: the
                 // active source still contributes exactly one emission.
-                self.stats.suppressed_replica_duplicates =
-                    self.stats.suppressed_replica_duplicates.saturating_add(1);
+                note_delta_disposition(&mut self.stats, DeltaDisposition::SuppressedReplica);
+            } else {
+                note_delta_disposition(
+                    &mut self.stats,
+                    DeltaDisposition::AppliedWithNoActiveSource,
+                );
             }
             Vec::new()
         }

@@ -2277,3 +2277,52 @@ fn blast_radius_backup_requires_a_fresh_snapshot_before_promotion() {
     };
     assert_eq!(snapshot.received_at.timestamp_micros(), NOW + 4);
 }
+
+#[test]
+fn every_delta_disposition_maps_to_exactly_one_counter() {
+    use crate::model::DeltaDisposition;
+
+    let mut stats = CollectorStats::default();
+    for disposition in [
+        DeltaDisposition::Emitted,
+        DeltaDisposition::SuppressedReplica,
+        DeltaDisposition::AppliedWithNoActiveSource,
+        DeltaDisposition::UnknownSymbol,
+        DeltaDisposition::ContinuityNotLive,
+        DeltaDisposition::SourceNotAssigned,
+        DeltaDisposition::InvalidSourceBook,
+        DeltaDisposition::ShadowClockRegression,
+        DeltaDisposition::ApplyRejected,
+        DeltaDisposition::ZeroDeltaNoop,
+        DeltaDisposition::SbeConversionFailed,
+    ] {
+        note_delta_disposition(&mut stats, disposition);
+    }
+    assert_eq!(stats.deltas_emitted, 1);
+    assert_eq!(stats.suppressed_replica_duplicates, 1);
+    assert_eq!(stats.deltas_no_active_source, 1);
+    assert_eq!(stats.deltas_unknown_symbol, 1);
+    assert_eq!(stats.deltas_non_live, 1);
+    assert_eq!(stats.deltas_unassigned_source, 1);
+    assert_eq!(stats.deltas_invalid_book, 1);
+    assert_eq!(stats.deltas_shadow_clock_regression, 1);
+    assert_eq!(stats.deltas_rejected, 1);
+    assert_eq!(stats.deltas_zero_noop, 1);
+    assert_eq!(stats.deltas_sbe_conversion_failed, 1);
+
+    let total = stats.deltas_emitted
+        + stats.suppressed_replica_duplicates
+        + stats.deltas_no_active_source
+        + stats.deltas_unknown_symbol
+        + stats.deltas_non_live
+        + stats.deltas_unassigned_source
+        + stats.deltas_invalid_book
+        + stats.deltas_shadow_clock_regression
+        + stats.deltas_rejected
+        + stats.deltas_zero_noop
+        + stats.deltas_sbe_conversion_failed;
+    assert_eq!(
+        total, 11,
+        "every decoded delta has one terminal disposition"
+    );
+}

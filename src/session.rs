@@ -976,6 +976,13 @@ pub async fn run_worker(
                                     received_at_us,
                                 } => {
                                     warn!(%source, error = %format!("{error:#}"), "websocket decode failed");
+                                    // A malformed frame was physically received.
+                                    // Count it at the transport boundary before
+                                    // its decode failure is classified.
+                                    if frame.is_some() {
+                                        status.data_frames_received =
+                                            status.data_frames_received.saturating_add(1);
+                                    }
                                     status.messages = status.messages.saturating_add(1);
                                     status.decode_errors = status.decode_errors.saturating_add(1);
                                     status.last_error = Some(truncate_error(&error));
@@ -1008,6 +1015,10 @@ pub async fn run_worker(
                                     received_at_us,
                                 } => {
                                     warn!(%source, error = %format!("{error:#}"), "websocket protocol error");
+                                    if frame.is_some() {
+                                        status.data_frames_received =
+                                            status.data_frames_received.saturating_add(1);
+                                    }
                                     status.protocol_errors = status.protocol_errors.saturating_add(1);
                                     status.last_error = Some(truncate_error(&error));
                                     // A protocol reject is still a payload the
