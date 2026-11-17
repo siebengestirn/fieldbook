@@ -1,3 +1,4 @@
+pub mod canonical;
 pub mod capacity;
 pub mod catalog;
 pub mod collector;
