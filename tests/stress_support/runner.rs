@@ -54,8 +54,10 @@ const METRICS_POLL: Duration = Duration::from_millis(25);
 const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
 /// Scenario schema version. Bumped when workload semantics change so a
-/// corrected generator never silently replaces an earlier manifest.
-const SCENARIO_VERSION: u32 = 5;
+/// corrected generator never silently replaces an earlier manifest. v6 adds
+/// explicit phased burst schedules; v5 disposition-certified cell IDs remain
+/// immutable historical evidence.
+const SCENARIO_VERSION: u32 = 6;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -92,6 +94,204 @@ pub enum HotSelection {
     ExactQuota,
 }
 
+/// Deterministic burst-workload shape (M5.2).
+///
+/// A profile changes only how the fixed logical-event budget is partitioned
+/// across publish phases. It never introduces sleeps, wall-clock timing,
+/// throughput instrumentation or latency claims: the schedule is defined by
+/// exact event counts, and the rate fields are declared intensity labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurstProfile {
+    /// One sustained step: baseline, a doubled-rate burst, then recovery.
+    Step,
+    /// One concentrated spike: small baseline, large impulse, quiet recovery.
+    Impulse,
+    /// Several decreasing impulses separated by quiet recovery phases.
+    RepeatedImpulses,
+    /// A rising sequence of declared rate multipliers across the burst window.
+    Ramp,
+}
+
+impl BurstProfile {
+    /// Stable manifest label. `None` in `CellConfig` maps to `"steady"`.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Step => "step",
+            Self::Impulse => "impulse",
+            Self::RepeatedImpulses => "repeated_impulses",
+            Self::Ramp => "ramp",
+        }
+    }
+}
+
+/// One declared phase of a workload schedule.
+///
+/// `events` is an exact logical-delta count and is the primary schedule
+/// definition. `target_rate_per_tick` and `rate_multiplier` are dimensionless,
+/// declared labels derived from the profile: they are never measured rates,
+/// latency figures or performance results. No timing instrumentation exists in
+/// this increment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadPhase {
+    pub name: &'static str,
+    pub events: usize,
+    pub target_rate_per_tick: u32,
+    pub rate_multiplier: u32,
+}
+
+/// How the hot instrument set is defined for one workload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotSetDefinition {
+    pub fraction_ppm: u32,
+    pub member_count: usize,
+    pub selection: &'static str,
+    pub event_share_pct: u32,
+    /// Canonical SHA-256 of the sorted hot ticker set; `None` when the cell
+    /// failed before the universe was generated.
+    pub sha256: Option<String>,
+}
+
+/// Explicit, deterministic workload schedule recorded in every manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadSchedule {
+    pub workload_id: String,
+    pub profile: &'static str,
+    pub seed: u64,
+    pub instrument_count: usize,
+    pub eligible_count: usize,
+    pub hot_set: HotSetDefinition,
+    pub phases: Vec<WorkloadPhase>,
+    pub expected_total_events: usize,
+    /// Fault IDs scheduled for this workload; empty for M5.2 burst profiles.
+    pub fault_schedule: Vec<String>,
+}
+
+/// Split `total` across integer `weights` so the parts sum to exactly `total`.
+/// Leftover units are assigned to the highest-weight phase (ties broken by
+/// index), which keeps the allocation deterministic for a given profile.
+fn partition_events(total: usize, weights: &[usize]) -> Vec<usize> {
+    let weight_sum: usize = weights.iter().sum();
+    debug_assert!(weight_sum > 0);
+    let mut parts: Vec<usize> = weights
+        .iter()
+        .map(|weight| ((total as u128 * *weight as u128) / weight_sum as u128) as usize)
+        .collect();
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by_key(|&index| (std::cmp::Reverse(weights[index]), index));
+    let mut leftover = total.saturating_sub(parts.iter().sum());
+    let mut cursor = 0usize;
+    while leftover > 0 && !order.is_empty() {
+        parts[order[cursor % order.len()]] += 1;
+        leftover -= 1;
+        cursor += 1;
+    }
+    parts
+}
+
+/// Deterministic phase decomposition for one burst profile.
+fn profile_phases(profile: BurstProfile, total: usize) -> Vec<WorkloadPhase> {
+    let (names, weights, rates, multipliers): (&[&str], &[usize], &[u32], &[u32]) = match profile {
+        BurstProfile::Step => (
+            &["baseline", "burst", "recovery"],
+            &[25, 50, 25],
+            &[1, 2, 1],
+            &[1, 2, 1],
+        ),
+        BurstProfile::Impulse => (
+            &["baseline", "impulse", "recovery"],
+            &[10, 70, 20],
+            &[1, 5, 1],
+            &[1, 5, 1],
+        ),
+        BurstProfile::RepeatedImpulses => (
+            &[
+                "baseline",
+                "impulse-1",
+                "impulse-2",
+                "impulse-3",
+                "recovery",
+            ],
+            &[20, 20, 20, 20, 20],
+            &[1, 3, 3, 3, 1],
+            &[1, 3, 3, 3, 1],
+        ),
+        BurstProfile::Ramp => (
+            &["baseline", "ramp-1", "ramp-2", "ramp-3", "recovery"],
+            &[10, 20, 20, 20, 30],
+            &[1, 1, 2, 3, 1],
+            &[1, 1, 2, 3, 1],
+        ),
+    };
+    let counts = partition_events(total, weights);
+    (0..names.len())
+        .map(|index| WorkloadPhase {
+            name: names[index],
+            events: counts[index],
+            target_rate_per_tick: rates[index],
+            rate_multiplier: multipliers[index],
+        })
+        .collect()
+}
+
+/// The single-phase schedule used when no burst profile is configured. It is
+/// deliberately identical to the pre-M5.2 workload: one `steady` phase with
+/// every logical delta.
+fn steady_phases(total: usize) -> Vec<WorkloadPhase> {
+    vec![WorkloadPhase {
+        name: "steady",
+        events: total,
+        target_rate_per_tick: 1,
+        rate_multiplier: 1,
+    }]
+}
+
+/// Build the explicit workload schedule from configuration. `hot_sha256` is
+/// supplied once the universe exists; failure cells before that point record
+/// `None` and do not claim a hot-set certificate.
+fn build_schedule(config: &CellConfig, hot_sha256: Option<String>) -> WorkloadSchedule {
+    let profile = config.burst.map(BurstProfile::label).unwrap_or("steady");
+    let phases = match config.burst {
+        Some(burst) => profile_phases(burst, config.events),
+        None => steady_phases(config.events),
+    };
+    let expected_total_events = phases.iter().map(|phase| phase.events).sum();
+    let workload_id = format!("{profile}-seed-{:04x}-{}", config.seed, config.symbols);
+    let hot_count = if config.hot_fraction_ppm == 0 {
+        0
+    } else {
+        config
+            .symbols
+            .saturating_mul(config.hot_fraction_ppm as usize)
+            .div_ceil(1_000_000)
+            .min(config.symbols)
+    };
+    let fault_schedule = config
+        .fail_inject
+        .map(|fault| vec![format!("{fault:?}")])
+        .unwrap_or_default();
+    WorkloadSchedule {
+        workload_id,
+        profile,
+        seed: config.seed,
+        instrument_count: config.symbols,
+        eligible_count: config.symbols,
+        hot_set: HotSetDefinition {
+            fraction_ppm: config.hot_fraction_ppm,
+            member_count: hot_count,
+            selection: match config.hot_selection {
+                HotSelection::Weighted => "weighted",
+                HotSelection::ExactQuota => "exact_quota",
+            },
+            event_share_pct: config.hot_event_share_pct,
+            sha256: hot_sha256,
+        },
+        phases,
+        expected_total_events,
+        fault_schedule,
+    }
+}
+
 /// One experiment cell.
 #[derive(Debug, Clone)]
 pub struct CellConfig {
@@ -115,6 +315,9 @@ pub struct CellConfig {
     pub hot_event_share_pct: u32,
     /// Weighted stochastic selection or exact deterministic quota.
     pub hot_selection: HotSelection,
+    /// Optional deterministic burst shape. `None` keeps the pre-M5.2 single
+    /// `steady` phase workload unchanged.
+    pub burst: Option<BurstProfile>,
     pub journal: bool,
     /// Overrides `ANCHOR_LIMIT`/`DRAIN_LIMIT` for fast failure tests.
     pub limits: Option<(u64, u64)>,
@@ -147,6 +350,7 @@ impl Default for CellConfig {
             hot_fraction_ppm: 0,
             hot_event_share_pct: 0,
             hot_selection: HotSelection::Weighted,
+            burst: None,
             journal: true,
             limits: None,
             force_capacity_reject: false,
@@ -2570,6 +2774,92 @@ mod tests {
             first,
             exact_event_targets(400, 80, &mut SplitMix64::new(24))
         );
+    }
+
+    #[test]
+    fn burst_profiles_partition_the_budget_exactly_and_deterministically() {
+        let profiles = [
+            BurstProfile::Step,
+            BurstProfile::Impulse,
+            BurstProfile::RepeatedImpulses,
+            BurstProfile::Ramp,
+        ];
+        for profile in profiles {
+            let phases = profile_phases(profile, 400);
+            let total: usize = phases.iter().map(|phase| phase.events).sum();
+            assert_eq!(total, 400, "{profile:?} must not lose or invent events");
+            assert_eq!(phases, profile_phases(profile, 400));
+            assert!(
+                phases.iter().all(|phase| phase.events > 0),
+                "{profile:?} has an empty phase"
+            );
+        }
+        // The four shapes are genuinely different, not relabeled copies.
+        let shapes: Vec<Vec<usize>> = profiles
+            .iter()
+            .map(|profile| {
+                profile_phases(*profile, 400)
+                    .into_iter()
+                    .map(|phase| phase.events)
+                    .collect()
+            })
+            .collect();
+        for (left, right) in shapes.iter().enumerate() {
+            for other in shapes.iter().skip(left + 1) {
+                assert_ne!(right, other, "distinct profiles must have distinct shapes");
+            }
+        }
+    }
+
+    #[test]
+    fn burst_profile_counts_are_pinned() {
+        let step: Vec<usize> = profile_phases(BurstProfile::Step, 400)
+            .into_iter()
+            .map(|phase| phase.events)
+            .collect();
+        assert_eq!(step, vec![100, 200, 100]);
+        let impulse: Vec<usize> = profile_phases(BurstProfile::Impulse, 400)
+            .into_iter()
+            .map(|phase| phase.events)
+            .collect();
+        assert_eq!(impulse, vec![40, 280, 80]);
+        // A non-divisible budget still sums exactly; the remainder is placed
+        // deterministically rather than dropped.
+        let ramp: Vec<usize> = profile_phases(BurstProfile::Ramp, 7)
+            .into_iter()
+            .map(|phase| phase.events)
+            .collect();
+        assert_eq!(ramp.iter().sum::<usize>(), 7);
+    }
+
+    #[test]
+    fn schedule_records_id_seed_hot_definition_and_empty_faults() {
+        let config = CellConfig {
+            seed: 23,
+            symbols: 4_000,
+            hot_fraction_ppm: 50_000,
+            hot_event_share_pct: 80,
+            hot_selection: HotSelection::ExactQuota,
+            burst: Some(BurstProfile::Step),
+            events: 400,
+            ..CellConfig::default()
+        };
+        let schedule = build_schedule(&config, Some("abc".to_owned()));
+        assert_eq!(schedule.workload_id, "step-seed-0017-4000");
+        assert_eq!(schedule.profile, "step");
+        assert_eq!(schedule.seed, 23);
+        assert_eq!(schedule.instrument_count, 4_000);
+        assert_eq!(schedule.expected_total_events, 400);
+        assert_eq!(schedule.hot_set.member_count, 200);
+        assert_eq!(schedule.hot_set.sha256.as_deref(), Some("abc"));
+        assert_eq!(schedule.hot_set.selection, "exact_quota");
+        assert!(schedule.fault_schedule.is_empty());
+
+        let steady = build_schedule(&CellConfig::default(), None);
+        assert_eq!(steady.profile, "steady");
+        assert_eq!(steady.phases.len(), 1);
+        assert_eq!(steady.phases[0].events, CellConfig::default().events);
+        assert!(steady.hot_set.sha256.is_none());
     }
 
     fn base() -> DrainBaselines {
