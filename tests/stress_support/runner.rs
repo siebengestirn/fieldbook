@@ -2455,6 +2455,35 @@ fn require_clean_flag_from_env_note() -> bool {
     std::env::var("STRESS_REQUIRE_CLEAN").is_ok_and(|v| v == "1")
 }
 
+/// Render the explicit workload schedule into its manifest form. Rate fields
+/// are declared schedule labels; the document states that explicitly so no
+/// reader can mistake them for measured throughput or latency.
+fn schedule_json(schedule: &WorkloadSchedule) -> Value {
+    json!({
+        "workload_id": schedule.workload_id,
+        "profile": schedule.profile,
+        "seed": schedule.seed,
+        "instrument_count": schedule.instrument_count,
+        "eligible_count": schedule.eligible_count,
+        "hot_set": {
+            "fraction_ppm": schedule.hot_set.fraction_ppm,
+            "member_count": schedule.hot_set.member_count,
+            "selection": schedule.hot_set.selection,
+            "event_share_pct": schedule.hot_set.event_share_pct,
+            "sha256": schedule.hot_set.sha256,
+        },
+        "phases": schedule.phases.iter().map(|phase| json!({
+            "name": phase.name,
+            "events": phase.events,
+            "target_rate_per_tick": phase.target_rate_per_tick,
+            "rate_multiplier": phase.rate_multiplier,
+        })).collect::<Vec<_>>(),
+        "expected_total_events": schedule.expected_total_events,
+        "fault_schedule": schedule.fault_schedule,
+        "rate_semantics": "declared schedule labels, not measured rates; no timing instrumentation",
+    })
+}
+
 /// Build one reference-matrix manifest document for a finished outcome.
 pub fn build_cell_manifest(
     outcome: &CellOutcome,
@@ -2505,6 +2534,10 @@ pub fn build_cell_manifest(
         json!(super::rng::PRNG_ALGORITHM_VERSION),
     );
     document.insert("scenario_version".to_owned(), json!(SCENARIO_VERSION));
+    let schedule = output
+        .map(|cell| cell.schedule.clone())
+        .unwrap_or_else(|| build_schedule(config, None));
+    document.insert("workload_schedule".to_owned(), schedule_json(&schedule));
     document.insert("build_profile".to_owned(), json!(build_profile()));
     document.insert("target_triple".to_owned(), json!(target_triple()));
     document.insert(
@@ -2538,6 +2571,7 @@ pub fn build_cell_manifest(
     let scenario = json!({
         "seed": config.seed,
         "symbols": config.symbols,
+        "burst_profile": schedule.profile,
         "eligible_count": output.map(|o| o.eligible_count).unwrap_or(0),
         "events_published": output.map(|o| o.events_published).unwrap_or(0),
         "shards_requested": config.shards.unwrap_or(0),
@@ -2777,12 +2811,24 @@ pub fn build_cell_manifest(
         "journal_record_count": output.and_then(|o| o.journaled_records).map(Value::from).unwrap_or(Value::Null),
     }));
 
+    let phase_results = output.map(|o| {
+        o.phase_results
+            .iter()
+            .map(|phase| json!({
+                "name": phase.name,
+                "published_events": phase.published,
+                "cumulative_expected": phase.cumulative_expected,
+                "drain_completed": phase.drain_completed,
+            }))
+            .collect::<Vec<_>>()
+    });
     document.insert("delivery".to_owned(), json!({
         "anchor_completed": !output.map(|o| o.anchor_wait_expired).unwrap_or(true),
         "anchor_ms": output.map(|o| o.anchored_time.as_millis() as u64),
         "drain_completed": output.map(|o| o.drain_completed).unwrap_or(false),
         "drain_detail": output.and_then(|o| o.drain_detail.clone()).map(Value::from).unwrap_or(Value::Null),
         "capacity_connections": output.map(|o| o.capacity_connections).unwrap_or(0),
+        "phases": phase_results.unwrap_or_default(),
     }));
 
     let incidents = output.map(|output| output.incidents);
