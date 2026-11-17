@@ -487,8 +487,10 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_numeric_is_a_decode_failure_with_exact_raw_bytes() {
-        const MALFORMED: &str =
-            include_str!("../../../fixtures/hyperliquid/all_mids_malformed.json");
+        // A non-decimal string is malformed; a value with more fractional
+        // digits than the SBE scale is valid venue telemetry and is retained
+        // exactly rather than triggering a reconnect.
+        const MALFORMED: &str = r#"{"channel":"allMids","data":{"mids":{"BTC":"not-a-number"}}}"#;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {

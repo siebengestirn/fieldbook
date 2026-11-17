@@ -143,6 +143,15 @@ pub trait Exchange: Send + Sync + 'static {
         ))
     }
 
+    /// Narrow one discovery round to the markets this collector actually
+    /// subscribes. The default keeps every discovered market; a venue whose
+    /// runtime subscribes only a configured subset overrides it so metadata,
+    /// desired subscriptions, acknowledgements and coverage all describe the
+    /// same universe instead of counting markets the session never requests.
+    fn subscribed_universe(&self, markets: Vec<MarketInfo>) -> Vec<MarketInfo> {
+        markets
+    }
+
     /// Fetch the current live, non-MVE market set. Implementations cap the
     /// result when `max_markets` is non-zero.
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>>;

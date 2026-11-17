@@ -19,6 +19,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossbeam = "0.8"
 ed25519-dalek = { version = "3.0", features = ["pkcs8", "pem", "rand_core"] }
+flate2 = "1"
 futures-util = "0.3"
 http = "1"
 rand = "0.8"

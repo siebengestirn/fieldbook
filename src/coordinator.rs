@@ -396,7 +396,12 @@ where
     let started_at_us = now_us().context("reading wall clock at startup")?;
     let exchange = build_exchange(&settings, true)?;
     let bootstrap = bootstrap_markets(&settings, &exchange, started_at_us).await?;
-    let initial_markets = bootstrap.markets;
+    // Venue adapters narrow discovery to the set the session will really
+    // subscribe. Hyperliquid's selected perpetuals are a finite subset of the
+    // venue universe; metadata, desired subscriptions and coverage must all
+    // use that same set or the certificate demands anchors that were never
+    // requested.
+    let initial_markets = exchange.subscribed_universe(bootstrap.markets);
     if initial_markets.is_empty() {
         bail!(
             "{} returned no live, non-MVE markets; refusing to start an empty collector",
@@ -692,6 +697,7 @@ where
                     }
                     Some(Ok(round)) => {
                         let DiscoveryResult { markets, stats } = round;
+                        let markets = exchange.subscribed_universe(markets);
                         let round_started_us = stats.started_at_us;
                         let finished_at_us = stats.finished_at_us;
                         let now = now_us().unwrap_or(started_at_us);

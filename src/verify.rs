@@ -80,7 +80,8 @@ pub fn run(input: &Path, chunk_size: &str) -> anyhow::Result<VerifySummary> {
         mismatch_samples: Vec::new(),
         valid: false,
         notes: vec![
-            "snapshot_mismatches compares the book rebuilt from deltas with the next full snapshot"
+            "snapshot_mismatches compares the book rebuilt from deltas with the next full snapshot, \
+             and is not applicable when no delta has intervened since the previous snapshot"
                 .to_owned(),
             "deltas_before_snapshot counts updates that cannot be anchored to a snapshot"
                 .to_owned(),
@@ -91,6 +92,13 @@ pub fn run(input: &Path, chunk_size: &str) -> anyhow::Result<VerifySummary> {
     let mut books: BTreeMap<String, OrderBook> = BTreeMap::new();
     let mut symbols = BTreeSet::new();
     let mut snapshots_seen: BTreeSet<String> = BTreeSet::new();
+    // A snapshot mismatch is evidence of a lost or corrupted delta, so it can
+    // only be judged for a symbol whose book has actually been changed by
+    // deltas since its last authoritative snapshot. Snapshot-only venues
+    // (Hyperliquid `l2Book`) legitimately replace the whole book on every push
+    // without emitting any delta; treating that as a mismatch would flag every
+    // price movement as corruption.
+    let mut deltas_since_snapshot: BTreeMap<String, u64> = BTreeMap::new();
 
     while let Some(message) = reader.read_msg()? {
         summary.messages = summary.messages.saturating_add(1);
@@ -117,7 +125,14 @@ pub fn run(input: &Path, chunk_size: &str) -> anyhow::Result<VerifySummary> {
                 // the new anchor instead. An empty snapshot cannot prove that a
                 // suppressed update emptied a book; only a later non-empty
                 // snapshot can expose that gap.
+                let changed_by_deltas = deltas_since_snapshot
+                    .get(&snapshot.symbol)
+                    .copied()
+                    .unwrap_or(0)
+                    > 0;
+                deltas_since_snapshot.insert(snapshot.symbol.clone(), 0);
                 if !empty
+                    && changed_by_deltas
                     && let Some(current) = books.get(&snapshot.symbol)
                     && snapshots_seen.contains(&snapshot.symbol)
                     && current != &incoming
@@ -151,6 +166,9 @@ pub fn run(input: &Path, chunk_size: &str) -> anyhow::Result<VerifySummary> {
                     summary.deltas_before_snapshot =
                         summary.deltas_before_snapshot.saturating_add(1);
                 }
+                *deltas_since_snapshot
+                    .entry(update.symbol.clone())
+                    .or_default() += 1;
                 let book = books.entry(update.symbol.clone()).or_default();
                 book.apply(
                     update.side,
@@ -341,6 +359,23 @@ mod tests {
         assert_eq!(summary.deltas_before_snapshot, 0);
         assert_eq!(summary.snapshots, 2);
         assert_eq!(summary.price_level_updates, 2);
+    }
+
+    #[test]
+    fn repeated_authoritative_snapshots_without_deltas_are_not_mismatches() {
+        // Hyperliquid `l2Book` pushes a complete replacement book on every
+        // block. With no delta stream there is nothing to lose, so a changed
+        // snapshot is the authoritative state rather than a corruption signal.
+        let (_directory, path) = write_capture(vec![
+            snapshot(1, &[(400_000, 10)], &[(600_000, 20)]),
+            snapshot(2, &[(400_000, 12)], &[(600_000, 22)]),
+            snapshot(3, &[(400_000, 14)], &[(600_000, 24)]),
+        ]);
+        let summary = run(&path, "auto").unwrap();
+        assert!(summary.valid);
+        assert_eq!(summary.snapshot_mismatches, 0);
+        assert_eq!(summary.snapshots, 3);
+        assert_eq!(summary.price_level_updates, 0);
     }
 
     #[test]

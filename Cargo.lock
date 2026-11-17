@@ -568,6 +568,7 @@ dependencies = [
  "crossbeam",
  "ed25519-dalek",
  "ergo-sbe",
+ "flate2",
  "futures-util",
  "http",
  "indexmap",

@@ -498,6 +498,10 @@ async fn book_sockets_carry_no_lifecycle_subscription_and_the_plane_is_accounted
         mock.state.http_requests.load(Ordering::SeqCst) >= 2
     })
     .await;
+    // The counter proves the request was issued, not that its response was
+    // applied to the core. Give the in-flight discovery round time to land
+    // before shutdown so the discovery-round assertion is not a race.
+    sleep(Duration::from_millis(500)).await;
 
     done.notify_one();
     let report = finish(handle).await;
@@ -631,6 +635,9 @@ async fn lifecycle_reconnect_consults_the_rest_catalog() {
         mock.state.http_requests.load(Ordering::SeqCst) >= 2
     })
     .await;
+    // The request counter advances before the discovery round is applied;
+    // shutting down immediately would sample a stale core counter.
+    sleep(Duration::from_millis(500)).await;
 
     done.notify_one();
     let report = finish(handle).await;
