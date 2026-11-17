@@ -8,6 +8,7 @@ pub mod backpressure;
 pub mod capacity;
 pub mod faults;
 pub mod host;
+pub mod hyperliquid;
 pub mod lifecycle;
 pub mod manifest;
 pub mod mock;
