@@ -13,11 +13,18 @@
 //! PostgreSQL side is a deterministic simulator plus a parameterized SQL
 //! contract (see [`crate::application::postgres`]).
 //!
-//! Delivery is accounted, not assumed. Every receipt is one of five explicit
-//! outcomes, and a non-terminal outcome leaves a [`DeliveryObligation`] behind
-//! and refuses to advance the committed checkpoint. Replay is implemented as a
-//! connector that synthesizes receipts without touching the wrapped target, so
-//! a replay run cannot perform an external side effect.
+//! Delivery is accounted, not assumed. Every receipt is reported in one of six
+//! explicit categories, and a non-terminal outcome leaves a
+//! [`DeliveryObligation`] behind and refuses to advance the committed
+//! checkpoint. Replay and dry-run are simulated: they synthesize receipts
+//! without touching the wrapped target or the durable store, so a simulated run
+//! cannot perform an external side effect or move the durable checkpoint.
+//!
+//! Platform P6 adds three additive modules: [`file_source`] is a bounded-memory
+//! streaming source with a content fingerprint and a verified resume anchor;
+//! [`durable`] is a real local append-only checksummed commit store; and the
+//! [`postgres`] contract gains an executor seam and a transaction transcript.
+//! The in-memory [`JsonlSource`] remains unchanged.
 
 use std::{collections::BTreeMap, fmt::Write as FmtWrite};
 
@@ -29,6 +36,8 @@ use crate::{
     identity::OpaqueId,
 };
 
+pub mod durable;
+pub mod file_source;
 pub mod postgres;
 
 /// Schema version accepted by the JSONL reader. A record carrying a different
@@ -39,6 +48,60 @@ pub const JSONL_SCHEMA_VERSION: u32 = 1;
 /// Retrying with the same idempotency key is safe by contract; the bound keeps
 /// an unavailable target from turning into an unbounded loop.
 pub const MAX_DELIVERY_ATTEMPTS: u32 = 2;
+
+/// How a run is executed. Only [`ExecutionMode::Live`] may write to a target or
+/// to the durable store. `DryRun` and `Replay` are simulated: no external write
+/// and no durable checkpoint progression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionMode {
+    #[default]
+    Live,
+    DryRun,
+    Replay,
+}
+
+impl ExecutionMode {
+    #[must_use]
+    pub const fn is_simulated(self) -> bool {
+        matches!(self, Self::DryRun | Self::Replay)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::DryRun => "dry_run",
+            Self::Replay => "replay",
+        }
+    }
+}
+
+/// The six report categories of a delivery receipt. `Accepted` is a legacy
+/// non-terminal precursor of `Delivered` and is reported in the same category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptCategory {
+    Delivered,
+    DurableCommitted,
+    Simulated,
+    Outstanding,
+    Uncertain,
+    Rejected,
+}
+
+impl ReceiptCategory {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::DurableCommitted => "durable_committed",
+            Self::Simulated => "simulated",
+            Self::Outstanding => "outstanding",
+            Self::Uncertain => "uncertain",
+            Self::Rejected => "rejected",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Source contract
@@ -105,6 +168,25 @@ pub enum SourceError {
         record_id: String,
         raw_bytes: Vec<u8>,
     },
+    #[error(
+        "jsonl line {line_number} (sequence {sequence}) exceeds {limit} bytes at offset {offset}"
+    )]
+    LineTooLong {
+        sequence: u64,
+        line_number: usize,
+        offset: u64,
+        limit: usize,
+        raw_bytes: Vec<u8>,
+    },
+    #[error(
+        "jsonl source I/O failure at line {line_number} (sequence {sequence}), offset {offset}: {message}"
+    )]
+    Io {
+        sequence: u64,
+        line_number: usize,
+        offset: u64,
+        message: String,
+    },
 }
 
 impl SourceError {
@@ -113,7 +195,9 @@ impl SourceError {
         match self {
             Self::MalformedLine { sequence, .. }
             | Self::SchemaRejected { sequence, .. }
-            | Self::DuplicateId { sequence, .. } => *sequence,
+            | Self::DuplicateId { sequence, .. }
+            | Self::LineTooLong { sequence, .. }
+            | Self::Io { sequence, .. } => *sequence,
         }
     }
 
@@ -122,7 +206,9 @@ impl SourceError {
         match self {
             Self::MalformedLine { raw_bytes, .. }
             | Self::SchemaRejected { raw_bytes, .. }
-            | Self::DuplicateId { raw_bytes, .. } => raw_bytes,
+            | Self::DuplicateId { raw_bytes, .. }
+            | Self::LineTooLong { raw_bytes, .. } => raw_bytes,
+            Self::Io { .. } => &[],
         }
     }
 }
@@ -299,6 +385,12 @@ pub struct CanonicalBusinessEvent {
 struct JsonlRecord {
     id: String,
     payload: CanonicalBusinessEvent,
+    /// Explicit local observation time. When absent, `receive_time` falls back
+    /// to the source's `observed_at` for legacy inputs, but the two envelope
+    /// fields remain independent and are populated from distinct inputs when
+    /// both are present.
+    #[serde(default)]
+    received_at: Option<i64>,
     #[serde(default = "default_jsonl_schema_version")]
     schema_version: u32,
 }
@@ -358,7 +450,7 @@ pub fn transform_observation(
             receive_seq: observation.sequence,
         }),
         source_time: Some(record.payload.observed_at),
-        receive_time: record.payload.observed_at,
+        receive_time: record.received_at.unwrap_or(record.payload.observed_at),
         raw_observation: Some(format!(
             "{}:{}",
             observation.provenance,
@@ -391,6 +483,8 @@ pub struct DeliveryRequest {
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryState {
     Accepted,
+    Delivered,
+    Simulated,
     DurableCommitted,
     Duplicate,
     Rejected,
@@ -403,6 +497,8 @@ impl DeliveryState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
+            Self::Delivered => "delivered",
+            Self::Simulated => "simulated",
             Self::DurableCommitted => "durable_committed",
             Self::Duplicate => "duplicate",
             Self::Rejected => "rejected",
@@ -412,13 +508,23 @@ impl DeliveryState {
     }
 }
 
-/// Five-way delivery receipt. `Accepted` is non-terminal (transaction opened,
-/// durability not yet confirmed); `DurableCommitted` and `Rejected` are
+/// Delivery receipt. `Accepted`/`Delivered` are non-terminal (target accepted,
+/// local durability not yet confirmed); `DurableCommitted` and `Rejected` are
 /// terminal; `Uncertain` and `Outstanding` are non-terminal and require a
-/// retry with the same idempotency key.
+/// retry with the same idempotency key. `Simulated` is produced only by
+/// dry-run/replay and is terminal for accounting but never advances the
+/// durable checkpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryReceipt {
     Accepted {
+        idempotency_key: String,
+        target_id: String,
+    },
+    Delivered {
+        idempotency_key: String,
+        target_id: String,
+    },
+    Simulated {
         idempotency_key: String,
         target_id: String,
     },
@@ -448,6 +554,8 @@ impl DeliveryReceipt {
     pub const fn state(&self) -> DeliveryState {
         match self {
             Self::Accepted { .. } => DeliveryState::Accepted,
+            Self::Delivered { .. } => DeliveryState::Delivered,
+            Self::Simulated { .. } => DeliveryState::Simulated,
             Self::DurableCommitted { .. } => DeliveryState::DurableCommitted,
             Self::Rejected { .. } => DeliveryState::Rejected,
             Self::Uncertain { .. } => DeliveryState::Uncertain,
@@ -456,9 +564,27 @@ impl DeliveryReceipt {
     }
 
     #[must_use]
+    pub const fn category(&self) -> ReceiptCategory {
+        match self {
+            Self::Accepted { .. } | Self::Delivered { .. } => ReceiptCategory::Delivered,
+            Self::Simulated { .. } => ReceiptCategory::Simulated,
+            Self::DurableCommitted { .. } => ReceiptCategory::DurableCommitted,
+            Self::Rejected { .. } => ReceiptCategory::Rejected,
+            Self::Uncertain { .. } => ReceiptCategory::Uncertain,
+            Self::Outstanding { .. } => ReceiptCategory::Outstanding,
+        }
+    }
+
+    #[must_use]
     pub fn idempotency_key(&self) -> &str {
         match self {
             Self::Accepted {
+                idempotency_key, ..
+            }
+            | Self::Delivered {
+                idempotency_key, ..
+            }
+            | Self::Simulated {
                 idempotency_key, ..
             }
             | Self::DurableCommitted {
@@ -480,6 +606,8 @@ impl DeliveryReceipt {
     pub fn target_id(&self) -> &str {
         match self {
             Self::Accepted { target_id, .. }
+            | Self::Delivered { target_id, .. }
+            | Self::Simulated { target_id, .. }
             | Self::DurableCommitted { target_id, .. }
             | Self::Rejected { target_id, .. }
             | Self::Uncertain { target_id, .. }
@@ -489,7 +617,10 @@ impl DeliveryReceipt {
 
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::DurableCommitted { .. } | Self::Rejected { .. })
+        matches!(
+            self,
+            Self::DurableCommitted { .. } | Self::Rejected { .. } | Self::Simulated { .. }
+        )
     }
 
     #[must_use]
@@ -512,6 +643,14 @@ pub trait TargetConnector {
     /// Deliver one batch and report its outcome. Implementations must be safe
     /// to call again with the same idempotency key.
     fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt;
+
+    /// Whether calling `deliver` is guaranteed to have no external side effect.
+    /// Only side-effect-free connectors (for example the replay connector)
+    /// override this; the runner uses it to avoid calling a real target in a
+    /// simulated mode.
+    fn is_simulation_safe(&self) -> bool {
+        false
+    }
 }
 
 /// One delivery obligation, tracked for the life of the import.
@@ -542,6 +681,14 @@ impl DeliveryObligation {
         match receipt {
             DeliveryReceipt::Accepted { .. } => {
                 self.state = DeliveryState::Accepted;
+                self.last_error = None;
+            }
+            DeliveryReceipt::Delivered { .. } => {
+                self.state = DeliveryState::Delivered;
+                self.last_error = None;
+            }
+            DeliveryReceipt::Simulated { .. } => {
+                self.state = DeliveryState::Simulated;
                 self.last_error = None;
             }
             DeliveryReceipt::DurableCommitted {
@@ -577,6 +724,100 @@ pub struct Checkpoint {
     pub last_committed_sequence: u64,
 }
 
+/// One target disposition inside a durable commit unit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DispositionRecord {
+    pub sequence: u64,
+    pub event_id: String,
+    pub target_id: String,
+    pub state: DeliveryState,
+    pub reason: Option<String>,
+}
+
+/// Evidence for a line quarantined before any checkpoint progression.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuarantineRecord {
+    pub sequence: u64,
+    pub line_number: usize,
+    pub byte_offset: u64,
+    pub record_id: String,
+    pub target_id: String,
+    pub raw_bytes_hex: String,
+    pub reason: String,
+}
+
+/// The single atomic commit unit handed to a durable sink. It carries the
+/// committed ids, the dispositions/quarantine records and the new checkpoint
+/// together: either all of it is fsynced as one checksummed record or none of
+/// it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitIntent {
+    pub target_id: String,
+    pub committed_event_ids: Vec<String>,
+    pub dispositions: Vec<DispositionRecord>,
+    pub quarantines: Vec<QuarantineRecord>,
+    /// Sequence the checkpoint is allowed to advance to.
+    pub next_sequence: u64,
+    /// Physical source offset belonging to `next_sequence`.
+    pub next_offset: u64,
+}
+
+impl CommitIntent {
+    #[must_use]
+    pub fn delivered(
+        target_id: &str,
+        event_id: &str,
+        sequence: u64,
+        offset: u64,
+        reason: Option<String>,
+    ) -> Self {
+        Self {
+            target_id: target_id.to_owned(),
+            committed_event_ids: vec![event_id.to_owned()],
+            dispositions: vec![DispositionRecord {
+                sequence,
+                event_id: event_id.to_owned(),
+                target_id: target_id.to_owned(),
+                state: DeliveryState::DurableCommitted,
+                reason,
+            }],
+            quarantines: Vec::new(),
+            next_sequence: sequence,
+            next_offset: offset,
+        }
+    }
+
+    #[must_use]
+    pub fn quarantined(target_id: &str, record: &QuarantineRecord) -> Self {
+        Self {
+            target_id: target_id.to_owned(),
+            committed_event_ids: Vec::new(),
+            dispositions: Vec::new(),
+            quarantines: vec![record.clone()],
+            next_sequence: record.sequence,
+            next_offset: record.byte_offset,
+        }
+    }
+}
+
+/// Durable sink seam used by the runner. A rejected record is quarantined
+/// first; only a successful quarantine or durable commit lets the runner
+/// advance its checkpoint.
+pub trait CommitSink {
+    fn commit(&mut self, intent: &CommitIntent) -> Result<(), String>;
+}
+
+/// In-memory sink for the original in-memory-only runner and tests. It records
+/// nothing, so a caller that needs durability must supply a real sink.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopCommitSink;
+
+impl CommitSink for NoopCommitSink {
+    fn commit(&mut self, _intent: &CommitIntent) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// Per-run accounting. The categories are disjoint and sum to `total_read`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ImportReport {
@@ -588,6 +829,16 @@ pub struct ImportReport {
     pub uncertain: u64,
     pub accepted: u64,
     pub skipped: u64,
+    /// Target-accepted but not locally durable (legacy `Accepted` receipts).
+    pub target_delivered: u64,
+    /// Informational projection of `delivered` that were also fsynced into the
+    /// durable store. Not a separate accounting bucket.
+    pub durable_committed: u64,
+    /// Simulated receipts from dry-run/replay. Never move the checkpoint.
+    pub simulated: u64,
+    /// Informational count of rejected lines whose quarantine was durable.
+    /// It is a projection of `rejected`, not a separate accounting bucket.
+    pub quarantined: u64,
     pub last_committed_sequence: u64,
     pub obligations: Vec<DeliveryObligation>,
 }
@@ -604,6 +855,8 @@ impl ImportReport {
             + self.uncertain
             + self.accepted
             + self.skipped
+            + self.target_delivered
+            + self.simulated
     }
 }
 
@@ -635,12 +888,17 @@ impl<T: TargetConnector> TargetConnector for ReplayConnector<'_, T> {
         self.inner.target_id()
     }
 
+    fn is_simulation_safe(&self) -> bool {
+        true
+    }
+
     fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt {
-        // No call to `self.inner.deliver`: the destination sees nothing.
-        let receipt = DeliveryReceipt::DurableCommitted {
+        // No call to `self.inner.deliver`: the destination sees nothing, and
+        // no durable store is touched. A simulated receipt is never reported
+        // as a durable commit and never advances the checkpoint.
+        let receipt = DeliveryReceipt::Simulated {
             idempotency_key: request.idempotency_key.clone(),
             target_id: self.target_id().to_owned(),
-            duplicate: false,
         };
         self.receipts.push(receipt.clone());
         receipt
@@ -651,14 +909,55 @@ impl<T: TargetConnector> TargetConnector for ReplayConnector<'_, T> {
 // Runner
 // ---------------------------------------------------------------------------
 
-/// Run a JSONL source through a deterministic transform into a target,
-/// resuming from `checkpoint`. Replay is chosen by the caller through
-/// [`ReplayConnector`], keeping this entry point at four parameters.
+/// Original four-parameter entry point. It runs in [`ExecutionMode::Live`]
+/// with an in-memory no-op sink; callers needing durable commits or simulated
+/// modes should use [`run_jsonl_to_target_with_mode`].
 pub fn run_jsonl_to_target<S, T, F>(
     source: &mut S,
     transform: F,
     target: &mut T,
     checkpoint: &Checkpoint,
+) -> ImportReport
+where
+    S: SourceAdapter,
+    T: TargetConnector,
+    F: Fn(&RawObservation) -> Result<CanonicalEnvelope<CanonicalBusinessEvent>, TransformError>,
+{
+    run_jsonl_to_target_with_mode(
+        source,
+        transform,
+        target,
+        checkpoint,
+        ExecutionMode::Live,
+        &mut NoopCommitSink,
+    )
+}
+
+/// Hex encoding of exact rejection bytes, used as durable quarantine evidence.
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        if FmtWrite::write_fmt(&mut out, format_args!("{byte:02x}")).is_err() {
+            return String::new();
+        }
+    }
+    out
+}
+
+/// Run a source through a deterministic transform into a target with explicit
+/// execution mode and durable sink.
+///
+/// In a simulated mode no external target is called unless that connector is
+/// marked simulation-safe, no durable commit is written, and the checkpoint is
+/// never advanced. A rejected record advances the checkpoint only after its
+/// quarantine record has been durably accepted by the sink.
+pub fn run_jsonl_to_target_with_mode<S, T, F>(
+    source: &mut S,
+    transform: F,
+    target: &mut T,
+    checkpoint: &Checkpoint,
+    mode: ExecutionMode,
+    sink: &mut dyn CommitSink,
 ) -> ImportReport
 where
     S: SourceAdapter,
@@ -685,13 +984,35 @@ where
                     ),
                     target.target_id(),
                 );
-                let terminal = match transform(&observation) {
+                let (_retry_done, advance) = match transform(&observation) {
                     Err(error) => {
-                        obligation.state = DeliveryState::Rejected;
-                        obligation.attempts = 1;
-                        obligation.last_error = Some(error.to_string());
-                        report.rejected += 1;
-                        true
+                        let quarantine = QuarantineRecord {
+                            sequence: observation.sequence,
+                            line_number: observation.line_number,
+                            byte_offset: 0,
+                            record_id: observation.record_id.clone(),
+                            target_id: target.target_id().to_owned(),
+                            raw_bytes_hex: hex_bytes(&observation.raw_bytes),
+                            reason: error.to_string(),
+                        };
+                        let quarantined = mode.is_simulated()
+                            || sink
+                                .commit(&CommitIntent::quarantined(target.target_id(), &quarantine))
+                                .is_ok();
+                        if quarantined {
+                            obligation.state = DeliveryState::Rejected;
+                            obligation.attempts = 1;
+                            obligation.last_error = Some(quarantine.reason.clone());
+                            report.rejected += 1;
+                            report.quarantined += 1;
+                            (true, !mode.is_simulated())
+                        } else {
+                            obligation.state = DeliveryState::Uncertain;
+                            obligation.attempts = 1;
+                            obligation.last_error = Some("durable quarantine failed".to_owned());
+                            report.uncertain += 1;
+                            (true, false)
+                        }
                     }
                     Ok(envelope) => {
                         let key = envelope.event_id.as_str().to_owned();
@@ -700,46 +1021,111 @@ where
                             idempotency_key: key,
                             events: vec![envelope],
                         };
-                        let mut receipt = target.deliver(&request);
-                        obligation.apply_receipt(&receipt);
-                        while !receipt.is_terminal() && obligation.attempts < MAX_DELIVERY_ATTEMPTS
-                        {
-                            receipt = target.deliver(&request);
+                        let simulated = mode.is_simulated();
+                        let mut receipt = if simulated && !target.is_simulation_safe() {
+                            DeliveryReceipt::Simulated {
+                                idempotency_key: request.idempotency_key.clone(),
+                                target_id: target.target_id().to_owned(),
+                            }
+                        } else {
+                            let delivered = target.deliver(&request);
+                            if simulated {
+                                DeliveryReceipt::Simulated {
+                                    idempotency_key: delivered.idempotency_key().to_owned(),
+                                    target_id: delivered.target_id().to_owned(),
+                                }
+                            } else {
+                                delivered
+                            }
+                        };
+                        if !simulated {
+                            obligation.apply_receipt(&receipt);
+                            while !receipt.is_terminal()
+                                && obligation.attempts < MAX_DELIVERY_ATTEMPTS
+                            {
+                                receipt = target.deliver(&request);
+                                obligation.apply_receipt(&receipt);
+                            }
+                        } else {
                             obligation.apply_receipt(&receipt);
                         }
+
                         match receipt {
+                            DeliveryReceipt::Simulated { .. } => {
+                                report.simulated += 1;
+                                (true, false)
+                            }
                             DeliveryReceipt::DurableCommitted {
                                 duplicate: false, ..
                             } => {
-                                report.delivered += 1;
-                                true
+                                let intent = CommitIntent::delivered(
+                                    target.target_id(),
+                                    &request.idempotency_key,
+                                    observation.sequence,
+                                    0,
+                                    None,
+                                );
+                                if sink.commit(&intent).is_ok() {
+                                    report.delivered += 1;
+                                    report.durable_committed += 1;
+                                    (true, true)
+                                } else {
+                                    obligation.state = DeliveryState::Uncertain;
+                                    obligation.last_error =
+                                        Some("durable commit failed".to_owned());
+                                    report.uncertain += 1;
+                                    (true, false)
+                                }
                             }
                             DeliveryReceipt::DurableCommitted {
                                 duplicate: true, ..
                             } => {
-                                report.duplicates += 1;
-                                true
+                                // The target already has the row, but the local
+                                // store must still record the disposition and
+                                // checkpoint before the sequence can advance.
+                                let intent = CommitIntent::delivered(
+                                    target.target_id(),
+                                    &request.idempotency_key,
+                                    observation.sequence,
+                                    0,
+                                    Some("duplicate target receipt".to_owned()),
+                                );
+                                if sink.commit(&intent).is_ok() {
+                                    report.duplicates += 1;
+                                    report.durable_committed += 1;
+                                    (true, true)
+                                } else {
+                                    obligation.state = DeliveryState::Uncertain;
+                                    obligation.last_error =
+                                        Some("durable commit failed".to_owned());
+                                    report.uncertain += 1;
+                                    (true, false)
+                                }
                             }
                             DeliveryReceipt::Rejected { .. } => {
                                 report.rejected += 1;
-                                true
+                                (true, true)
                             }
                             DeliveryReceipt::Accepted { .. } => {
                                 report.accepted += 1;
-                                false
+                                (false, false)
+                            }
+                            DeliveryReceipt::Delivered { .. } => {
+                                report.target_delivered += 1;
+                                (false, false)
                             }
                             DeliveryReceipt::Uncertain { .. } => {
                                 report.uncertain += 1;
-                                false
+                                (false, false)
                             }
                             DeliveryReceipt::Outstanding { .. } => {
                                 report.outstanding += 1;
-                                false
+                                (false, false)
                             }
                         }
                     }
                 };
-                if terminal && observation.sequence == frontier + 1 {
+                if advance && observation.sequence == frontier + 1 {
                     frontier = observation.sequence;
                 }
                 report.obligations.push(obligation);
@@ -755,16 +1141,50 @@ where
                     continue;
                 }
                 let reason = error.to_string();
+                if matches!(error, SourceError::Io { .. }) {
+                    // An I/O failure is not a rejected record: never quarantine
+                    // it and never advance the checkpoint past it.
+                    let mut obligation = DeliveryObligation::new(
+                        &format!("jsonl-source-io:{sequence}"),
+                        target.target_id(),
+                    );
+                    obligation.state = DeliveryState::Uncertain;
+                    obligation.attempts = 1;
+                    obligation.last_error = Some(reason);
+                    report.uncertain += 1;
+                    report.obligations.push(obligation);
+                    continue;
+                }
+                let quarantine = QuarantineRecord {
+                    sequence,
+                    line_number: 0,
+                    byte_offset: 0,
+                    record_id: format!("jsonl-source-rejected:{sequence}"),
+                    target_id: target.target_id().to_owned(),
+                    raw_bytes_hex: hex_bytes(error.raw_bytes()),
+                    reason: reason.clone(),
+                };
+                let quarantined = mode.is_simulated()
+                    || sink
+                        .commit(&CommitIntent::quarantined(target.target_id(), &quarantine))
+                        .is_ok();
                 let mut obligation = DeliveryObligation::new(
                     &format!("jsonl-source-rejected:{sequence}"),
                     target.target_id(),
                 );
-                obligation.state = DeliveryState::Rejected;
                 obligation.attempts = 1;
-                obligation.last_error = Some(reason);
-                report.rejected += 1;
-                if sequence == frontier + 1 {
-                    frontier = sequence;
+                if quarantined {
+                    obligation.state = DeliveryState::Rejected;
+                    obligation.last_error = Some(reason);
+                    report.rejected += 1;
+                    report.quarantined += 1;
+                    if !mode.is_simulated() && sequence == frontier + 1 {
+                        frontier = sequence;
+                    }
+                } else {
+                    obligation.state = DeliveryState::Uncertain;
+                    obligation.last_error = Some("durable quarantine failed".to_owned());
+                    report.uncertain += 1;
                 }
                 report.obligations.push(obligation);
             }
@@ -887,6 +1307,17 @@ mod tests {
             raw.contains("jsonl:fixture:1") && raw.contains(&observation.hex_bytes())
         }));
         assert!(first.validate().is_ok());
+    }
+
+    #[test]
+    fn transform_separates_source_time_from_receive_time() {
+        let line = "{\"id\":\"a\",\"received_at\":250,\"payload\":{\"entity_id\":\"e\",\"kind\":\"k\",\"value\":1,\"observed_at\":100}}";
+        let mut source = JsonlSource::from_str("fixture", line);
+        let observation = source.read_one().expect("read").expect("observation");
+        let envelope = transform_observation(&observation).expect("transform");
+        assert_eq!(envelope.source_time, Some(100));
+        assert_eq!(envelope.receive_time, 250);
+        assert_ne!(envelope.source_time, Some(envelope.receive_time));
     }
 
     #[test]
@@ -1035,20 +1466,25 @@ mod tests {
         let mut source = source_with(&lines);
         let mut target = PostgresTarget::new("pg-local");
         let mut replay = ReplayConnector::new(&mut target);
-        let report = run_jsonl_to_target(
+        let report = run_jsonl_to_target_with_mode(
             &mut source,
             transform_observation,
             &mut replay,
             &Checkpoint::default(),
+            ExecutionMode::Replay,
+            &mut NoopCommitSink,
         );
 
-        assert_eq!(report.delivered, 2);
+        assert_eq!(report.simulated, 2);
+        assert_eq!(report.delivered, 0);
+        assert_eq!(report.last_committed_sequence, 0);
+        assert_eq!(report.accounted(), report.total_read);
         assert_eq!(replay.receipts().len(), 2);
         assert!(
             replay
                 .receipts()
                 .iter()
-                .all(|receipt| receipt.state() == DeliveryState::DurableCommitted)
+                .all(|receipt| receipt.state() == DeliveryState::Simulated)
         );
         assert_eq!(target.simulator().committed_count(), 0);
         assert!(target.statements().is_empty());

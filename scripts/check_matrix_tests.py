@@ -31,7 +31,7 @@ MATRIX = ROOT / "docs/requirement-test-matrix.md"
 REQUIRED_REQUIREMENTS = (
     tuple(f"M{index}" for index in range(1, 10))
     + tuple(f"E{index}" for index in range(1, 6))
-    + ("P5",)
+    + ("P5", "P6")
 )
 
 # Moved here from scripts/check_architecture.py. These names must remain in the

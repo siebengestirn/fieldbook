@@ -15,11 +15,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{
     application::{
         CanonicalBusinessEvent, DeliveryObligation, DeliveryReceipt, DeliveryRequest,
-        DeliveryState, TargetConnector,
+        DeliveryState, ReceiptCategory, TargetConnector,
     },
     canonical::CanonicalEnvelope,
 };
@@ -108,6 +109,232 @@ pub fn rollback_statement() -> ParameterizedStatement {
         sql: ROLLBACK_SQL.to_owned(),
         params: Vec::new(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// P6: target-specific idempotency and an executor seam
+// ---------------------------------------------------------------------------
+
+/// Version of the output row contract. It is part of the idempotency key so a
+/// changed projection cannot be mistaken for a previously committed delivery.
+pub const OUTPUT_CONTRACT_VERSION: u32 = 1;
+
+/// Target-specific idempotency key. The same event delivered to two targets,
+/// or under two output contract versions, is a different logical delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdempotencyKey {
+    pub event_id: String,
+    pub target_id: String,
+    pub output_contract_version: u32,
+}
+
+impl IdempotencyKey {
+    #[must_use]
+    pub fn new(event_id: &str, target_id: &str, output_contract_version: u32) -> Self {
+        Self {
+            event_id: event_id.to_owned(),
+            target_id: target_id.to_owned(),
+            output_contract_version,
+        }
+    }
+
+    /// Stable text form using the ASCII unit separator, so no field value can
+    /// collide with a concatenation boundary.
+    #[must_use]
+    pub fn as_text(&self) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}",
+            self.event_id, self.target_id, self.output_contract_version
+        )
+    }
+}
+
+pub const INSERT_EVENT_WITH_KEY_SQL: &str = concat!(
+    "INSERT INTO canonical_business_events ",
+    "(idempotency_key, event_id, target_id, entity_id, kind, value, observed_at, raw_observation, schema_version) ",
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ",
+    "ON CONFLICT (idempotency_key) DO NOTHING",
+);
+
+pub const INSERT_DISPOSITION_SQL: &str = concat!(
+    "INSERT INTO delivery_dispositions ",
+    "(idempotency_key, event_id, target_id, disposition, reason, raw_observation) ",
+    "VALUES ($1, $2, $3, $4, $5, $6) ",
+    "ON CONFLICT (idempotency_key) DO NOTHING",
+);
+
+pub const UPSERT_CHECKPOINT_SQL: &str = concat!(
+    "INSERT INTO target_checkpoints ",
+    "(target_id, output_contract_version, last_committed_sequence, last_committed_offset, checkpoint_checksum) ",
+    "VALUES ($1, $2, $3, $4, $5) ",
+    "ON CONFLICT (target_id, output_contract_version) DO UPDATE SET ",
+    "last_committed_sequence = EXCLUDED.last_committed_sequence, ",
+    "last_committed_offset = EXCLUDED.last_committed_offset, ",
+    "checkpoint_checksum = EXCLUDED.checkpoint_checksum",
+);
+
+/// One `BEGIN ... COMMIT` transcript. `COMMIT` is present only for a terminal
+/// durable-commit receipt; a non-terminal receipt leaves the transaction open
+/// in the transcript so no caller can mistake simulation for a commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitTranscript {
+    pub idempotency_key: IdempotencyKey,
+    pub statements: Vec<ParameterizedStatement>,
+}
+
+impl CommitTranscript {
+    #[must_use]
+    pub fn has_commit(&self) -> bool {
+        self.statements
+            .iter()
+            .any(|statement| statement.sql == COMMIT_SQL)
+    }
+
+    #[must_use]
+    pub fn has_rollback(&self) -> bool {
+        self.statements
+            .iter()
+            .any(|statement| statement.sql == ROLLBACK_SQL)
+    }
+}
+
+/// Build `BEGIN` + INSERT event + INSERT disposition + UPSERT checkpoint for a
+/// single logical delivery. A terminal marker is added only by
+/// [`finalize_transcript`], so callers cannot accidentally commit a receipt
+/// that is still `Outstanding`, `Uncertain`, `Delivered` or `Simulated`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transcript needs event, target, contract version, checkpoint fields and disposition evidence"
+)]
+#[must_use]
+pub fn build_commit_transcript(
+    event: &CanonicalEnvelope<CanonicalBusinessEvent>,
+    target_id: &str,
+    output_contract_version: u32,
+    last_committed_sequence: u64,
+    last_committed_offset: u64,
+    checkpoint_checksum: &str,
+    disposition: &str,
+    reason: &str,
+) -> CommitTranscript {
+    let key = IdempotencyKey::new(event.event_id.as_str(), target_id, output_contract_version);
+    let key_text = key.as_text();
+    let statements = vec![
+        ParameterizedStatement {
+            sql: BEGIN_SQL.to_owned(),
+            params: Vec::new(),
+        },
+        ParameterizedStatement {
+            sql: INSERT_EVENT_WITH_KEY_SQL.to_owned(),
+            params: vec![
+                SqlValue::Text(key_text.clone()),
+                SqlValue::Text(event.event_id.as_str().to_owned()),
+                SqlValue::Text(target_id.to_owned()),
+                SqlValue::Text(event.payload.entity_id.clone()),
+                SqlValue::Text(event.payload.kind.clone()),
+                SqlValue::Int(event.payload.value),
+                SqlValue::Int(event.payload.observed_at),
+                SqlValue::Text(event.raw_observation.clone().unwrap_or_default()),
+                SqlValue::Int(i64::from(event.schema_version)),
+            ],
+        },
+        ParameterizedStatement {
+            sql: INSERT_DISPOSITION_SQL.to_owned(),
+            params: vec![
+                SqlValue::Text(key_text),
+                SqlValue::Text(event.event_id.as_str().to_owned()),
+                SqlValue::Text(target_id.to_owned()),
+                SqlValue::Text(disposition.to_owned()),
+                SqlValue::Text(reason.to_owned()),
+                SqlValue::Text(event.raw_observation.clone().unwrap_or_default()),
+            ],
+        },
+        ParameterizedStatement {
+            sql: UPSERT_CHECKPOINT_SQL.to_owned(),
+            params: vec![
+                SqlValue::Text(target_id.to_owned()),
+                SqlValue::Int(i64::from(output_contract_version)),
+                SqlValue::Int(i64::try_from(last_committed_sequence).unwrap_or(i64::MAX)),
+                SqlValue::Int(i64::try_from(last_committed_offset).unwrap_or(i64::MAX)),
+                SqlValue::Text(checkpoint_checksum.to_owned()),
+            ],
+        },
+    ];
+    // A terminal marker is deliberately omitted here. See finalize_transcript.
+    CommitTranscript {
+        idempotency_key: key,
+        statements,
+    }
+}
+
+/// Add a terminal marker based on the receipt category. Only a durable commit
+/// produces `COMMIT`; a rejection produces `ROLLBACK`; every other category
+/// (including simulated and non-terminal outcomes) is left without a terminal
+/// marker so no COMMIT can be issued for it.
+pub fn finalize_transcript(transcript: &mut CommitTranscript, receipt: &DeliveryReceipt) {
+    match receipt.category() {
+        ReceiptCategory::DurableCommitted => transcript.statements.push(commit_statement()),
+        ReceiptCategory::Rejected => transcript.statements.push(rollback_statement()),
+        ReceiptCategory::Delivered
+        | ReceiptCategory::Simulated
+        | ReceiptCategory::Outstanding
+        | ReceiptCategory::Uncertain => {}
+    }
+}
+
+/// Errors returned by an executor. No driver is linked and no network is used
+/// by this module; an implementor decides how to map a real driver's errors.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ExecutorError {
+    #[error("SQL executor unavailable: {0}")]
+    Unavailable(String),
+    #[error("SQL statement failed: {0}")]
+    Failed(String),
+}
+
+/// Minimal executor seam.
+///
+/// Wiring a real `tokio-postgres` driver to this trait is a **separate
+/// dependency decision**: it requires adding a dependency, migrations and a
+/// live server, none of which this repository does here. This trait and the
+/// transcript contract deliberately make no claim of a real connection.
+pub trait SqlExecutor {
+    /// Execute one parameterized statement and return the affected-row count.
+    fn execute(&mut self, statement: &ParameterizedStatement) -> Result<u64, ExecutorError>;
+}
+
+/// Deterministic in-memory executor used to exercise the seam offline. It
+/// records executed SQL and never touches a database.
+#[derive(Debug, Default)]
+pub struct RecordingExecutor {
+    executed: Vec<String>,
+}
+
+impl RecordingExecutor {
+    #[must_use]
+    pub fn executed(&self) -> &[String] {
+        &self.executed
+    }
+}
+
+impl SqlExecutor for RecordingExecutor {
+    fn execute(&mut self, statement: &ParameterizedStatement) -> Result<u64, ExecutorError> {
+        self.executed.push(statement.sql.clone());
+        Ok(1)
+    }
+}
+
+/// Execute a finalized transcript through any [`SqlExecutor`]. A transcript
+/// without a terminal marker never receives a `COMMIT` statement.
+pub fn execute_transcript<E: SqlExecutor>(
+    executor: &mut E,
+    transcript: &CommitTranscript,
+) -> Result<usize, ExecutorError> {
+    let count = transcript.statements.len();
+    for statement in &transcript.statements {
+        executor.execute(statement)?;
+    }
+    Ok(count)
 }
 
 /// Validate an envelope before it can enter the simulated transaction.
@@ -546,6 +773,155 @@ mod tests {
             matches!(receipt, DeliveryReceipt::Rejected { reason, .. } if reason.contains("entity_id"))
         );
         assert_eq!(simulator.committed_count(), 0);
+    }
+
+    #[test]
+    fn commit_transcript_has_full_shape_and_target_specific_idempotency_key() {
+        let event = envelope("evt-1", "acct", 42);
+        let mut transcript = build_commit_transcript(
+            &event,
+            "pg-a",
+            OUTPUT_CONTRACT_VERSION,
+            7,
+            700,
+            "sha256:checksum",
+            "durable_committed",
+            "",
+        );
+        assert_eq!(transcript.statements.len(), 4);
+        let sqls: Vec<&str> = transcript
+            .statements
+            .iter()
+            .map(|statement| statement.sql.as_str())
+            .collect();
+        assert_eq!(sqls[0], BEGIN_SQL);
+        assert_eq!(sqls[1], INSERT_EVENT_WITH_KEY_SQL);
+        assert_eq!(sqls[2], INSERT_DISPOSITION_SQL);
+        assert_eq!(sqls[3], UPSERT_CHECKPOINT_SQL);
+        assert!(!transcript.has_commit());
+        assert!(!transcript.has_rollback());
+
+        let key = &transcript.idempotency_key;
+        assert_eq!(key.event_id, event.event_id.as_str());
+        assert_eq!(key.target_id, "pg-a");
+        assert_eq!(key.output_contract_version, OUTPUT_CONTRACT_VERSION);
+        let other_target =
+            IdempotencyKey::new(key.event_id.as_str(), "pg-b", key.output_contract_version);
+        assert_ne!(key.as_text(), other_target.as_text());
+        let other_version = IdempotencyKey::new(
+            key.event_id.as_str(),
+            "pg-a",
+            key.output_contract_version + 1,
+        );
+        assert_ne!(key.as_text(), other_version.as_text());
+        let repeated = build_commit_transcript(
+            &event,
+            "pg-a",
+            OUTPUT_CONTRACT_VERSION,
+            7,
+            700,
+            "sha256:checksum",
+            "durable_committed",
+            "",
+        );
+        assert_eq!(transcript.idempotency_key, repeated.idempotency_key);
+
+        let key_text = key.as_text();
+        finalize_transcript(
+            &mut transcript,
+            &DeliveryReceipt::DurableCommitted {
+                idempotency_key: key_text,
+                target_id: "pg-a".to_owned(),
+                duplicate: false,
+            },
+        );
+        assert!(transcript.has_commit());
+        assert_eq!(
+            transcript.statements.last().map(|item| item.sql.as_str()),
+            Some(COMMIT_SQL)
+        );
+    }
+
+    #[test]
+    fn no_commit_is_emitted_for_non_terminal_receipts() {
+        let event = envelope("evt-1", "acct", 42);
+        let receipts = [
+            DeliveryReceipt::Outstanding {
+                idempotency_key: "key".to_owned(),
+                target_id: "pg-a".to_owned(),
+            },
+            DeliveryReceipt::Uncertain {
+                idempotency_key: "key".to_owned(),
+                target_id: "pg-a".to_owned(),
+                reason: "ack lost".to_owned(),
+            },
+            DeliveryReceipt::Simulated {
+                idempotency_key: "key".to_owned(),
+                target_id: "pg-a".to_owned(),
+            },
+            DeliveryReceipt::Delivered {
+                idempotency_key: "key".to_owned(),
+                target_id: "pg-a".to_owned(),
+            },
+            DeliveryReceipt::Rejected {
+                idempotency_key: "key".to_owned(),
+                target_id: "pg-a".to_owned(),
+                reason: "invalid".to_owned(),
+            },
+        ];
+        for receipt in receipts {
+            let mut transcript = build_commit_transcript(
+                &event,
+                "pg-a",
+                OUTPUT_CONTRACT_VERSION,
+                0,
+                0,
+                "sha256:none",
+                "delivered",
+                "",
+            );
+            finalize_transcript(&mut transcript, &receipt);
+            assert!(
+                !transcript.has_commit(),
+                "receipt {:?} got a COMMIT",
+                receipt.category()
+            );
+            if receipt.category() == ReceiptCategory::Rejected {
+                assert!(transcript.has_rollback());
+            } else {
+                assert!(!transcript.has_rollback());
+            }
+        }
+    }
+
+    #[test]
+    fn sql_executor_seam_runs_offline_without_a_database() {
+        let event = envelope("evt-1", "acct", 42);
+        let mut transcript = build_commit_transcript(
+            &event,
+            "pg-a",
+            OUTPUT_CONTRACT_VERSION,
+            1,
+            10,
+            "sha256:checksum",
+            "durable_committed",
+            "",
+        );
+        let key_text = transcript.idempotency_key.as_text();
+        finalize_transcript(
+            &mut transcript,
+            &DeliveryReceipt::DurableCommitted {
+                idempotency_key: key_text,
+                target_id: "pg-a".to_owned(),
+                duplicate: false,
+            },
+        );
+        let mut executor = RecordingExecutor::default();
+        let executed = execute_transcript(&mut executor, &transcript).expect("transcript executes");
+        assert_eq!(executed, 5);
+        assert_eq!(executor.executed().len(), 5);
+        assert_eq!(executor.executed()[0], BEGIN_SQL);
+        assert_eq!(executor.executed()[4], COMMIT_SQL);
     }
 
     #[test]
