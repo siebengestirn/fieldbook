@@ -28,6 +28,10 @@ injections.
 | `seed-0017-4000-hotquiet-v4.json` | v4 corrected weighted hot/quiet profile with certified accounting. |
 | `seed-001d-4000-hotquiet-v4.json` | v4 exact-quota profile (320 hot / 80 cold) with certified accounting. |
 | `failed-v4-seed-000b-200-coverage_set_mismatch.json` | v4 regeneration of the missing-anchor failure. The event ledger reconciles with 60 decoded events and 30 applied events; the run still fails on coverage, and receive evidence is present. |
+| `seed-0007-4000-uniform-v5.json` | v5 uniform baseline with true transport/decoder evidence and complete delta dispositions. |
+| `seed-0017-4000-hotquiet-v5.json` | v5 weighted hot/quiet profile with disposition-certified accounting. |
+| `seed-001d-4000-hotquiet-v5.json` | v5 exact-quota profile (320/80) with disposition-certified accounting. |
+| `failed-v5-seed-000b-200-coverage_set_mismatch.json` | v5 failure cell: ledger reconciles with 60 decoded events and complete dispositions, but coverage fails the run. |
 | `failed-seed-000b-200-coverage_set_mismatch.json` | Missing-anchor injection: one eligible market receives no snapshot. It is acknowledged but never snapshot-anchored, the three-set comparison fails, and the runner classifies the cell `failed` (`coverage_set_mismatch`) — the event ledger itself still reconciles, which is exactly the point: the loss is a coverage loss, not an accounting loss. |
 | `failed-seed-000d-300-unexplained_drops.json` | Dropped-frame injection: 10 delta frames vanish before the wire (no sequence consumed, invisible to the protocol). Only event accounting catches it: `unexplained_drops = 5` (10 frames / 2 replicas), `injected_pre_wire_drops = 10`, classified `failed`. |
 | `failed-seed-000e-200-coverage_set_mismatch.json` | Bounded-queue saturation: the mock's outbound queue is capped at 8 and its forwarder stalled. `queue_saturated > 0`, nothing drains, the barrier refuses to certify; the cell is `failed`, never silently degraded. |

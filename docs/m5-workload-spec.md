@@ -150,8 +150,10 @@ evidence, explicitly superseded by `scenario_version = 5`. The corrected v3
 reference artifacts are retained as historical evidence. The certified v4
 artifacts are `seed-0007-4000-uniform-v4.json`,
 `seed-0017-4000-hotquiet-v4.json`, `seed-001d-4000-hotquiet-v4.json`, and
-`failed-v4-seed-000b-200-coverage_set_mismatch.json`, all tied to source
-commit `3f22f47`. Do not use the v2 manifest for comparative
+`failed-v4-seed-000b-200-coverage_set_mismatch.json`, v4 tied to `3f22f47`; the v5 disposition-certified artifacts
+`seed-0007-4000-uniform-v5.json`, `seed-0017-4000-hotquiet-v5.json`,
+`seed-001d-4000-hotquiet-v5.json` and
+`failed-v5-seed-000b-200-coverage_set_mismatch.json` are tied to `5bb54e6`. Do not use the v2 manifest for comparative
 workload claims.
 
 Performance gates (p50/p95/p99/p99.9, CPU, RSS, disk, queue wait) are **not**
