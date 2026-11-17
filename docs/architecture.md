@@ -48,7 +48,12 @@ chooses the active source per symbol and produces ordered output messages.
 `src/writer.rs` is the only SBE writer: one bounded queue and one thread
 preserve total write order. `src/journal.rs` is a separate append-only path, so
 the SBE schema is unchanged. `src/metrics.rs` serves counters, health, and
-readiness without putting network work on the data path.
+readiness without putting network work on the data path. Stage-specific latency
+evidence lives in `src/histogram.rs`: one fixed-bucket histogram per boundary
+is shared across workers, and a snapshot reports raw bucket counts plus
+nearest-rank percentiles with explicit sample counts (never averaged worker
+percentiles). Unexercised boundaries are reported as `unavailable` with a
+reason, not zero.
 
 `src/egress.rs` binds how the process reaches the venue: direct networking by
 default, or one explicitly configured proxy (`http` CONNECT or SOCKS5, with a

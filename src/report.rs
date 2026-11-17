@@ -160,6 +160,10 @@ pub struct RunReport {
     /// Error produced when report status and persisted journal state disagree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_consistency_error: Option<String>,
+    /// Stage-specific latency histograms with explicit sample counts. Unexercised
+    /// boundaries are marked `unavailable` with a reason, never zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_timing: Option<crate::histogram::StageTimingReport>,
 }
 
 impl RunReport {
@@ -214,6 +218,7 @@ impl RunReport {
             journal: None,
             journal_verification: None,
             journal_consistency_error: None,
+            stage_timing: None,
         }
     }
 

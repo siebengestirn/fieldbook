@@ -9,7 +9,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, bail};
@@ -26,6 +26,7 @@ use crate::{
     collector::{CollectorCore, CoreConfig},
     config::{CatalogMode, ExchangeKind, JournalSyncMode, Settings},
     exchange::{DiscoveryResult, DiscoveryStats, Exchange, KalshiExchange, PolymarketExchange},
+    histogram::{Histogram, StageTimings},
     journal::{JournalConfig, JournalHandle, JournalMeta, SyncMode},
     metrics::{CatalogHealth, MetricsRegistry, ReadinessPolicy, RuntimeStatus, run_server_on},
     model::{Control, MarketInfo, OutputMessage, SourceId},
@@ -136,7 +137,11 @@ pub fn build_exchange(
 /// The manifest records the source commit injected at build time and a digest
 /// of the capture-affecting configuration. Credentials never enter either
 /// value.
-fn start_journal(settings: &Settings, venue: &str) -> anyhow::Result<Option<JournalHandle>> {
+fn start_journal(
+    settings: &Settings,
+    venue: &str,
+    append_latency: Option<Arc<Histogram>>,
+) -> anyhow::Result<Option<JournalHandle>> {
     let Some(directory) = settings.journal.directory.clone() else {
         return Ok(None);
     };
@@ -166,9 +171,11 @@ fn start_journal(settings: &Settings, venue: &str) -> anyhow::Result<Option<Jour
             .provenance(&settings.network),
     );
     let meta = JournalMeta::new(venue, code_commit, &config_sha256, route);
-    JournalHandle::start(config, meta)
-        .map(Some)
-        .context("starting raw-frame journal")
+    let started = match append_latency {
+        Some(histogram) => JournalHandle::start_with_timing(config, meta, histogram),
+        None => JournalHandle::start(config, meta),
+    };
+    started.map(Some).context("starting raw-frame journal")
 }
 
 /// Readiness inputs owned by the coordinator loop.
@@ -386,6 +393,17 @@ where
     let replica_count = settings.collector.replicas;
     let core_config = CoreConfig::from_settings(&settings, shard_count, exchange.capabilities())?;
     let mut core = CollectorCore::new(core_config)?;
+    // One set of stage histograms is shared with the writer, journal, and
+    // final report. No worker computes or averages its own percentile.
+    let journal_latency = settings
+        .journal
+        .directory
+        .as_ref()
+        .map(|_| Arc::new(Histogram::default()));
+    let timings = StageTimings {
+        journal_append: journal_latency.clone(),
+        ..StageTimings::default()
+    };
     // The initial discovery cannot produce removal snapshots, but applying it
     // here establishes shard assignments before workers are spawned.
     core.apply_discovery(started_at_us, initial_markets.clone())
@@ -406,7 +424,10 @@ where
             bootstrap.catalog_generated_at_us,
         )
         .context("queueing initial metadata/catalog snapshot")?;
-    let writer = WriterHandle::start(crate::writer::WriterOptions::from_settings(&settings))?;
+    let writer = WriterHandle::start_with_timings(
+        crate::writer::WriterOptions::from_settings(&settings),
+        Arc::new(timings.writer.clone()),
+    )?;
     let send_timeout = persistence_timeout;
     let registry = MetricsRegistry::new(
         exchange.name(),
@@ -441,7 +462,7 @@ where
         lifecycle_configured: 0,
     };
     let (metrics_shutdown, metrics_handle) = start_metrics(&settings, &registry).await?;
-    let journal = start_journal(&settings, exchange.name())?;
+    let journal = start_journal(&settings, exchange.name(), journal_latency)?;
 
     let factory = Arc::clone(&exchange).session_factory();
     let mut worker_config = WorkerConfig::from_settings(&settings.collector);
@@ -577,6 +598,7 @@ where
                             &mut active_sources,
                             &mut acknowledged,
                             &mut discovery,
+                            &timings.core_processing,
                             send_timeout,
                         ).await {
                             fatal = Some(format!("{error:#}"));
@@ -789,7 +811,9 @@ where
             }
             Ok(Some(WorkerEvent::Events { source, events })) => {
                 for event in events {
+                    let core_started = Instant::now();
                     let outputs = core.handle_event(source, event);
+                    timings.core_processing.record(core_started.elapsed());
                     if let Err(error) = emit_outputs(&writer, outputs, send_timeout).await {
                         shutdown_error.get_or_insert(error);
                         break 'drain;
@@ -917,6 +941,7 @@ where
     report.journal = journal_status;
     report.journal_verification = journal_verification;
     report.journal_consistency_error = journal_consistency_error;
+    report.stage_timing = Some(timings.report());
 
     // The final snapshot is persisted through the same latest-wins worker as
     // every intermediate one, then the worker is drained and joined. A warm
@@ -1038,12 +1063,15 @@ async fn process_worker_event(
     active_sources: &mut BTreeSet<SourceId>,
     acknowledged: &mut BTreeMap<SourceId, BTreeSet<String>>,
     discovery: &mut DiscoveryPlane,
+    core_timing: &Histogram,
     send_timeout: Duration,
 ) -> anyhow::Result<()> {
     match event {
         WorkerEvent::Events { source, events } => {
             for event in events {
+                let core_started = Instant::now();
                 let outputs = core.handle_event(source, event);
+                core_timing.record(core_started.elapsed());
                 emit_outputs(writer, outputs, send_timeout).await?;
             }
             // The lifecycle control plane saw a market the universe does not

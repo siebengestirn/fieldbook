@@ -31,6 +31,8 @@ mod stress_support;
 
 use std::collections::BTreeSet;
 
+use engineering_challenge::histogram::StageHistogram;
+
 use stress_support::{
     faults::SweepProfile,
     lifecycle::LifecycleScenario,
@@ -1499,7 +1501,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(13));
+    assert_eq!(document["scenario_version"].as_u64(), Some(14));
     outcome
 }
 
@@ -1589,7 +1591,7 @@ fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
 }
 
 fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
-    assert_eq!(document["scenario_version"], 13);
+    assert_eq!(document["scenario_version"], 14);
     assert_eq!(document["backpressure"]["profile"], profile);
     let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
     assert!(!boundary.is_empty(), "boundary must be named");
@@ -1972,7 +1974,7 @@ async fn backpressure_combined_hot_quiet_writer_queue_4000_certifies() {
 }
 
 /// Ignored reference generator for the M5.5 boundary profiles. Uses the same
-/// `STRESS_MANIFEST_OUT` publication protocol and v12 cell ids as the other
+/// `STRESS_MANIFEST_OUT` publication protocol and v14 cell ids as the other
 /// reference generators; prior evidence is never overwritten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
@@ -2020,7 +2022,7 @@ async fn reference_backpressure_profiles_manifest_is_reproducible() {
         let outcome =
             stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
         let document = build_cell_manifest_for_reference(&out, seed);
-        assert_eq!(document["scenario_version"], 13);
+        assert_eq!(document["scenario_version"], 14);
         assert_eq!(document["backpressure"]["profile"], expected);
         assert!(
             !outcome.acceptance.valid || expected == "writer_queue_saturation",
@@ -2043,7 +2045,7 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
 }
 
 // ---------------------------------------------------------------------------
-// M5.4 deterministic disconnect and recovery sweeps (scenario_version 13).
+// M5.4 deterministic disconnect and recovery sweeps (scenario_version 14).
 // ---------------------------------------------------------------------------
 
 fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {
@@ -2536,7 +2538,7 @@ fn disconnect_fault_steps_carry_full_matrix_evidence() {
 
 /// Ignored reference generator for the disconnect sweep manifest. Run with
 /// `STRESS_MANIFEST_OUT` set to a fresh directory; prior evidence is never
-/// overwritten because v12 cell ids are content-addressed by seed and verdict.
+/// overwritten because v14 cell ids are content-addressed by seed and verdict.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
 async fn reference_disconnect_sweep_manifest() {
@@ -2614,4 +2616,84 @@ async fn mock_publish_lifecycle_wrapper_is_callable_without_subscribers() {
     mock.state()
         .publish_lifecycle("created", &ticker, serde_json::json!({}));
     assert_eq!(mock.state().ledger_snapshot().lifecycle_sent, 0);
+}
+
+/// M5.6 evidence cell: a real in-process run records at least one measured
+/// stage boundary with non-zero samples. This proves the instrumentation is
+/// wired into the production path; it does not claim a throughput number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stage_timing_cell_records_real_writer_write_latency() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = CellConfig {
+        seed: 31,
+        symbols: 200,
+        events: 40,
+        limits: Some((20, 2)),
+        ..headless_cell_config(31, 200)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "stage-timing cell failed acceptance: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome
+        .output
+        .as_ref()
+        .expect("valid cell must carry output");
+    let timing = output
+        .report
+        .stage_timing
+        .as_ref()
+        .expect("run report must carry stage timing");
+    let write = match &timing.sbe_write {
+        StageHistogram::Measured { report } => report,
+        StageHistogram::Unavailable { reason } => {
+            panic!("writer write latency must be measured: {reason}")
+        }
+    };
+    assert!(
+        write.sample_count >= output.sbe_messages,
+        "every persisted SBE message must contribute a write sample: {:?}",
+        write
+    );
+    assert!(write.min_ns <= write.max_ns);
+    assert_eq!(
+        write.buckets.len(),
+        engineering_challenge::histogram::BUCKET_COUNT
+    );
+
+    match &timing.writer_queue_wait {
+        StageHistogram::Measured { report } => assert!(report.sample_count > 0),
+        StageHistogram::Unavailable { reason } => panic!("queue wait must be measured: {reason}"),
+    }
+    match &timing.journal_append {
+        StageHistogram::Measured { report } => assert!(report.sample_count > 0),
+        StageHistogram::Unavailable { reason } => {
+            panic!("journal append must be measured: {reason}")
+        }
+    }
+
+    let manifest =
+        stress_support::runner::build_cell_manifest(&outcome, &config, "stage-timing-cell");
+    let stage = &manifest["performance"]["stage_timing"];
+    assert_eq!(stage["boundaries"]["sbe_write"]["state"], "measured");
+    assert!(
+        stage["boundaries"]["sbe_write"]["report"]["sample_count"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(stage["provenance"]["scenario_version"], 14);
+    assert!(stage["provenance"]["clock_source"].is_string());
+    assert!(
+        stage["boundaries"]["sbe_write"]["report"]["buckets"]
+            .as_array()
+            .is_some_and(|buckets| !buckets.is_empty())
+    );
+    assert!(stage["resolution_vs_accuracy"].is_string());
+    assert!(
+        stress_support::manifest::missing_required_fields(&manifest).is_empty(),
+        "stage timing must satisfy the manifest contract"
+    );
 }
