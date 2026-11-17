@@ -161,19 +161,54 @@ impl Default for HyperliquidTelemetrySettings {
     }
 }
 
-/// Reference-data and telemetry settings for Hyperliquid (H0 reference data,
-/// H1 telemetry).
+/// Selected-book settings for Hyperliquid (H2).
+///
+/// The book universe is an explicit, finite list of perpetual coin names on the
+/// main DEX. It is deliberately small by default and never expands to the full
+/// venue universe. Spot instruments are never subscribed to `l2Book` or
+/// `trades`; identity and numeric semantics come from H0 discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HyperliquidBookSettings {
+    /// Selected perpetual coin names on the main DEX (for example `BTC`).
+    /// Empty and duplicate entries are ignored by the selection helper.
+    /// The default is a small finite set, not the venue universe.
+    pub perpetuals: Vec<String>,
+    /// Subscribe to the venue `trades` channel for the selected coins. Trades
+    /// are telemetry: they are journaled as `ProtocolControl` observations and
+    /// never become book deltas or coverage anchors.
+    pub trades_telemetry: bool,
+}
+
+impl Default for HyperliquidBookSettings {
+    fn default() -> Self {
+        Self {
+            perpetuals: vec![
+                "BTC", "ETH", "SOL", "ARB", "OP", "AVAX", "LINK", "DOGE", "ADA", "SUI",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            trades_telemetry: true,
+        }
+    }
+}
+
+/// Reference-data, telemetry and selected-book settings for Hyperliquid (H0
+/// reference data, H1 telemetry, H2 selected books/trades).
 ///
 /// `reference_fixture` is an explicitly configured offline source for
 /// deterministic discovery. When absent, discovery uses the `info_url` REST
 /// endpoint. `ws_url` and `telemetry` are added with backward-compatible
 /// defaults: an H0 configuration that predates them still deserializes and
-/// now opens a telemetry-only websocket.
+/// now opens a telemetry-only websocket. `books` is likewise defaulted so an
+/// older configuration keeps parsing; the session subscribes to book feeds
+/// only for native symbols it actually receives in its desired set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HyperliquidSettings {
     pub info_url: String,
-    /// Public websocket endpoint used by the H1 telemetry session.
+    /// Public websocket endpoint used by the H1/H2 session.
     pub ws_url: String,
     /// Perpetual DEX names to include. The empty string is the main DEX.
     pub dexs: Vec<String>,
@@ -181,6 +216,8 @@ pub struct HyperliquidSettings {
     pub reference_fixture: Option<PathBuf>,
     pub request_timeout_secs: u64,
     pub telemetry: HyperliquidTelemetrySettings,
+    /// H2 selected perpetual books; never the full universe, never spot.
+    pub books: HyperliquidBookSettings,
 }
 
 impl Default for HyperliquidSettings {
@@ -193,6 +230,7 @@ impl Default for HyperliquidSettings {
             reference_fixture: None,
             request_timeout_secs: 20,
             telemetry: HyperliquidTelemetrySettings::default(),
+            books: HyperliquidBookSettings::default(),
         }
     }
 }
