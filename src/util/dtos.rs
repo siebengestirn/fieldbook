@@ -28,6 +28,13 @@ macro_rules! schemas {
                 clippy::unimplemented,
                 clippy::dbg_macro,
                 clippy::print_stdout,
+                clippy::doc_markdown,
+                clippy::manual_assert,
+                clippy::missing_errors_doc,
+                clippy::missing_panics_doc,
+                clippy::undocumented_unsafe_blocks,
+                clippy::wildcard_imports,
+                rustdoc::broken_intra_doc_links,
             )]
             include!(concat!(env!("OUT_DIR"), "/", stringify!($schema), ".rs"));
         }

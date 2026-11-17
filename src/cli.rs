@@ -37,7 +37,7 @@ pub struct Cli {
     #[arg(long = "kalshi-private-key", global = true, value_name = "FILE")]
     pub kalshi_private_key: Option<PathBuf>,
 
-    /// Disable TCP_NODELAY on websocket sockets.
+    /// Disable `TCP_NODELAY` on websocket sockets.
     #[arg(long = "no-tcp-nodelay", global = true)]
     pub no_tcp_nodelay: bool,
 
@@ -109,7 +109,7 @@ pub struct Cli {
     pub replicas: Option<usize>,
 
     /// Kalshi only: dedicated market-lifecycle control-plane sockets
-    /// (market_lifecycle_v2). Book shards never carry lifecycle subscriptions.
+    /// (`market_lifecycle_v2`). Book shards never carry lifecycle subscriptions.
     #[arg(long, global = true, value_name = "N")]
     pub lifecycle_replicas: Option<usize>,
 

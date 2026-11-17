@@ -30,7 +30,7 @@ pub const CHANNEL_ASSET_CTXS_NOT_SUBSCRIBED: &str = "assetCtxs";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mid {
     pub coin: String,
-    /// Exact coefficient at [`SCALE`] decimal places.
+    /// Exact coefficient at `SCALE` decimal places.
     pub mid: i64,
 }
 

@@ -89,9 +89,9 @@ pub struct CompletenessSummary {
     pub unanchored_symbols: u64,
     /// Silent intervals of at least 60 s observed, bounded sample.
     pub quiet_intervals: Vec<QuietInterval>,
-    /// The most severe unanchored symbols, capped at [`MAX_WORST_UNANCHORED`].
+    /// The most severe unanchored symbols, capped at `MAX_WORST_UNANCHORED`.
     pub worst_unanchored: Vec<PerSymbolCompleteness>,
-    /// Full per-symbol ledger, capped at [`MAX_SAMPLED_SYMBOLS`] by message
+    /// Full per-symbol ledger, capped at `MAX_SAMPLED_SYMBOLS` by message
     /// count, only when `include_symbols` is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub per_symbol: Option<Vec<PerSymbolCompleteness>>,
@@ -175,7 +175,7 @@ impl SymbolState {
 /// Produce the completeness report for one capture.
 ///
 /// `chunk_size` is either an integer or `auto`. `include_symbols` adds the
-/// full per-symbol ledger, capped at [`MAX_SAMPLED_SYMBOLS`] entries ranked
+/// full per-symbol ledger, capped at `MAX_SAMPLED_SYMBOLS` entries ranked
 /// by message count.
 pub fn run(
     input: &Path,

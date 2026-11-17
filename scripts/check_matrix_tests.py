@@ -11,11 +11,11 @@ tree. It therefore verifies both that the source file exists and that the named
 test is declared in that exact file. Wildcards, grouped references, bare names,
 and module-qualified Rust paths are rejected as ambiguous.
 
-The matrix must contain M1-M9, E1-E5 and P5, every requirement must have at
+The matrix must contain M1-M9, E1-E5, P5 and P6, every requirement must have at
 least one test reference, and the 24 mandatory evidence tests must remain
-represented. P5 is the non-market-data JSONL-to-target reference application;
-its identifiers use the same file-qualified contract. This is the single
-test-evidence gate; the architecture checker no longer keeps a duplicate list.
+represented. P5 and P6 are the non-market-data source-to-target reference
+applications; their identifiers use the same file-qualified contract. Comments
+and string literals do not declare tests.
 """
 from __future__ import annotations
 
@@ -180,6 +180,66 @@ def scan_matrix(markdown: str) -> list[Row]:
     return rows
 
 
+def mask_non_code(source: str) -> str:
+    """Blank comments and string literals, preserving offsets and newlines.
+
+    Test declarations inside a comment or a string literal are not real tests.
+    """
+    out = list(source)
+    index = 0
+    length = len(source)
+    while index < length:
+        char = source[index]
+        if char == "/" and index + 1 < length and source[index + 1] == "/":
+            end = source.find("\n", index)
+            end = length if end == -1 else end
+            for position in range(index, end):
+                out[position] = " "
+            index = end
+            continue
+        if char == "/" and index + 1 < length and source[index + 1] == "*":
+            end = source.find("*/", index + 2)
+            end = length if end == -1 else end + 2
+            for position in range(index, end):
+                if out[position] != "\n":
+                    out[position] = " "
+            index = end
+            continue
+        if char == "r" and index + 1 < length and source[index + 1] in "#\"":
+            hashes = 0
+            cursor = index + 1
+            while cursor < length and source[cursor] == "#":
+                hashes += 1
+                cursor += 1
+            if cursor < length and source[cursor] == "\"":
+                terminator = '\"' + "#" * hashes
+                end = source.find(terminator, cursor + 1)
+                end = length if end == -1 else end + len(terminator)
+                for position in range(index, end):
+                    if out[position] != "\n":
+                        out[position] = " "
+                index = end
+                continue
+        if char == '"':
+            quote = char
+            end = index + 1
+            while end < length:
+                if source[end] == "\\":
+                    end += 2
+                    continue
+                if source[end] == quote:
+                    end += 1
+                    break
+                end += 1
+            for position in range(index, min(end, length)):
+                if out[position] != "\n":
+                    out[position] = " "
+            index = end
+            continue
+        index += 1
+    return "".join(out)
+
+
 def discover_tests(root: Path = ROOT) -> dict[str, set[str]]:
     """Map every Rust source/integration file to its declared test names.
 
@@ -195,7 +255,7 @@ def discover_tests(root: Path = ROOT) -> dict[str, set[str]]:
             relative = path.relative_to(root).as_posix()
             content = path.read_text(encoding="utf-8")
             discovered[relative] = {
-                match.group(1) for match in TEST_DECL_RE.finditer(content)
+                match.group(1) for match in TEST_DECL_RE.finditer(mask_non_code(content))
             }
     return discovered
 

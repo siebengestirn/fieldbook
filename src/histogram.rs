@@ -1,7 +1,7 @@
 //! Fixed-bucket latency histograms for stage-specific performance evidence.
 //!
 //! Each boundary owns one [`Histogram`] of atomic bucket counters. Sampling is
-//! allocation-free: [`Histogram::record`] reads a monotonic [`Instant`] elapsed
+//! allocation-free: [`Histogram::record`] reads a monotonic `Instant` elapsed
 //! value, maps it to a fixed boundary with a bit-length calculation, and bumps
 //! one counter. The histogram is shared by every worker that crosses the same
 //! boundary, so there is exactly one set of raw counts to report.

@@ -42,7 +42,7 @@ use stress_support::{
 };
 
 /// Full H3 evidence gate for the balanced profile: exact coverage, reconciled
-/// ledger/dispositions, bounded queue, journal/SBE integrity, zero LevelChange
+/// ledger/dispositions, bounded queue, journal/SBE integrity, zero `LevelChange`
 /// and reconnect recovery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn h3_balanced_cell_certifies_every_evidence_gate() {

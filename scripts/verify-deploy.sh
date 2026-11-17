@@ -22,7 +22,7 @@
 # Usage: scripts/verify-deploy.sh
 # Output: build/deploy-verification/<stamp>/  and a deploy-verification.json
 # manifest. Fail-closed: any failed check exits non-zero.
-set -uo pipefail
+set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -52,7 +52,10 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 [[ -f config.example.toml ]] || fail "config.example.toml is missing"
 
 COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-DIRTY="$(git status --porcelain | head -1)"
+if [[ -n "$(git status --porcelain)" ]]; then
+  fail "working tree must be clean for deploy verification"
+fi
+DIRTY=""
 mkdir -p "$ETC" "$VAR_LIB" "$VAR_LOG" || fail "cannot create sandbox"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "deploy-verification sandbox: $SANDBOX (commit ${COMMIT:0:12}${DIRTY:+, dirty})"
@@ -65,7 +68,7 @@ BIN="$ROOT/target/release/engineering-challenge"
 
 # A free localhost port for the metrics endpoint, chosen before the settings
 # file is written so the scrape targets are deterministic.
-METRICS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+METRICS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" || fail "cannot allocate metrics port"
 
 echo "== writing settings.toml from config.example.toml"
 python3 - "$ROOT/config.example.toml" "$SETTINGS" "$VAR_LIB" "$METRICS_PORT" "$DURATION_SECS" <<'PY'
@@ -127,6 +130,13 @@ echo "== starting collector exactly as systemd does (--config, default command)"
 RUST_LOG=info "$BIN" --config "$SETTINGS" \
   >"$VAR_LOG/collector.log" 2>&1 &
 COLLECTOR_PID=$!
+cleanup_collector() {
+  if kill -0 "$COLLECTOR_PID" 2>/dev/null; then
+    kill "$COLLECTOR_PID" 2>/dev/null || true
+    wait "$COLLECTOR_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_collector EXIT
 
 BASE_URL="http://127.0.0.1:$METRICS_PORT"
 LIVEZ_STATUS=FAIL

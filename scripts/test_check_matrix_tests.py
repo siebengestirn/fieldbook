@@ -234,6 +234,21 @@ class RequirementSetTests(MatrixFixture):
         )
 
 
+class NonCodeDeclarationTest(unittest.TestCase):
+    def test_comments_and_strings_do_not_declare_tests(self) -> None:
+        source = """#[cfg(test)]
+mod tests {
+    // #[test] fn fake_comment_test() {}
+    const TEXT: &str = "#[test] fn fake_string_test() {}",
+    #[test]
+    fn real_test() {}
+}
+"""
+        masked = gate.mask_non_code(source)
+        names = {match.group(1) for match in gate.TEST_DECL_RE.finditer(masked)}
+        self.assertEqual({"real_test"}, names)
+
+
 class RepositoryMatrixTest(unittest.TestCase):
     def test_checked_in_matrix_passes_the_complete_contract(self) -> None:
         errors, references = gate.validate(

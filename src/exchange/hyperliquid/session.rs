@@ -4,7 +4,7 @@
 //! H1 telemetry channels `allMids` and `fastAssetCtxs` remain journaled
 //! `ProtocolControl` observations. H2 additionally subscribes `l2Book` and
 //! `trades` for exactly the configured selected perpetuals: `l2Book` pushes
-//! become normalized [`ExchangeEvent::Snapshot`] events and `trades` stay
+//! become normalized `ExchangeEvent::Snapshot` events and `trades` stay
 //! telemetry that never anchors or produces a delta. There is no venue
 //! heartbeat and no `LevelChange` on this venue. `assetCtxs` is not subscribed
 //! because no golden fixture pins its wire shape.

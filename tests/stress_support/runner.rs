@@ -331,7 +331,7 @@ pub struct CellConfig {
     pub seed: u64,
     pub symbols: usize,
     pub decoy_fraction_ppm: u32,
-    /// `None` derives shards via capacity::plan (settings.shards = 0).
+    /// `None` derives shards via `capacity::plan` (settings.shards = 0).
     pub shards: Option<usize>,
     pub replicas: usize,
     pub lifecycle_replicas: usize,

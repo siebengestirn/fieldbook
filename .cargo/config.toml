@@ -4,6 +4,7 @@
 # additive and do not redefine builtin cargo behavior.
 
 [alias]
+xtask = "run --quiet --locked --package xtask --"
 clippy-gate = "clippy --all-targets --locked -- -D warnings"
 test-gate = "test --all-targets --locked"
 fmt-check = "fmt --all -- --check"
