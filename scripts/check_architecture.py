@@ -28,6 +28,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",
     "src/histogram.rs": "fixed-bucket stage-latency histograms, nearest-rank percentiles and unavailable-boundary reporting",
     "src/inspect.rs": "offline SBE capture inspection command",
+    "src/identity.rs": "persistent opaque instrument/venue/listing identities, effective-dated mappings and as-of resolution",
     "src/journal.rs": "raw-frame journal writer, segment/manifest format, verification, ordered reading",
     "src/journal/tests.rs": "journal unit tests for framing, checksums, durability, recovery, and failure handling",
     "src/latency.rs": "latency experiment orchestration and result output",
@@ -172,6 +173,9 @@ REQUIRED_ANCHORS = {
         "BinanceSessionFactory", "BinanceSession", "heartbeat_spec", "HeartbeatSpec::disabled",
     ],
     "src/verify.rs": ["pub fn run"],
+    "src/identity.rs": [
+        "pub struct InstrumentId", "pub struct ReferenceCatalog", "pub fn venue_mappings_from_markets",
+    ],
     "src/journal.rs": [
         "pub struct JournalHandle", "pub fn verify_run", "pub fn read_records",
         "pub fn read_observations", "struct Manifest", "struct SegmentFooter", "RunState::Finalized",

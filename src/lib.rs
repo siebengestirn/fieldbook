@@ -9,6 +9,7 @@ pub mod egress;
 pub mod exchange;
 pub mod fixed;
 pub mod histogram;
+pub mod identity;
 pub mod inspect;
 pub mod journal;
 pub mod latency;

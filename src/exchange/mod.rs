@@ -102,6 +102,21 @@ pub trait Exchange: Send + Sync + 'static {
     /// Features the collector core may rely on for this venue.
     fn capabilities(&self) -> ExchangeCapabilities;
 
+    /// Persistent identity assertions for the markets this adapter discovers.
+    ///
+    /// The default is empty so existing adapters compile unchanged. Overrides
+    /// must derive identities from immutable venue wire keys, never from
+    /// titles, slugs or output symbols (ADR-0001).
+    fn identity_assertions(
+        &self,
+        markets: &[MarketInfo],
+    ) -> anyhow::Result<Vec<crate::identity::VenueInstrumentMapping>> {
+        Ok(crate::identity::venue_mappings_from_markets(
+            self.name(),
+            markets,
+        ))
+    }
+
     /// Fetch the current live, non-MVE market set. Implementations cap the
     /// result when `max_markets` is non-zero.
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>>;
