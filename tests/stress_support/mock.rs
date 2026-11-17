@@ -84,6 +84,9 @@ pub struct MockLedger {
     pub queue_high_water: u64,
     /// Configured bound of the per-connection outbound queue.
     pub outbound_capacity: u64,
+    /// Delay applied by the forwarder to each delta frame (slow-downstream
+    /// profile). Zero means the ordinary unbounded-delay path.
+    pub forwarder_delay_ms: u64,
 }
 
 struct MockBook {
@@ -146,6 +149,10 @@ pub struct MockState {
     queue_saturated: AtomicU64,
     /// Per-connection outbound queue bound; the saturation fixture lowers it.
     outbound_capacity: AtomicUsize,
+    /// Per-delta forwarding delay for the slow-downstream profile. Frames are
+    /// admitted to the bounded queue but reach the socket only after the
+    /// delay, so the queue holds accepted-but-waiting work.
+    forwarder_delay_ms: AtomicU64,
     lifecycle_tx: broadcast::Sender<LifecycleMsg>,
     close: Mutex<HashMap<usize, oneshot::Sender<()>>>,
     start_send_ts_ms: i64,
@@ -196,6 +203,7 @@ impl MockState {
             queue_high_water: AtomicU64::new(0),
             queue_saturated: AtomicU64::new(0),
             outbound_capacity: AtomicUsize::new(DEFAULT_OUTBOUND_CAPACITY),
+            forwarder_delay_ms: AtomicU64::new(0),
             lifecycle_tx,
             close: Mutex::new(HashMap::new()),
             start_send_ts_ms: 1_800_000_000_000,
@@ -269,6 +277,14 @@ impl MockState {
             .store(capacity.max(1), Ordering::SeqCst);
     }
 
+    /// Delay each delta frame on its way to the socket. The queue still
+    /// accepts frames under its normal bound; the delay makes admission and
+    /// completion observably distinct (accepted-but-waiting), which the
+    /// slow-downstream profile certifies.
+    pub fn set_forwarder_delay(&self, delay_ms: u64) {
+        self.forwarder_delay_ms.store(delay_ms, Ordering::SeqCst);
+    }
+
     /// Universe index for one market ticker, if it exists.
     #[must_use]
     pub fn market_index(&self, ticker: &str) -> Option<u32> {
@@ -290,6 +306,7 @@ impl MockState {
             queue_saturated: self.queue_saturated.load(Ordering::SeqCst),
             queue_high_water: self.queue_high_water.load(Ordering::SeqCst),
             outbound_capacity: self.outbound_capacity.load(Ordering::SeqCst) as u64,
+            forwarder_delay_ms: self.forwarder_delay_ms.load(Ordering::SeqCst),
         }
     }
 
@@ -731,6 +748,14 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
                         _ => FrameKind::OkAck,
                     };
                     let bytes = text.len();
+                    // Slow-downstream profile: only data frames are delayed.
+                    // Snapshots and acknowledgements must still flow so the
+                    // cell can anchor, making the wait attributable to the
+                    // bounded data path rather than to discovery.
+                    let delay_ms = forward_state.forwarder_delay_ms.load(Ordering::SeqCst);
+                    if kind == FrameKind::OrderbookDelta && delay_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    }
                     if sink.send(message).await.is_ok() {
                         forward_state.complete_send(bytes, kind);
                     }

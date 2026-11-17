@@ -1478,7 +1478,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(6));
+    assert_eq!(document["scenario_version"].as_u64(), Some(9));
     outcome
 }
 
@@ -1551,4 +1551,472 @@ async fn reference_burst_step_manifest_is_reproducible() {
         Some(manifest_out().as_path()),
     )
     .await;
+}
+
+// ---------- M5.5 backpressure workload profiles ----------
+
+/// Read the single manifest body published into a scratch directory. The
+/// index is the commit point; only published bodies are considered evidence.
+fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
+    let index = stress_support::manifest::read_index(&out.join("index.json")).unwrap();
+    let cells = index["cells"].as_object().expect("cells object");
+    assert_eq!(cells.len(), 1, "one published cell per scratch directory");
+    let entry = cells.values().next().expect("one cell");
+    assert_eq!(entry["publication_state"].as_str(), Some("published"));
+    let body = out.join(entry["path"].as_str().expect("path"));
+    serde_json::from_slice(&std::fs::read(body).expect("manifest body")).expect("manifest JSON")
+}
+
+fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
+    assert_eq!(document["scenario_version"], 9);
+    assert_eq!(document["backpressure"]["profile"], profile);
+    let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
+    assert!(!boundary.is_empty(), "boundary must be named");
+    assert!(
+        document["backpressure"]["disposition"].is_string(),
+        "terminal disposition must be explicit"
+    );
+    assert!(
+        document["backpressure"]["admission"].is_string()
+            && document["backpressure"]["drop_reject_policy"].is_string()
+            && document["backpressure"]["recovery"].is_string(),
+        "capacity/admission/timeout/policy/recovery must all be present"
+    );
+    assert!(document["backpressure"]["capacity"].is_u64());
+    assert!(document["backpressure"]["timeout_ms"].is_u64());
+    for state in [
+        "accepted_waiting",
+        "rejected",
+        "dropped",
+        "completed",
+        "uncertain_acknowledgement",
+    ] {
+        assert!(
+            document["backpressure"]["states"][state].is_u64(),
+            "state {state} must be a distinct count"
+        );
+    }
+    assert!(
+        document["backpressure"]["journal"]["state"].is_string()
+            && document["backpressure"]["journal"]["complete"].is_boolean(),
+        "journal evidence must be explicit"
+    );
+    for field in ["verify_valid", "completeness_valid"] {
+        let value = &document["backpressure"]["sbe"][field];
+        assert!(
+            value.is_boolean() || value["value"].is_null(),
+            "SBE evidence for {field} must be a verdict or an explicit unavailable marker"
+        );
+    }
+    assert!(
+        stress_support::manifest::missing_required_fields(
+            document.as_object().expect("manifest object"),
+        )
+        .is_empty()
+            || document["run_status"].as_str() == Some("failed")
+            || document["run_status"].as_str() == Some("incomplete"),
+        "a failed cell may carry missing evidence; a success cell may not"
+    );
+}
+
+/// Boundary 1: the mock outbound queue is bounded hard. Frames that find it
+/// full are explicit drops; admitted frames complete only before the stall.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_outbound_queue_profile_fails_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 31,
+        fail_inject: Some(FailInject::MockQueueSaturate { capacity: 8 }),
+        events: 500,
+        limits: Some((8, 2)),
+        ..headless_cell_config(31, 200)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(
+        !outcome.acceptance.valid,
+        "a saturated mock queue must not certify: {:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "mock_outbound_queue_dropped"),
+        "dropped frames must be classified as drops: {:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "drain_incomplete"),
+        "the stalled boundary must fail the drain barrier: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.as_ref().expect("saturation cell has output");
+    assert!(output.mock.queue_saturated > 0);
+    assert!(
+        output.mock.queue_high_water <= 8,
+        "the configured queue bound must hold"
+    );
+    assert_eq!(output.ledger.enqueue_transmit_shortfall, Some(0));
+    assert!(
+        output.verify_valid && output.completeness_valid,
+        "SBE verification is independent of transport backpressure"
+    );
+
+    let document = read_single_manifest(&out);
+    assert_profile_manifest_shape(&document, "mock_queue_saturation");
+    assert_eq!(document["backpressure"]["disposition"], "dropped");
+    assert_eq!(document["backpressure"]["capacity"], 8);
+    assert_eq!(
+        document["backpressure"]["states"]["dropped"].as_u64(),
+        Some(output.mock.queue_saturated)
+    );
+    assert_eq!(
+        document["backpressure"]["states"]["accepted_waiting"].as_u64(),
+        Some(output.mock.in_flight)
+    );
+    assert_eq!(document["mock_transport"]["forwarder_delay_ms"], 0);
+}
+
+/// Boundary 2: the production writer queue is bounded. Admission waits up to
+/// the configured timeout; a timed-out send is rejected and never enqueued,
+/// while accepted messages drain at shutdown and the ledger still reconciles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writer_queue_profile_preserves_accounting() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 32,
+        writer_queue: Some(128),
+        events: 2_000,
+        hot_pair: true,
+        ..headless_cell_config(32, 2_000)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    let output = outcome.output.as_ref().expect("writer cell has output");
+    assert!(
+        output.writer_queue_high_water >= 128 && output.writer_queue_high_water <= 129,
+        "the writer queue must reach and respect its bound: {}",
+        output.writer_queue_high_water
+    );
+    assert_eq!(
+        outcome.acceptance.valid,
+        output.ledger.reconciled(),
+        "reasons={:?} ledger={:?}",
+        outcome.acceptance.reasons,
+        output.ledger
+    );
+    assert!(outcome.acceptance.valid, "{:?}", outcome.acceptance.reasons);
+    assert!(output.journal_complete, "accepted records must finalize");
+    assert!(output.verify_valid && output.completeness_valid);
+
+    let document = read_single_manifest(&out);
+    assert_profile_manifest_shape(&document, "writer_queue_saturation");
+    assert_eq!(document["backpressure"]["disposition"], "completed");
+    assert_eq!(document["backpressure"]["capacity"], 128);
+    assert_eq!(document["backpressure"]["timeout_ms"], 10_000);
+    assert_eq!(
+        document["backpressure"]["states"]["rejected"].as_u64(),
+        Some(0),
+        "no send may be rejected while the writer drains"
+    );
+    assert_eq!(
+        document["backpressure"]["states"]["dropped"].as_u64(),
+        Some(0),
+        "the writer never drops silently"
+    );
+    assert_eq!(document["backpressure"]["journal"]["complete"], true);
+}
+
+/// Boundary 3: a slow socket consumer. Frames are admitted into the ordinary
+/// bounded queue (no drop, no rejection) but complete after the injected
+/// delay, so the queue holds accepted-but-waiting work at the drain deadline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_downstream_profile_fails_closed_with_accepted_waiting() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 33,
+        fail_inject: Some(FailInject::SlowDownstream { delay_ms: 20 }),
+        events: 300,
+        limits: Some((8, 2)),
+        ..headless_cell_config(33, 200)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(
+        !outcome.acceptance.valid,
+        "a slow downstream must not certify: {:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "slow_downstream_accepted_waiting"),
+        "waiting frames must be classified distinctly: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.as_ref().expect("slow cell has output");
+    assert!(
+        output.mock.in_flight > 0,
+        "frames must still be waiting at the observation point"
+    );
+    assert_eq!(
+        output.mock.queue_saturated, 0,
+        "the slow profile must not silently become a drop profile"
+    );
+    assert!(
+        output.ledger.application_shortfall.unwrap_or(0) > 0,
+        "undelivered frames must show as an application shortfall"
+    );
+
+    let document = read_single_manifest(&out);
+    assert_profile_manifest_shape(&document, "slow_downstream");
+    assert_eq!(
+        document["backpressure"]["disposition"],
+        "accepted_but_waiting"
+    );
+    assert_eq!(document["mock_transport"]["forwarder_delay_ms"], 20);
+    assert!(
+        document["backpressure"]["states"]["accepted_waiting"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(document["backpressure"]["states"]["dropped"], 0);
+    assert_eq!(document["backpressure"]["states"]["rejected"], 0);
+}
+
+/// Boundary 4: raw-frame journal admission. A one-record queue plus an fsync
+/// per record makes enqueue timeouts reject records; the rejection latches the
+/// run failed and stops forwarding before those deltas are applied. ENOSPC is
+/// not injected (see the workload spec limitation).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn journal_storage_pressure_profile_fails_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 34,
+        fail_inject: Some(FailInject::JournalQueuePressure {
+            queue_capacity: 1,
+            enqueue_timeout_ms: 1,
+        }),
+        events: 300,
+        limits: Some((20, 3)),
+        ..headless_cell_config(34, 200)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(
+        !outcome.acceptance.valid,
+        "journal admission rejection must not certify: {:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "journal_pressure_rejected"),
+        "journal rejection must be named, not folded into a generic error: {:?}",
+        outcome.acceptance.reasons
+    );
+    assert_eq!(
+        outcome.acceptance.failure_class.as_deref(),
+        Some("journal_pressure_rejected"),
+        "the boundary, not just the collector symptom, must be the primary class"
+    );
+    // A fatal journal rejection stops the collector before a capture is
+    // produced. That is itself the fail-closed outcome; the manifest must
+    // still carry the rejection state and the collector's terminal error.
+    assert!(
+        outcome.output.is_none(),
+        "a fatal journal rejection cannot certify a capture"
+    );
+
+    let document = read_single_manifest(&out);
+    assert_profile_manifest_shape(&document, "journal_storage_pressure");
+    assert_eq!(document["backpressure"]["disposition"], "rejected");
+    assert_eq!(document["backpressure"]["capacity"], 1);
+    assert_eq!(document["backpressure"]["timeout_ms"], 1);
+    assert_eq!(document["backpressure"]["states"]["rejected"], 1);
+    assert_eq!(document["backpressure"]["states"]["dropped"], 0);
+    assert_eq!(document["backpressure"]["journal"]["state"], "failed");
+    assert_eq!(document["backpressure"]["journal"]["complete"], false);
+    let errors = document["backpressure"]["journal"]["errors"]
+        .as_array()
+        .expect("terminal journal errors");
+    assert!(
+        errors.iter().any(|error| error
+            .as_str()
+            .is_some_and(|text| text.contains("journal queue stayed full"))),
+        "the collector's own rejection detail must survive in the manifest: {errors:?}"
+    );
+}
+
+/// Boundary 5: shutdown before the drain barrier. The frame's fate was not
+/// observable, so it is classified uncertain rather than dropped or completed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_uncertain_acknowledgement_profile_fails_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 35,
+        fail_inject: Some(FailInject::ShutdownBeforeDrain),
+        events: 50,
+        ..headless_cell_config(35, 100)
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(!outcome.acceptance.valid);
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "uncertain_acknowledgement"),
+        "an unobservable outcome must be classified as uncertain: {:?}",
+        outcome.acceptance.reasons
+    );
+    let document = read_single_manifest(&out);
+    assert_profile_manifest_shape(&document, "shutdown_uncertain_acknowledgement");
+    assert_eq!(
+        document["backpressure"]["disposition"],
+        "uncertain_acknowledgement"
+    );
+    assert!(
+        document["backpressure"]["states"]["uncertain_acknowledgement"]
+            .as_u64()
+            .unwrap_or(0)
+            > 0
+    );
+    assert_eq!(document["backpressure"]["states"]["dropped"], 0);
+}
+
+/// Combined M5.5 workload: the full 4,000-instrument hot/quiet profile with a
+/// single writer-queue bound injection. There is no lifecycle, disconnect or
+/// chaos injection; the cell must still certify under the visible backpressure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn backpressure_combined_hot_quiet_writer_queue_4000_certifies() {
+    let directory = tempfile::tempdir().unwrap();
+    let out = directory.path().join("manifests");
+    let config = CellConfig {
+        seed: 36,
+        symbols: 4_000,
+        decoy_fraction_ppm: 20_000,
+        shards: Some(2),
+        replicas: 2,
+        lifecycle_replicas: 1,
+        events: 400,
+        hot_pair: false,
+        uniform_spread: false,
+        hot_fraction_ppm: 50_000,
+        hot_event_share_pct: 80,
+        hot_selection: HotSelection::Weighted,
+        journal: true,
+        limits: Some((45, 10)),
+        writer_queue: Some(128),
+        ..CellConfig::default()
+    };
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
+    assert!(
+        outcome.acceptance.valid,
+        "combined backpressure cell failed: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.as_ref().expect("valid cell has output");
+    assert_eq!(output.hot_tickers, 200);
+    assert_eq!(output.hot_events + output.cold_events, 400);
+    assert!(output.hot_events > 0 && output.cold_events > 0);
+    assert!(
+        output.writer_queue_high_water >= 128 && output.writer_queue_high_water <= 129,
+        "the single injection must remain bounded: {}",
+        output.writer_queue_high_water
+    );
+    assert!(output.ledger.reconciled(), "ledger: {:?}", output.ledger);
+    assert_eq!(output.sbe_deltas, 400);
+    assert!(output.verify_valid && output.completeness_valid && output.journal_complete);
+    let coverage = output.coverage.as_ref().expect("coverage");
+    assert_eq!(coverage.expected, 4_000);
+    assert_eq!(coverage.anchored, 4_000);
+
+    let document = read_single_manifest(&out);
+    assert_profile_manifest_shape(&document, "writer_queue_saturation");
+    assert_eq!(document["backpressure"]["journal"]["complete"], true);
+    assert_eq!(document["backpressure"]["sbe"]["deltas"], 400);
+}
+
+/// Ignored reference generator for the M5.5 boundary profiles. Uses the same
+/// `STRESS_MANIFEST_OUT` publication protocol and v9 cell ids as the other
+/// reference generators; prior evidence is never overwritten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "reference artifact generator; run explicitly"]
+async fn reference_backpressure_profiles_manifest_is_reproducible() {
+    assert!(
+        std::env::var("STRESS_MANIFEST_OUT").is_ok(),
+        "set STRESS_MANIFEST_OUT to produce the artifact"
+    );
+    let out = manifest_out();
+    std::fs::create_dir_all(&out).unwrap();
+    let profiles = [
+        (
+            41u64,
+            "mock_queue_saturation",
+            Some(FailInject::MockQueueSaturate { capacity: 8 }),
+            None,
+        ),
+        (42, "writer_queue_saturation", None, Some(128usize)),
+        (
+            43,
+            "slow_downstream",
+            Some(FailInject::SlowDownstream { delay_ms: 20 }),
+            None,
+        ),
+        (
+            44,
+            "journal_storage_pressure",
+            Some(FailInject::JournalQueuePressure {
+                queue_capacity: 1,
+                enqueue_timeout_ms: 1,
+            }),
+            None,
+        ),
+    ];
+    for (seed, expected, inject, writer_queue) in profiles {
+        let directory = tempfile::tempdir().unwrap();
+        let config = CellConfig {
+            seed,
+            fail_inject: inject,
+            writer_queue,
+            events: 200,
+            limits: Some((20, 2)),
+            ..headless_cell_config(seed, 200)
+        };
+        let outcome =
+            stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
+        let document = build_cell_manifest_for_reference(&out, seed);
+        assert_eq!(document["scenario_version"], 9);
+        assert_eq!(document["backpressure"]["profile"], expected);
+        assert!(
+            !outcome.acceptance.valid || expected == "writer_queue_saturation",
+            "profile {expected} produced an unexpected verdict: {:?}",
+            outcome.acceptance.reasons
+        );
+    }
+}
+
+/// Locate one reference cell by its seed in the published index.
+fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_json::Value {
+    let index = stress_support::manifest::read_index(&out.join("index.json")).unwrap();
+    let cells = index["cells"].as_object().expect("cells object");
+    let entry = cells
+        .values()
+        .find(|entry| entry["seed"] == seed)
+        .unwrap_or_else(|| panic!("no published cell for seed {seed}"));
+    let body = out.join(entry["path"].as_str().expect("path"));
+    serde_json::from_slice(&std::fs::read(body).expect("manifest body")).expect("manifest JSON")
 }
