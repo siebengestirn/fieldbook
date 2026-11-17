@@ -1,5 +1,7 @@
 //! Exchange adapters and their common discovery/session interface.
 
+pub mod coinbase;
+pub use coinbase::CoinbaseExchange;
 pub mod hyperliquid;
 pub use hyperliquid::HyperliquidExchange;
 pub mod kalshi;
@@ -48,6 +50,7 @@ pub fn capabilities_for(kind: ExchangeKind) -> ExchangeCapabilities {
         ExchangeKind::Kalshi => ExchangeCapabilities::new(false),
         ExchangeKind::Polymarket => ExchangeCapabilities::new(false),
         ExchangeKind::Hyperliquid => hyperliquid::capabilities(),
+        ExchangeKind::Coinbase => coinbase::capabilities(),
     }
 }
 
@@ -144,5 +147,7 @@ mod tests {
         // a cross-replica comparable clock is verified.
         assert!(!capabilities_for(ExchangeKind::Kalshi).has_sequence_clock);
         assert!(!capabilities_for(ExchangeKind::Polymarket).has_sequence_clock);
+        // Coinbase H0 has no verified cross-replica sequence clock either.
+        assert!(!capabilities_for(ExchangeKind::Coinbase).has_sequence_clock);
     }
 }

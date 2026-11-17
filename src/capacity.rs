@@ -81,7 +81,9 @@ pub fn plan(settings: &Settings, markets: &[MarketInfo]) -> anyhow::Result<Capac
         crate::config::ExchangeKind::Kalshi => settings.collector.lifecycle_replicas,
         // Polymarket has no separate lifecycle channel; charging phantom
         // sockets would reject valid full-universe runs.
-        crate::config::ExchangeKind::Polymarket | crate::config::ExchangeKind::Hyperliquid => 0,
+        crate::config::ExchangeKind::Polymarket
+        | crate::config::ExchangeKind::Hyperliquid
+        | crate::config::ExchangeKind::Coinbase => 0,
     };
     let total_connections = shards
         .saturating_mul(replicas)
