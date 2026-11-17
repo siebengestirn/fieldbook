@@ -58,17 +58,18 @@ const METRICS_POLL: Duration = Duration::from_millis(25);
 /// deadline would only burn CI time. The hard deadline remains the backstop.
 const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
-/// Scenario schema version. Bumped when workload semantics change so a
-/// corrected generator never silently replaces an earlier manifest. v6 added
-/// explicit phased burst schedules; v7 introduced the M5.3 lifecycle-churn
-/// scenarios and universe-epoch coverage; v8 carried the M5.4 disconnect
-/// fault schedule and recovery evidence; v9 added the M5.5 backpressure
-/// boundary profiles and their manifest evidence; v10 and v11 carried the
-/// M5.6 and M5.7 increments. v13 is the combined integrated schema: it folds
-/// in the lifecycle scenarios and universe-epoch coverage alongside the
-/// burst, disconnect, backpressure and capacity profiles. Earlier
-/// version-certified cell IDs remain immutable historical evidence.
-const SCENARIO_VERSION: u32 = 13;
+/// Scenario schema version. Bumped when workload semantics or the manifest
+/// evidence contract change so a corrected generator never silently replaces
+/// an earlier manifest. v6 added explicit phased burst schedules; v7-v8
+/// carried the M5.3 lifecycle-churn and M5.4 disconnect stress increments;
+/// v9 added the M5.5 backpressure boundary profiles and their manifest
+/// evidence; v10 added the M5.6 stage-timing histograms, provenance and
+/// evidence contract. v13 was the combined integrated schema folding in the
+/// lifecycle scenarios and universe-epoch coverage alongside the burst,
+/// disconnect, backpressure and capacity profiles; v14 is the integrated
+/// schema that additionally carries the M5.6 stage-timing performance block.
+/// Earlier version-certified cell IDs remain immutable historical evidence.
+const SCENARIO_VERSION: u32 = 14;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -3070,19 +3071,18 @@ fn run_id() -> String {
     format!("stress-{millis}-{}", std::process::id())
 }
 
-fn host_json() -> Value {
-    let host = HostInfo::probe();
+fn host_json(host: &HostInfo) -> Value {
     json!({
-        "os": host.os.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("uname -sr failed")),
-        "kernel": host.kernel.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("uname -r failed")),
-        "cpu_model": host.cpu_model.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("cpu model unavailable")),
+        "os": host.os.as_deref().map(Value::from).unwrap_or_else(|| super::manifest::unavailable("uname -sr failed")),
+        "kernel": host.kernel.as_deref().map(Value::from).unwrap_or_else(|| super::manifest::unavailable("uname -r failed")),
+        "cpu_model": host.cpu_model.as_deref().map(Value::from).unwrap_or_else(|| super::manifest::unavailable("cpu model unavailable")),
         "cpu_count": host.cpu_count.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("available_parallelism failed")),
         "ram_mb": host.ram_mb.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("ram unavailable")),
         "fd_limit": host.fd_limit.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("ulimit -n unavailable")),
         "disk_free_bytes": host.disk_free_bytes.map(Value::from).unwrap_or_else(|| super::manifest::unavailable(host.disk_free_reason.clone().unwrap_or_else(|| "df unavailable".to_owned()).as_str())),
         "target_triple": target_triple(),
-        "rustc_version": host.rustc_version.map(Value::from).unwrap_or_else(|| super::manifest::unavailable("rustc unavailable")),
-        "clock_source": host.clock_source,
+        "rustc_version": host.rustc_version.as_deref().map(Value::from).unwrap_or_else(|| super::manifest::unavailable("rustc unavailable")),
+        "clock_source": host.clock_source.clone().map(Value::from).unwrap_or_else(|| super::manifest::unavailable("clock source unavailable")),
         "clock_resolution_ns": host.clock_resolution_ns.map(Value::from).unwrap_or_else(|| {
             super::manifest::unavailable(
                 host.clock_resolution_reason
@@ -3090,6 +3090,37 @@ fn host_json() -> Value {
                     .unwrap_or("clock resolution could not be measured"),
             )
         }),
+    })
+}
+
+/// Stage-timing evidence for a manifest: raw per-boundary histograms plus the
+/// build/environment provenance needed to interpret them. The host clock step
+/// is recorded separately from the measured durations: a nanosecond storage
+/// unit is not a nanosecond accuracy claim.
+fn stage_timing_json(output: Option<&CellOutput>, host: &HostInfo) -> Value {
+    let boundaries = output
+        .and_then(|output| output.report.stage_timing.as_ref())
+        .and_then(|report| serde_json::to_value(report).ok())
+        .unwrap_or_else(|| super::manifest::unavailable("run report did not carry stage timing"));
+    json!({
+        "boundaries": boundaries,
+        "duration_unit": "nanoseconds",
+        "percentile_method": "nearest_rank_from_merged_bucket_counts",
+        "p9999_min_samples": 10_000,
+        "resolution_vs_accuracy": "Duration values are stored in nanoseconds, but Instant resolution and scheduling/instrumentation overhead bound real accuracy; see docs/PERFORMANCE_METHODOLOGY.md",
+        "provenance": {
+            "clock_source": host.clock_source.clone().map(Value::from).unwrap_or_else(|| super::manifest::unavailable("clock source unavailable")),
+            "clock_resolution_ns": host.clock_resolution_ns.map(Value::from).unwrap_or_else(|| {
+                super::manifest::unavailable(
+                    host.clock_resolution_reason
+                        .as_deref()
+                        .unwrap_or("clock resolution could not be measured"),
+                )
+            }),
+            "build_profile": build_profile(),
+            "target_triple": target_triple(),
+            "scenario_version": SCENARIO_VERSION,
+        },
     })
 }
 
@@ -3157,7 +3188,8 @@ pub fn build_cell_manifest(
     config: &CellConfig,
     cell_id: &str,
 ) -> Map<String, Value> {
-    let host = host_json();
+    let host_info = HostInfo::probe();
+    let host = host_json(&host_info);
     let output = outcome.output.as_ref();
     let binary_sha256 = harness_binary_sha256();
 
@@ -3654,6 +3686,7 @@ pub fn build_cell_manifest(
             .map(Value::from)
             .unwrap_or_else(|| super::manifest::unavailable("writer report unavailable")),
         "cpu_seconds": super::manifest::unavailable("cpu_seconds not measured (no libc dependency)"),
+        "stage_timing": stage_timing_json(output, &host_info),
     }));
 
     document
