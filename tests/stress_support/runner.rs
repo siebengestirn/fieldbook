@@ -1893,39 +1893,41 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             .expected_applied
             .saturating_add(phase_plan.expected_applied);
         cumulative_expected = cumulative_expected.saturating_add(phase_plan.expected_applied);
-        cumulative_extra_frames = cumulative_extra_frames
-            .saturating_add(phase_plan.drain_target.saturating_sub(phase_plan.expected_applied));
+        cumulative_extra_frames = cumulative_extra_frames.saturating_add(
+            phase_plan
+                .drain_target
+                .saturating_sub(phase_plan.expected_applied),
+        );
         let target = cumulative_expected.saturating_add(cumulative_extra_frames);
 
-        let completed =
-            if !skip_drain && let (Some(addr), Some(base)) = (metrics_addr, baseline) {
-                let transmitted_now = mock.state().ledger_snapshot().deltas_sent;
-                let min_decoded = baseline
-                    .map(|base| {
-                        base.delta_events_decoded.unwrap_or(0).saturating_add(
-                            transmitted_now.saturating_sub(baseline_transmitted_deltas),
-                        )
-                    })
-                    .unwrap_or(0);
-                let result = await_drain(
-                    addr,
-                    &base,
-                    target,
-                    min_decoded,
-                    || mock.state().in_flight(),
-                    Instant::now() + drain_limit,
-                    last_deltas,
-                )
-                .await;
-                last_deltas = result.last_deltas;
-                if !result.completed && drain_detail.is_none() {
-                    drain_detail = result.detail;
-                    drain_evidence_error = result.evidence_error;
-                }
-                result.completed
-            } else {
-                false
-            };
+        let completed = if !skip_drain && let (Some(addr), Some(base)) = (metrics_addr, baseline) {
+            let transmitted_now = mock.state().ledger_snapshot().deltas_sent;
+            let min_decoded = baseline
+                .map(|base| {
+                    base.delta_events_decoded
+                        .unwrap_or(0)
+                        .saturating_add(transmitted_now.saturating_sub(baseline_transmitted_deltas))
+                })
+                .unwrap_or(0);
+            let result = await_drain(
+                addr,
+                &base,
+                target,
+                min_decoded,
+                || mock.state().in_flight(),
+                Instant::now() + drain_limit,
+                last_deltas,
+            )
+            .await;
+            last_deltas = result.last_deltas;
+            if !result.completed && drain_detail.is_none() {
+                drain_detail = result.detail;
+                drain_evidence_error = result.evidence_error;
+            }
+            result.completed
+        } else {
+            false
+        };
         drain_completed &= completed;
         phase_results.push(PhaseOutcome {
             name: phase.name,
@@ -2838,12 +2840,14 @@ pub fn build_cell_manifest(
     let phase_results = output.map(|o| {
         o.phase_results
             .iter()
-            .map(|phase| json!({
-                "name": phase.name,
-                "published_events": phase.published,
-                "cumulative_expected": phase.cumulative_expected,
-                "drain_completed": phase.drain_completed,
-            }))
+            .map(|phase| {
+                json!({
+                    "name": phase.name,
+                    "published_events": phase.published,
+                    "cumulative_expected": phase.cumulative_expected,
+                    "drain_completed": phase.drain_completed,
+                })
+            })
             .collect::<Vec<_>>()
     });
     document.insert("delivery".to_owned(), json!({

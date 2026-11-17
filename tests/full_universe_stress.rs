@@ -1369,7 +1369,10 @@ async fn assert_burst_cell(
         .phase_results
         .len();
     {
-        let output = outcome.output.as_ref().expect("valid cell must carry output");
+        let output = outcome
+            .output
+            .as_ref()
+            .expect("valid cell must carry output");
 
         // Schedule is explicit, deterministic and fault-free for M5.2.
         assert_eq!(output.schedule.profile, profile.label());
@@ -1385,13 +1388,25 @@ async fn assert_burst_cell(
         // cumulative drain target matches the events published so far.
         let mut running = 0u64;
         for (declared, actual) in output.schedule.phases.iter().zip(&output.phase_results) {
-            assert_eq!(actual.published, declared.events, "phase {} count", actual.name);
+            assert_eq!(
+                actual.published, declared.events,
+                "phase {} count",
+                actual.name
+            );
             running += actual.published as u64;
             assert_eq!(actual.cumulative_expected, running);
-            assert!(actual.drain_completed, "phase {} did not drain", actual.name);
+            assert!(
+                actual.drain_completed,
+                "phase {} did not drain",
+                actual.name
+            );
         }
         assert_eq!(running, 400);
-        let phase_total: usize = output.phase_results.iter().map(|phase| phase.published).sum();
+        let phase_total: usize = output
+            .phase_results
+            .iter()
+            .map(|phase| phase.published)
+            .sum();
         assert_eq!(phase_total, 400);
         assert_eq!(output.events_published, 400);
         assert_eq!(output.hot_events + output.cold_events, 400);
@@ -1418,7 +1433,10 @@ async fn assert_burst_cell(
             "completeness verification failed"
         );
         assert!(output.journal_complete, "journal did not finalize");
-        assert!(output.decoy_absent, "an MVE/closed decoy entered the capture");
+        assert!(
+            output.decoy_absent,
+            "an MVE/closed decoy entered the capture"
+        );
 
         // Queues drained: no mock frame remains in flight and every wire /
         // writer stage reconciles in both directions.
@@ -1494,7 +1512,8 @@ async fn burst_step_cell_reconciles_all_phases() {
 /// 40 / 280 / 80, fully drained between phases.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn burst_impulse_cell_reconciles_all_phases() {
-    let outcome = assert_burst_cell(BurstProfile::Impulse, 37, HotSelection::ExactQuota, None).await;
+    let outcome =
+        assert_burst_cell(BurstProfile::Impulse, 37, HotSelection::ExactQuota, None).await;
     let counts: Vec<usize> = outcome
         .output
         .as_ref()
