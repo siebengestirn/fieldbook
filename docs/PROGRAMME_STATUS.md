@@ -46,7 +46,8 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `432cd32` | PR #67 — Platform M2 persistent identity |
 | `69f87c9` | PR #68 — Platform M3 typed data products |
 | `a9a6b23` | PR #69 — Platform M4 canonical events |
-| `127e926` | PR #70 — P5 JSONL-to-target reference application (current integrated head) |
+| `127e926` | PR #70 — P5 JSONL-to-target reference application |
+| `339b4ad` | PR #71 — final status reconciliation (current integrated head) |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -76,6 +77,21 @@ twice.
 | Platform M3 products (Phase 1) | Yes | Yes | N/A | Product/capability/state-machine tests | No | N/A |
 | Platform M4 canonical events (Phase 1) | Yes | Yes | N/A | Canonical conversion/schema tests | No | N/A |
 | P5 JSONL-to-target | Yes (simulator + SQL contract) | Yes | N/A | 24 application tests | No | No |
+
+## Contract foundation vs live integration
+
+This table is the authoritative distinction between an implemented contract and
+an integrated production path. Do not read a foundation as a production
+capability.
+
+| Capability | Contract foundation | Live integration | Production certification |
+|---|---|---|---|
+| Persistent identity | Implemented (`src/identity.rs`) | Partial/not migrated into collector ownership | No |
+| Typed products | Implemented (`src/products.rs`) | Not consumed by legacy session `apply_subscriptions` | No |
+| Canonical events | Implemented (`src/canonical.rs`) | Not authoritative live pipeline | No |
+| JSONL-to-target | Simulator + SQL contract | No real database driver | No |
+| Hyperliquid | H0-H3 implemented | Synthetic loopback evidence only | No |
+| Additional H0 venues | Reference data only | No live product integration | No |
 
 ## Evidence bundle
 

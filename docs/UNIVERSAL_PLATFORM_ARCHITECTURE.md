@@ -27,6 +27,16 @@ Nothing here should be read as an implemented guarantee unless marked as such.
   coverage-hash, manifest and versioning seams; its evidence is **not live
   certification** and carries no latency/capacity performance claim.
 
+## Current contract foundations (additive)
+
+Identity (`src/identity.rs`), typed products/capabilities (`src/products.rs`),
+canonical events (`src/canonical.rs`) and the JSONL-to-target reference pipeline
+(`src/application.rs`) are implemented as additive contracts. They are **not**
+yet the live collector's authoritative runtime model: collector ownership still
+uses venue-native symbols, the session subscription boundary is still
+string-based, and the canonical store has only an in-memory implementation. See
+[`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md) for the exact distinction.
+
 ## Target layering
 
 | Layer | Responsibility | Current status |
