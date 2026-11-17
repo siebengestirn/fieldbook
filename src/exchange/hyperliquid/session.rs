@@ -1,12 +1,13 @@
-//! Hyperliquid telemetry websocket session (H1).
+//! Hyperliquid selected-book websocket session (H1 telemetry + H2 books).
 //!
-//! Connects to the public websocket and subscribes to the fixture-proven
-//! telemetry channels `allMids` and `fastAssetCtxs`. Frames are decoded by
-//! [`super::telemetry`] and surfaced as raw journal data with typed
-//! `SessionSignal::ProtocolControl` observations. No `Snapshot`, no
-//! `LevelChange`, no book anchor and no heartbeat acknowledgement is ever
-//! produced from telemetry: these feeds are statistics, not depth. `assetCtxs`
-//! is not subscribed in H1 because no golden fixture pins its wire shape.
+//! Connects to the public websocket and reconciles an exact desired set. The
+//! H1 telemetry channels `allMids` and `fastAssetCtxs` remain journaled
+//! `ProtocolControl` observations. H2 additionally subscribes `l2Book` and
+//! `trades` for exactly the configured selected perpetuals: `l2Book` pushes
+//! become normalized [`ExchangeEvent::Snapshot`] events and `trades` stay
+//! telemetry that never anchors or produces a delta. There is no venue
+//! heartbeat and no `LevelChange` on this venue. `assetCtxs` is not subscribed
+//! because no golden fixture pins its wire shape.
 
 use std::collections::BTreeSet;
 
@@ -16,7 +17,10 @@ use serde_json::Value;
 
 use crate::{
     config::{HyperliquidSettings, NetworkSettings},
-    exchange::hyperliquid::telemetry::{TelemetryFrame, decode_telemetry, subscription_request},
+    exchange::hyperliquid::{
+        books::{self, CHANNEL_L2_BOOK, CHANNEL_TRADES, into_snapshot},
+        telemetry::{TelemetryFrame, decode_telemetry, subscription_request},
+    },
     journal::{DecodeOutcome, FrameKind, RawFrame},
     model::SourceId,
     protocol::{HeartbeatMechanism, SessionSignal},
@@ -34,9 +38,9 @@ fn source_ordinal(source: SourceId) -> u32 {
     u32::from(source.shard) * 256 + u32::from(source.replica)
 }
 
-/// Factory for H1 telemetry sessions. Holds only configuration; transport
-/// options are derived per source so egress policy is honoured identically to
-/// the other venues.
+/// Factory for H1 telemetry / H2 selected-book sessions. Holds only
+/// configuration; transport options are derived per source so egress policy is
+/// honoured identically to the other venues.
 pub struct HyperliquidSessionFactory {
     settings: HyperliquidSettings,
     network: NetworkSettings,
@@ -64,12 +68,17 @@ impl SessionFactory for HyperliquidSessionFactory {
     }
 }
 
-/// One telemetry-only Hyperliquid websocket connection.
+/// One Hyperliquid websocket connection: H1 telemetry plus the exact H2
+/// selected-perpetual book universe.
 pub struct HyperliquidSession {
     settings: HyperliquidSettings,
     connect_options: ConnectOptions,
     stream: Option<WsStream>,
-    subscribed: bool,
+    telemetry_subscribed: bool,
+    /// Desired native symbols reported by the supervisor.
+    desired: BTreeSet<String>,
+    /// Native symbols actually subscribed to `l2Book` on this connection.
+    subscribed_books: BTreeSet<String>,
 }
 
 impl HyperliquidSession {
@@ -78,7 +87,9 @@ impl HyperliquidSession {
             settings,
             connect_options,
             stream: None,
-            subscribed: false,
+            telemetry_subscribed: false,
+            desired: BTreeSet::new(),
+            subscribed_books: BTreeSet::new(),
         }
     }
 
@@ -97,8 +108,79 @@ impl HyperliquidSession {
             .map_err(SessionFailure::Reconnect)
     }
 
-    /// Decode one application payload. Telemetry is accepted and journaled
-    /// with its exact bytes but never becomes a market event or a heartbeat.
+    /// The exact book universe: the worker's desired set intersected with the
+    /// configured finite perpetual list. Spot and unlisted perps are excluded.
+    fn selected_books(&self) -> BTreeSet<String> {
+        books::selected_symbols(&self.desired, &self.settings.books.perpetuals)
+    }
+
+    /// Send a subscribe or unsubscribe command for one selected book symbol.
+    /// `trades` is subscribed alongside `l2Book` only when configured, and is
+    /// always telemetry rather than depth.
+    async fn send_book_command(
+        &mut self,
+        method: &str,
+        symbol: &str,
+    ) -> Result<(), SessionFailure> {
+        let (dex, coin) = books::parse_native_symbol(symbol)
+            .with_context(|| {
+                format!("refusing to subscribe a non-perpetual book symbol `{symbol}`")
+            })
+            .map_err(SessionFailure::Fatal)?;
+        let l2 = books::subscription_request(method, CHANNEL_L2_BOOK, &coin, &dex)
+            .map_err(SessionFailure::Fatal)?;
+        self.send_json(l2).await?;
+        if self.settings.books.trades_telemetry {
+            let trades = books::subscription_request(method, CHANNEL_TRADES, &coin, &dex)
+                .map_err(SessionFailure::Fatal)?;
+            self.send_json(trades).await?;
+        }
+        Ok(())
+    }
+
+    /// Decode an `l2Book` push. An unsubscribed coin is ignored rather than
+    /// anchoring a book the worker did not ask for (exact selected coverage).
+    fn decode_l2_book(
+        &self,
+        text: &str,
+        bytes: usize,
+        raw: RawFrame,
+        received_at_us: i64,
+    ) -> Result<SessionFrame, SessionFailure> {
+        let frame = match books::decode_l2_book(text) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return Err(SessionFailure::Decode {
+                    error: error.context("decoding Hyperliquid l2Book frame"),
+                    frame: Some(raw),
+                    received_at_us,
+                });
+            }
+        };
+        let native = books::native_symbol(&frame.dex, &frame.coin);
+        if !self.subscribed_books.contains(&native) {
+            return Ok(SessionFrame::data(
+                Vec::new(),
+                bytes,
+                raw,
+                DecodeOutcome::ignored("unsubscribed_book"),
+                received_at_us,
+            )
+            .with_signal(SessionSignal::ProtocolControl));
+        }
+        let event = into_snapshot(frame, received_at_us);
+        Ok(SessionFrame::data(
+            vec![event],
+            bytes,
+            raw,
+            DecodeOutcome::decoded(1),
+            received_at_us,
+        ))
+    }
+
+    /// Decode one application payload. Only a subscribed `l2Book` push becomes
+    /// a normalized snapshot; telemetry, trades and unknown additive channels
+    /// stay raw `ProtocolControl` observations with zero events.
     fn decode_text(
         &self,
         text: String,
@@ -106,34 +188,64 @@ impl HyperliquidSession {
         received_at_us: i64,
     ) -> Result<SessionFrame, SessionFailure> {
         let bytes = text.len();
-        let decoded = decode_telemetry(&text);
         let raw = RawFrame {
             kind,
-            payload: text.into_bytes(),
+            payload: text.as_bytes().to_vec(),
         };
-        match decoded {
-            Ok(frame) => {
-                let decode = match frame {
-                    TelemetryFrame::Ignored(reason) => DecodeOutcome::ignored(&reason),
-                    TelemetryFrame::AllMids(_) | TelemetryFrame::FastAssetCtxs(_) => {
-                        DecodeOutcome::ignored("hyperliquid_telemetry")
-                    }
-                };
-                // `SessionFrame::data` builds the inbound data observation from
-                // the exact payload; `with_signal` retypes the frame and its
-                // observation to ProtocolControl. Events stay empty, so the
-                // worker emits no book event and creates no coverage anchor.
-                Ok(
-                    SessionFrame::data(Vec::new(), bytes, raw, decode, received_at_us)
-                        .with_signal(SessionSignal::ProtocolControl),
-                )
+        let channel = match books::frame_channel(&text) {
+            Ok(channel) => channel,
+            Err(error) => {
+                return Err(SessionFailure::Decode {
+                    error: error.context("decoding Hyperliquid frame envelope"),
+                    frame: Some(raw),
+                    received_at_us,
+                });
             }
-            Err(error) => Err(SessionFailure::Decode {
-                error: error.context("decoding Hyperliquid telemetry frame"),
-                frame: Some(raw),
-                received_at_us,
-            }),
+        };
+        if channel == CHANNEL_L2_BOOK {
+            return self.decode_l2_book(&text, bytes, raw, received_at_us);
         }
+        if channel == CHANNEL_TRADES {
+            // Trades are parsed and validated exactly, then kept as telemetry.
+            // No snapshot or level change is ever synthesized from a print.
+            return match books::decode_trades(&text) {
+                Ok(_) => Ok(SessionFrame::data(
+                    Vec::new(),
+                    bytes,
+                    raw,
+                    DecodeOutcome::ignored("hyperliquid_trades"),
+                    received_at_us,
+                )
+                .with_signal(SessionSignal::ProtocolControl)),
+                Err(error) => Err(SessionFailure::Decode {
+                    error: error.context("decoding Hyperliquid trades frame"),
+                    frame: Some(raw),
+                    received_at_us,
+                }),
+            };
+        }
+        // H1 telemetry is validated by its own fixture-pinned codec; unknown
+        // additive channels are ignored. Neither can anchor a book.
+        let decoded = match decode_telemetry(&text) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                return Err(SessionFailure::Decode {
+                    error: error.context("decoding Hyperliquid telemetry frame"),
+                    frame: Some(raw),
+                    received_at_us,
+                });
+            }
+        };
+        let decode = match decoded {
+            TelemetryFrame::Ignored(reason) => DecodeOutcome::ignored(&reason),
+            TelemetryFrame::AllMids(_) | TelemetryFrame::FastAssetCtxs(_) => {
+                DecodeOutcome::ignored("hyperliquid_telemetry")
+            }
+        };
+        Ok(
+            SessionFrame::data(Vec::new(), bytes, raw, decode, received_at_us)
+                .with_signal(SessionSignal::ProtocolControl),
+        )
     }
 }
 
@@ -154,26 +266,45 @@ impl MarketDataSession for HyperliquidSession {
                 SessionFailure::Reconnect(error.context("connecting to Hyperliquid websocket"))
             })?;
         self.stream = Some(stream);
-        self.subscribed = false;
+        self.telemetry_subscribed = false;
+        self.subscribed_books.clear();
         Ok(())
     }
 
     async fn apply_subscriptions(
         &mut self,
-        _desired: &BTreeSet<String>,
+        desired: &BTreeSet<String>,
     ) -> Result<(), SessionFailure> {
-        // Telemetry is venue-wide, not symbol-scoped. `desired` contains the
-        // discovered book symbols; none of them is subscribed in H1. Send the
-        // configured channel subscriptions exactly once per connection.
-        if self.subscribed {
-            return Ok(());
+        self.desired = desired.clone();
+        // Telemetry is venue-wide, not symbol-scoped: send those channel
+        // subscriptions exactly once per connection.
+        if !self.telemetry_subscribed {
+            let channels = self.settings.telemetry.subscriptions.clone();
+            for channel in &channels {
+                let request = subscription_request(channel).map_err(SessionFailure::Fatal)?;
+                self.send_json(request).await?;
+            }
+            self.telemetry_subscribed = true;
         }
-        let channels = self.settings.telemetry.subscriptions.clone();
-        for channel in &channels {
-            let request = subscription_request(channel).map_err(SessionFailure::Fatal)?;
-            self.send_json(request).await?;
+        // Books are reconciled to the exact selected set. A symbol that is no
+        // longer desired is unsubscribed; a newly desired one is subscribed.
+        let selected = self.selected_books();
+        let removals: Vec<String> = self
+            .subscribed_books
+            .difference(&selected)
+            .cloned()
+            .collect();
+        let additions: Vec<String> = selected
+            .difference(&self.subscribed_books)
+            .cloned()
+            .collect();
+        for symbol in removals {
+            self.send_book_command("unsubscribe", &symbol).await?;
         }
-        self.subscribed = true;
+        for symbol in additions {
+            self.send_book_command("subscribe", &symbol).await?;
+        }
+        self.subscribed_books = selected;
         Ok(())
     }
 
@@ -221,9 +352,16 @@ impl MarketDataSession for HyperliquidSession {
         Ok(HeartbeatRequest::default())
     }
 
-    async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
-        // H1 has no book feed, so there is no snapshot to request. A recovery
-        // control cannot manufacture an anchor from telemetry.
+    async fn request_snapshot(&mut self, symbols: &[String]) -> Result<(), SessionFailure> {
+        // Hyperliquid has no request/ack snapshot opcode. Cycling the exact
+        // selected subscription makes the venue push a fresh full l2Book; the
+        // worker's RecoveryReady fence ensures only a later frame is promoted.
+        // An empty or non-selected symbol list can never manufacture an anchor.
+        let desired: BTreeSet<String> = symbols.iter().cloned().collect();
+        for symbol in books::selected_symbols(&desired, &self.settings.books.perpetuals) {
+            self.send_book_command("unsubscribe", &symbol).await?;
+            self.send_book_command("subscribe", &symbol).await?;
+        }
         Ok(())
     }
 
@@ -231,7 +369,8 @@ impl MarketDataSession for HyperliquidSession {
         if let Some(stream) = self.stream.take() {
             let _ = ws::close(stream).await;
         }
-        self.subscribed = false;
+        self.telemetry_subscribed = false;
+        self.subscribed_books.clear();
     }
 }
 
@@ -380,6 +519,193 @@ mod tests {
             } => assert_eq!(raw.payload, MALFORMED.as_bytes()),
             other => panic!("expected a decode failure with the raw frame, got {other:?}"),
         }
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    async fn read_commands(ws: &mut ServerWs, count: usize) -> Vec<serde_json::Value> {
+        let mut commands = Vec::with_capacity(count);
+        for _ in 0..count {
+            let text = read_subscribe(ws).await;
+            commands.push(serde_json::from_str(&text).expect("command is JSON"));
+        }
+        commands
+    }
+
+    #[tokio::test]
+    async fn selected_books_reconcile_exactly_and_only_l2book_becomes_a_snapshot() {
+        const BOOK: &str = include_str!("../../../fixtures/hyperliquid/l2_book.json");
+        const TRADES: &str = include_str!("../../../fixtures/hyperliquid/trades.json");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let commands = read_commands(&mut ws, 6).await;
+            assert_eq!(commands[0]["subscription"]["type"], "allMids");
+            assert_eq!(commands[1]["subscription"]["type"], "fastAssetCtxs");
+            let books: Vec<_> = commands[2..]
+                .iter()
+                .map(|command| {
+                    (
+                        command["method"].as_str().unwrap_or("").to_owned(),
+                        command["subscription"]["type"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
+                        command["subscription"]["coin"]
+                            .as_str()
+                            .unwrap_or("")
+                            .to_owned(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                books,
+                vec![
+                    (
+                        "subscribe".to_owned(),
+                        "l2Book".to_owned(),
+                        "BTC".to_owned()
+                    ),
+                    (
+                        "subscribe".to_owned(),
+                        "trades".to_owned(),
+                        "BTC".to_owned()
+                    ),
+                    (
+                        "subscribe".to_owned(),
+                        "l2Book".to_owned(),
+                        "ETH".to_owned()
+                    ),
+                    (
+                        "subscribe".to_owned(),
+                        "trades".to_owned(),
+                        "ETH".to_owned()
+                    ),
+                ]
+            );
+            ws.send(Message::Text(BOOK.to_owned().into()))
+                .await
+                .unwrap();
+            ws.send(Message::Text(TRADES.to_owned().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut settings = HyperliquidSettings {
+            ws_url: format!("ws://{address}"),
+            ..HyperliquidSettings::default()
+        };
+        settings.books.perpetuals = vec!["BTC".to_owned(), "ETH".to_owned()];
+        let mut session = HyperliquidSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        let desired = BTreeSet::from([
+            "hyperliquid:perp::BTC".to_owned(),
+            "hyperliquid:perp::ETH".to_owned(),
+            "hyperliquid:perp::DOGE".to_owned(),
+            "hyperliquid:spot:PURR/USDC".to_owned(),
+        ]);
+        session.apply_subscriptions(&desired).await.unwrap();
+
+        let book = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("book frame timed out")
+            .expect("book frame failed");
+        assert_eq!(book.events.len(), 1, "one l2Book push is one snapshot");
+        match &book.events[0] {
+            crate::model::ExchangeEvent::Snapshot {
+                native_symbol,
+                book,
+                meta,
+            } => {
+                assert_eq!(native_symbol, "hyperliquid:perp::BTC");
+                assert_eq!(book.bids.len(), 2);
+                assert_eq!(book.asks.len(), 1);
+                assert!(meta.received_at_us > 0);
+                assert_eq!(meta.exchange_ts_us, Some(1_700_000_000_000_000));
+                assert!(meta.seq.is_none() && meta.clock.is_none());
+            }
+            other => panic!("Hyperliquid produced a non-snapshot event: {other:?}"),
+        }
+        assert_eq!(book.signal, SessionSignal::MarketData);
+        assert_eq!(book.decode, DecodeOutcome::decoded(1));
+
+        let trades = tokio::time::timeout(Duration::from_secs(5), session.next_frame())
+            .await
+            .expect("trades frame timed out")
+            .expect("trades frame failed");
+        assert!(
+            trades.events.is_empty(),
+            "trades must never produce book events"
+        );
+        assert_eq!(trades.signal, SessionSignal::ProtocolControl);
+        assert_eq!(trades.decode, DecodeOutcome::ignored("hyperliquid_trades"));
+        assert_eq!(
+            trades.raw.as_ref().map(|raw| raw.payload.as_slice()),
+            Some(TRADES.as_bytes())
+        );
+
+        session.close().await;
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reconciliation_removes_stale_books_and_snapshot_requests_resubscribe() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            // Initial: 2 telemetry + BTC l2Book/trades.
+            let initial = read_commands(&mut ws, 4).await;
+            assert_eq!(initial[0]["subscription"]["type"], "allMids");
+            assert_eq!(initial[1]["subscription"]["type"], "fastAssetCtxs");
+            assert_eq!(initial[2]["subscription"]["type"], "l2Book");
+            assert_eq!(initial[3]["subscription"]["type"], "trades");
+            // Reconciliation: ETH added, BTC removed (BTreeSet order: ETH < BTC false;
+            // removals then additions, both singletons here).
+            let changed = read_commands(&mut ws, 4).await;
+            assert_eq!(changed[0]["method"], "unsubscribe");
+            assert_eq!(changed[0]["subscription"]["coin"], "BTC");
+            assert_eq!(changed[1]["method"], "unsubscribe");
+            assert_eq!(changed[1]["subscription"]["type"], "trades");
+            assert_eq!(changed[2]["method"], "subscribe");
+            assert_eq!(changed[2]["subscription"]["coin"], "ETH");
+            assert_eq!(changed[3]["subscription"]["type"], "trades");
+            // request_snapshot is a wait-for-next-l2Book resubscribe of the
+            // selected symbol only; DOGE and spot are ignored.
+            let refresh = read_commands(&mut ws, 4).await;
+            assert_eq!(refresh[0]["method"], "unsubscribe");
+            assert_eq!(refresh[0]["subscription"]["coin"], "ETH");
+            assert_eq!(refresh[2]["method"], "subscribe");
+            assert_eq!(refresh[2]["subscription"]["coin"], "ETH");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut settings = HyperliquidSettings {
+            ws_url: format!("ws://{address}"),
+            ..HyperliquidSettings::default()
+        };
+        settings.books.perpetuals = vec!["BTC".to_owned(), "ETH".to_owned()];
+        let mut session = HyperliquidSession::new(settings, ConnectOptions::default());
+        session.connect().await.unwrap();
+        let btc = BTreeSet::from(["hyperliquid:perp::BTC".to_owned()]);
+        session.apply_subscriptions(&btc).await.unwrap();
+        let eth = BTreeSet::from([
+            "hyperliquid:perp::ETH".to_owned(),
+            "hyperliquid:perp::DOGE".to_owned(),
+            "hyperliquid:spot:PURR/USDC".to_owned(),
+        ]);
+        session.apply_subscriptions(&eth).await.unwrap();
+        session
+            .request_snapshot(&[
+                "hyperliquid:perp::ETH".to_owned(),
+                "hyperliquid:perp::DOGE".to_owned(),
+            ])
+            .await
+            .unwrap();
         session.close().await;
         server.await.unwrap();
     }

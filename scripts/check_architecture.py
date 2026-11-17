@@ -64,11 +64,12 @@ SOURCE_RESPONSIBILITIES = {
     "src/exchange/polymarket/discovery.rs": "Gamma keyset pagination, version-aware identifiers and outcome expansion",
     "src/exchange/polymarket/mod.rs": "Polymarket adapter construction and Exchange implementation",
     "src/exchange/polymarket/session.rs": "public CLOB websocket protocol and subscription/resubscription behavior",
-    "src/exchange/hyperliquid/mod.rs": "Hyperliquid H0 exchange composition and H1 telemetry adapter wiring",
+    "src/exchange/hyperliquid/mod.rs": "Hyperliquid H0 exchange composition, H1 telemetry adapter wiring and H2 selected-book wiring",
     "src/exchange/hyperliquid/codec.rs": "Hyperliquid meta/spotMeta to MarketInfo decoding with exact numeric specs",
     "src/exchange/hyperliquid/discovery.rs": "offline-fixture and REST reference-data discovery with telemetry",
+    "src/exchange/hyperliquid/books.rs": "H2 exact-decimal decoding of l2Book full snapshots into normalized snapshots and trades into telemetry, with exact selected-perpetual identity scoping and no LevelChange",
     "src/exchange/hyperliquid/telemetry.rs": "H1 exact-decimal decoding of allMids/fastAssetCtxs telemetry into typed observations, never book events",
-    "src/exchange/hyperliquid/session.rs": "H1 telemetry-only websocket session: channel subscriptions, exact raw-frame decoding and disabled heartbeat",
+    "src/exchange/hyperliquid/session.rs": "H1 telemetry and H2 selected-book websocket session: exact subscription reconciliation, raw-frame decoding, snapshot-only events, resubscribe snapshot requests and disabled heartbeat",
     "src/util/aligned_sbe_reader.rs": "aligned SBE capture reader",
     "src/util/aligned_sbe_writer.rs": "aligned SBE chunk writer and sink helpers",
     "src/util/build.rs": "build-time SBE DTO/codec generation integration",
@@ -116,12 +117,17 @@ REQUIRED_ANCHORS = {
     "src/exchange/hyperliquid/mod.rs": ["HyperliquidExchange", "capabilities"],
     "src/exchange/hyperliquid/codec.rs": ["parse_reference_document", "parse_spot_meta"],
     "src/exchange/hyperliquid/discovery.rs": ["discover_with_stats"],
+    "src/exchange/hyperliquid/books.rs": [
+        "CHANNEL_L2_BOOK", "CHANNEL_TRADES", "decode_l2_book", "decode_trades",
+        "into_snapshot", "selected_symbols", "subscription_request",
+    ],
     "src/exchange/hyperliquid/telemetry.rs": [
         "decode_telemetry", "CHANNEL_ALL_MIDS", "CHANNEL_FAST_ASSET_CTXS",
         "CHANNEL_ASSET_CTXS_NOT_SUBSCRIBED",
     ],
     "src/exchange/hyperliquid/session.rs": [
         "HyperliquidSessionFactory", "apply_subscriptions", "next_frame", "ProtocolControl",
+        "decode_l2_book", "selected_books", "request_snapshot",
     ],
     "src/verify.rs": ["pub fn run"],
     "src/journal.rs": [

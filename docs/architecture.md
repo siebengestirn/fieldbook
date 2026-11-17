@@ -130,6 +130,12 @@ consumes that value instead of identifying a venue by name. `SessionFactory`
 creates a `MarketDataSession` for one source, and `src/session.rs` supervises
 reconnects, heartbeats, status, and control handling around it. Kalshi and
 Polymarket implement these boundaries in `src/exchange/{kalshi,polymarket}/`.
+Hyperliquid implements them in `src/exchange/hyperliquid/`: H0 reference data,
+H1 telemetry and H2 selected perpetuals behind the same seams, with no branch
+in the state machine. H2 reconciles an exact finite book set, emits only full
+snapshots from `l2Book`, maps `trades` to telemetry, and uses the existing
+`Control::{RequestSnapshot,Recover}` fences for recovery; `has_sequence_clock`
+stays `false`.
 
 Ownership and dependency direction are deliberate:
 
@@ -206,8 +212,9 @@ flowchart LR
 | Composition | `main.rs`, `coordinator.rs`, `cli.rs`, `config.rs` | CLI, settings precedence, adapter construction, lifecycle |
 | Discovery | `exchange/*/discovery.rs`, `capacity.rs`, `catalog.rs` | Venue discovery, eligibility, capacity admission, checkpoint |
 | State | `collector/state.rs`, `orderbook.rs`, `model.rs`, `fixed.rs` | Serialized books, failover, fixed-point values, output model |
-| Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance. Hyperliquid's H1 session is telemetry-only: it subscribes to `allMids`/`fastAssetCtxs` and never produces book events or anchors. |
+| Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance. Hyperliquid's session subscribes to H1 telemetry (`allMids`/`fastAssetCtxs`) plus H2 `l2Book`/`trades` for the exact selected perpetuals; `request_snapshot` resubscribes/wait-for-next-push and `Recover` fences by the existing receive epoch/sequence. |
 | Adapter telemetry | `exchange/hyperliquid/telemetry.rs` | H1 exact-decimal decoding of venue-wide `allMids`/`fastAssetCtxs` statistics into typed `ProtocolControl` observations; unknown additive fields ignored, inexact numbers rejected; no depth, `Snapshot`, `LevelChange` or heartbeat acknowledgement |
+| Adapter books | `exchange/hyperliquid/books.rs` | H2 exact-decimal decoding of full two-sided `l2Book` pushes into `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; `trades` stay `ProtocolControl` telemetry; identity is `hyperliquid:perp:<dex>:<coin>`; no spot books, no `LevelChange`, no full universe |
 | Control plane | `exchange/kalshi/session.rs` (`SessionMode::Lifecycle`), `coordinator.rs`, `collector/state.rs` | Dedicated Kalshi `market_lifecycle_v2` subscription, cross-connection dedup, reconciliation triggers |
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |
 | Output | `writer.rs`, `util/aligned_sbe_*.rs`, `util/dtos.rs` | Ordered SBE writes, chunk framing, supplied-schema DTOs |

@@ -3,9 +3,13 @@
 //! H0 implements reference data: deterministic discovery of perpetual and spot
 //! instruments from `meta`/`spotMeta` documents. H1 adds a telemetry-only
 //! websocket session for `allMids` and `fastAssetCtxs`; those frames are
-//! journaled evidence, never book events or coverage anchors. No ADR-0001
-//! reference-model migration or book/trade feed is implemented here.
+//! journaled evidence, never book events or coverage anchors. H2 adds a
+//! selected-perpetual book feed: `l2Book` full snapshots become
+//! [`crate::model::ExchangeEvent::Snapshot`], `trades` stay telemetry, and no
+//! `LevelChange` is ever produced. No ADR-0001 reference-model migration, spot
+//! book or full-universe subscription is implemented here.
 
+pub mod books;
 pub mod codec;
 pub mod discovery;
 pub mod session;
@@ -25,7 +29,7 @@ use crate::{
 
 pub use codec::parse_reference_document;
 
-/// Hyperliquid exchange adapter (H0 reference data + H1 telemetry).
+/// Hyperliquid exchange adapter (H0 reference data, H1 telemetry, H2 selected books).
 pub struct HyperliquidExchange {
     settings: HyperliquidSettings,
     network: NetworkSettings,
