@@ -221,6 +221,38 @@ the evidence bundle: the SBE captures, raw journals, verification reports, and
 `run-manifest.json`. A green test step alone is not a retained live-evidence
 result, and a failed run still uploads whatever it produced for review.
 
+## Hyperliquid (direct public market data)
+
+Hyperliquid has a dedicated workflow because its runtime subscribes only the
+configured finite set of selected perpetuals, and `fastAssetCtxs` is a
+compressed telemetry channel. `scripts/run-live-evidence.sh` deliberately does
+not cover it; do not claim that it certifies this adapter.
+
+```bash
+HYPERLIQUID_READ_ONLY_ACCESS_CONFIRMED=1 \
+  HL_DURATION_SECS=300 scripts/run-hyperliquid-evidence.sh
+```
+
+The script refuses to run without the explicit read-only attestation, with any
+proxy environment variable set, or with a dirty working tree. It builds the
+release binary, discovers the venue universe and narrows it to the configured
+selected perpetuals, collects from the direct public mainnet websocket, and
+runs `verify`, `completeness`, `coverage` and `journal verify`. It emits
+`HL_LIVE_OK` only when discovery is non-empty, exchange-originated snapshots
+were processed, SBE was written, all four checks pass, expected equals
+acknowledged equals anchored, the journal finalized with records, and the run
+had zero decode errors, protocol errors, reconnects and writer errors. The
+output directory contains the same verification reports and a hash manifest as
+the dual-venue workflow, plus `evidence.json` with the source commit and the
+SHA-256 of every artifact.
+
+`--max-markets 0` (the default) discovers the full venue universe before
+selection. A smaller cap can truncate the configured selected set because the
+venue publishes hundreds of perpetuals; do not treat a reduced expected count
+as a pass of the default configuration. Telemetry prices finer than the SBE
+scale are retained verbatim without a coefficient rather than rounded, and
+snapshot-only `l2Book` books produce no synthetic deltas.
+
 ## Evidence boundary
 
 A verified capture proves that this collector received and recorded the frames

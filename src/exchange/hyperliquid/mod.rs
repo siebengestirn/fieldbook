@@ -79,6 +79,19 @@ impl Exchange for HyperliquidExchange {
         typed_capabilities()
     }
 
+    fn subscribed_universe(&self, markets: Vec<MarketInfo>) -> Vec<MarketInfo> {
+        // H2 subscribes l2Book/trades only for the configured finite set of
+        // perpetuals. Everything else is discovery context, not part of this
+        // run's subscribed universe; counting it as expected would demand
+        // anchors the session deliberately never requests.
+        markets
+            .into_iter()
+            .filter(|market| {
+                books::is_selected_perp(&market.native_symbol, &self.settings.books.perpetuals)
+            })
+            .collect()
+    }
+
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
         discovery::discover(&self.settings, &self.client, max_markets).await
     }
@@ -202,6 +215,24 @@ mod tests {
         assert_eq!(kind(), ExchangeKind::Hyperliquid);
         let settings = Settings::for_exchange(ExchangeKind::Hyperliquid);
         assert_eq!(settings.exchange, ExchangeKind::Hyperliquid);
+    }
+
+    #[test]
+    fn h2_subscribed_universe_is_exactly_the_selected_perpetuals() {
+        let value: serde_json::Value = serde_json::from_str(REFERENCE).expect("fixture JSON");
+        let markets = parse_reference_document(&value, &["".to_owned(), "xyz".to_owned()], true)
+            .expect("valid reference document");
+        let mut settings = HyperliquidSettings::default();
+        settings.books.perpetuals = vec!["BTC".to_owned()];
+        let exchange = HyperliquidExchange::new(settings, NetworkSettings::default()).unwrap();
+        let selected = exchange.subscribed_universe(markets);
+        let names: Vec<&str> = selected
+            .iter()
+            .map(|market| market.native_symbol.as_str())
+            .collect();
+        assert_eq!(names, ["hyperliquid:perp::BTC", "hyperliquid:perp:xyz:BTC"]);
+        assert!(!names.iter().any(|name| name.contains("/spot:")));
+        assert!(!names.iter().any(|name| name.contains("PURR")));
     }
 
     #[test]

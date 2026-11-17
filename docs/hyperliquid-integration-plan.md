@@ -69,10 +69,14 @@ model is implemented; no new external dependency without the existing dependency
   payload as a raw journal data frame with `SessionSignal::ProtocolControl`, zero events, and
   `HeartbeatMechanism::Disabled`. Telemetry advances only the data receive fence; it never
   satisfies a heartbeat, anchors a book, or advances instrument activity.
-- Fixtures: `fixtures/hyperliquid/all_mids{,_malformed}.json` and
-  `fast_asset_ctxs{,_malformed}.json`. The malformed fixtures carry a value with seven
-  fractional digits and are rejected, not rounded. Additive fields (including high-precision
-  funding/open-interest fields) are present in the valid fixtures and ignored.
+- Fixtures: `fixtures/hyperliquid/all_mids{,_malformed}.json`,
+  `fast_asset_ctxs{,_malformed}.json`, and `fast_asset_ctxs_wire.json` (an exact frame
+  retained from a live mainnet capture). The historical "malformed" fixtures carry a value
+  with seven fractional digits: that is real venue precision, so it is retained verbatim
+  with no SBE coefficient rather than rounded or rejected. Non-decimal strings and broken
+  envelopes are rejected. The wire fixture pins the vendor-published base64 + raw DEFLATE
+  JSON-object format. Additive fields (including high-precision funding/open-interest
+  fields) are present in the valid fixtures and ignored.
 - Idle/quiet-feed behaviour is unchanged: liveness remains the worker's
   `connection_idle_timeout_secs` plus frame receipt. No latency, capacity or performance claim
   is made by H1.
