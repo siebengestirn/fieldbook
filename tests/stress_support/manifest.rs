@@ -80,6 +80,7 @@ pub const REQUIRED_FIELDS: &[&str] = &[
     "performance.stage_timing.provenance.clock_source",
     "performance.stage_timing.provenance.clock_resolution_ns",
     "scenario",
+    "capacity",
     "collector",
     "counts",
     "mock_transport",
