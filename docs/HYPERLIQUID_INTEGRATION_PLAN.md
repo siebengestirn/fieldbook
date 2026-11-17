@@ -1,6 +1,6 @@
-# Hyperliquid Integration Plan (design only)
+# Hyperliquid Integration Plan
 
-- **Status:** proposed design; no Rust, schema, config, or CI change is made by this document.
+- **Status:** H0 reference data implemented; H1-H3 remain planned. This document defined the staging contract before implementation.
 - **Branch:** `docs/hyperliquid-integration-plan`.
 - **Scope:** plan the next exchange after the M series on the existing collector seams.
 - **Reading rule:** every statement below is either labelled **Current** (verifiable in this
@@ -179,7 +179,7 @@ their tests; not implemented by this document):
 | Item | Status |
 |---|---|
 | `Exchange`, `SessionFactory`, `MarketDataSession`, `SessionFrame`, typed protocol/journal vocabulary, `ExchangeCapabilities` (one field), normalized `ExchangeEvent`, `NumericSpec`, exact numeric conversion, catalog, recovery policy, completeness/coverage/verify, stress lab | **Current** — in this tree, cited in §1. |
-| Kalshi and Polymarket adapters behind those seams | **Current** — public prediction-market books only; no Hyperliquid code exists. |
+| Kalshi and Polymarket adapters behind those seams | **Current** — public prediction-market books only. |
 | Hyperliquid discovery, settings, adapter module, feeds, identity map, capability extension, fixtures, stress mock, live evidence | **Planned** — H0–H3 above. None implemented; no Hyperliquid capture, coverage, or latency claim is made. |
 | ADR-0001 instrument/listing reference model | **Accepted design, not implemented**; this plan does not depend on it and does not claim it. |
 
