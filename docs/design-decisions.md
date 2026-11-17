@@ -165,6 +165,11 @@ by the offline `inspect`/`verify` commands. Chunk size and padding rules are
 part of the output contract. New observability data must live in a sidecar or a
 separate directory rather than changing the schema.
 
+External catalogues are discovery indexes, not quality certification. Reuse
+venue-client and multi-venue patterns narrowly, keep analytical and backtesting
+systems downstream from the collector, and do not graft order-execution or
+strategy subsystems into this collector merely to increase feature count.
+
 **Implementation.** `sbe_schemas/`, `src/util/build.rs`,
 `src/util/aligned_sbe_writer.rs`, `src/util/aligned_sbe_reader.rs`,
 `src/writer.rs`.

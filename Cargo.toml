@@ -1,3 +1,7 @@
+[workspace]
+members = ["xtask"]
+resolver = "2"
+
 [package]
 name = "engineering-challenge"
 version = "0.3.0"
@@ -71,3 +75,10 @@ print_stdout = "deny"
 # enforcement of a rule that would otherwise depend on reviewer memory.
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+# Rust coding guidelines: safety and documentation are enforced, not advisory.
+undocumented_unsafe_blocks = "deny"
+doc_markdown = "deny"
+manual_assert = "deny"
+missing_panics_doc = "deny"
+items_after_test_module = "deny"
+wildcard_imports = "deny"

@@ -19,7 +19,7 @@ if [[ ! -f "$lock" ]]; then
   echo "no $lock; nothing to update" >&2
   exit 2
 fi
-if ! git diff --quiet -- "$lock"; then
+if ! git diff --quiet HEAD -- "$lock"; then
   echo "$lock already has uncommitted changes; commit or restore first" >&2
   exit 2
 fi
@@ -31,7 +31,8 @@ fi
 
 run_step "cargo update (lockfile refresh)" cargo update
 if (( GATE_FAILED != 0 )); then
-  echo "cargo update failed; leaving the tree as-is for inspection" >&2
+  printf 'cargo update failed; restoring %s\n' "$lock" >&2
+  git restore --source=HEAD --staged --worktree -- "$lock"
   exit 1
 fi
 
@@ -43,7 +44,7 @@ fi
 
 if ! scripts/assurance/polish.sh; then
   printf '\nlockfile refresh failed the gate; restoring %s\n' "$lock"
-  git checkout -- "$lock"
+  git restore --source=HEAD --staged --worktree -- "$lock"
   exit 1
 fi
 

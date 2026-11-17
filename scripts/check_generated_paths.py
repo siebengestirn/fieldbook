@@ -23,8 +23,11 @@ def git_paths(root: Path, args: list[str]) -> list[str]:
     result = subprocess.run(
         ["git", "-C", str(root), *args],
         capture_output=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {detail}")
     return [part for part in result.stdout.decode("utf-8").split("\0") if part]
 
 
@@ -58,7 +61,11 @@ def validate(root: Path) -> list[str]:
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
-    errors = validate(root)
+    try:
+        errors = validate(root)
+    except (OSError, RuntimeError, KeyError, json.JSONDecodeError) as error:
+        print(f"[FAIL] generated-path audit could not run: {error}")
+        return 1
     if errors:
         print("[FAIL] forbidden generated paths detected:")
         for error in errors:

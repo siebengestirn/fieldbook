@@ -8,7 +8,7 @@
 #
 # Without NEW_TOOLCHAIN this is a dry run: it reports the pinned toolchain
 # and exits 0 without touching anything. The CI workflow pins the same
-# toolchain and is kept in lockstep automatically.
+# toolchain and is kept in lockstep. An unmatched CI pin fails the gate.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/gate.sh"
@@ -41,15 +41,19 @@ if [[ "$toolchain" == "$current" ]]; then
   echo "already pinned to $toolchain" >&2
   exit 2
 fi
-if ! git diff --quiet -- "$toolchain_file"; then
-  echo "$toolchain_file has uncommitted changes; commit or restore first" >&2
+if ! [[ "$toolchain" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$ ]]; then
+  echo "invalid toolchain version: $toolchain" >&2
+  exit 2
+fi
+if ! git diff --quiet HEAD -- "$toolchain_file" "$ci_file" Cargo.lock; then
+  echo "upgrade inputs have uncommitted changes; commit or restore first" >&2
   exit 2
 fi
 
 restore_pins() {
-  git checkout -- "$toolchain_file" 2>/dev/null || true
-  git checkout -- "$ci_file" 2>/dev/null || true
-  git checkout -- Cargo.lock 2>/dev/null || true
+  git restore --source=HEAD --staged --worktree -- "$toolchain_file" 2>/dev/null || true
+  git restore --source=HEAD --staged --worktree -- "$ci_file" 2>/dev/null || true
+  git restore --source=HEAD --staged --worktree -- Cargo.lock 2>/dev/null || true
 }
 upgraded=0
 trap 'if (( upgraded == 0 )); then restore_pins; fi' EXIT
@@ -76,11 +80,16 @@ if grep -qE "^[[:space:]]*toolchain: ${current}[[:space:]]*$" "$ci_file"; then
   rm -f "$ci_file.bak"
   printf 'updated the CI pin in %s\n' "$ci_file"
 else
-  printf 'WARNING: no toolchain pin matching %s in %s; update it manually\n' \
-    "$current" "$ci_file" >&2
+  printf 'no toolchain pin matching %s in %s\n' "$current" "$ci_file" >&2
+  exit 1
 fi
 
 run_step "cargo update (lockfile refresh)" cargo update
+if (( GATE_FAILED != 0 )); then
+  echo "cargo update failed; restoring pins" >&2
+  exit 1
+fi
+gate_summary
 
 if ! scripts/assurance/polish.sh; then
   echo "upgrade failed the gate; restoring pins and lockfile" >&2

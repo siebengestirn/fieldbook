@@ -48,6 +48,7 @@ run_optional_step() {
   if command -v "$1" >/dev/null 2>&1; then
     run_step "$name" "$@"
   else
+    GATE_STEPS+=("${name}|SKIP|0")
     printf '== %s: skipped (%s is not installed; install it for full coverage)\n' \
       "$name" "$1"
   fi

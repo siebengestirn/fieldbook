@@ -44,7 +44,7 @@ pub type PrefetchTask = Box<dyn FnOnce() + Send + 'static>;
 /// The [`AlignedSbeReader`] solves the problem of partial messages in SBE flat
 /// files.
 ///
-/// Reads are prefetched in chunks of [`DEFAULT_CHUNK_SIZE`]. A message can
+/// Reads are prefetched in chunks of `DEFAULT_CHUNK_SIZE`. A message can
 /// cross a chunk boundary, so the prefetch task and reader coordinate to finish
 /// the message from the next chunk.
 ///
@@ -71,7 +71,7 @@ pub struct AlignedSbeReader<T: AlignedSbeSchema> {
 
 impl<T: AlignedSbeSchema> AlignedSbeReader<T> {
     /// Create a new [`AlignedSbeReader`] from the file at `path`. Chunk size is
-    /// set as a constant in this file, [`DEFAULT_CHUNK_SIZE`].
+    /// set as a constant in this file, `DEFAULT_CHUNK_SIZE`.
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         Self::open_with_chunk_size(path, DEFAULT_CHUNK_SIZE)
     }
@@ -81,7 +81,7 @@ impl<T: AlignedSbeSchema> AlignedSbeReader<T> {
     ///
     /// Detection validates every candidate boundary by streaming the file; it
     /// never loads the whole capture into memory. The largest candidate is
-    /// [`MAX_AUTO_CHUNK_SIZE`]; a capture written with a larger chunk must be
+    /// `MAX_AUTO_CHUNK_SIZE`; a capture written with a larger chunk must be
     /// opened with an explicit `--read-chunk-size`.
     pub fn open_auto(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();

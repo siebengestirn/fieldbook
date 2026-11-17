@@ -10,8 +10,9 @@
 # only passes sometimes is a failing gate.
 #
 # Tree stability is verified inside every iteration: the gate itself must
-# not mutate tracked files, so a test that rewrites a fixture or a manifest
-# cannot hide behind a passing exit status.
+# not mutate the tree, so a test that rewrites a fixture, stages a change or
+# creates a file cannot hide behind a passing exit status. The fingerprint is
+# taken before phase 0 so setup steps are covered too.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/gate.sh"
@@ -27,27 +28,42 @@ if ! [[ "$loops" =~ ^[0-9]+$ ]] || (( loops < 1 )); then
 fi
 
 tree_fingerprint() {
-  git diff --binary | git hash-object --stdin
+  {
+    git status --porcelain=v1 -z
+    git diff --binary HEAD
+    git diff --cached --binary
+  } | git hash-object --stdin
 }
 
+fingerprint_start="$(tree_fingerprint)"
+
 check_shell_syntax() {
-  local status=0 script
+  local status=0 script count=0
+  local list
+  list="$(mktemp)"
+  find scripts -type f -name '*.sh' -print0 >"$list"
   while IFS= read -r -d '' script; do
+    count=$((count + 1))
     if ! bash -n "$script"; then
       printf 'syntax error: %s\n' "$script" >&2
       status=1
     fi
-  done < <(find scripts -type f -name '*.sh' -print0)
+  done <"$list"
+  rm -f "$list"
+  if (( count == 0 )); then
+    printf 'no shell scripts found\n' >&2
+    return 1
+  fi
   return "$status"
 }
 
 # ---- phase 0: certify the tools that guard the repository ----------------
 run_step "shell syntax (bash -n over scripts/)" check_shell_syntax
-run_optional_step "shellcheck over scripts/" shellcheck \
-  scripts/run-live-evidence.sh scripts/verify-journal-enospc.sh \
-  scripts/assurance/gate.sh scripts/assurance/polish.sh \
-  scripts/assurance/update.sh scripts/assurance/upgrade.sh \
-  scripts/assurance/run_audit.sh
+shell_scripts=()
+while IFS= read -r -d '' script; do
+  shell_scripts+=("$script")
+done < <(find scripts -type f -name '*.sh' -print0)
+run_optional_step "shellcheck over scripts/" shellcheck "${shell_scripts[@]}"
 run_step "python unit tests (scripts)" \
   python3 -m unittest discover -s scripts -p 'test_*.py'
 run_step "python unit tests (scripts/assurance)" \
@@ -58,11 +74,11 @@ run_step "generated-path policy" python3 scripts/check_generated_paths.py
 if cargo audit --version >/dev/null 2>&1; then
   run_step "cargo audit" cargo audit
 else
+  GATE_STEPS+=("cargo audit|SKIP|0")
   printf '== cargo audit: skipped (cargo-audit is not installed; install it for full coverage)\n'
 fi
 
 # ---- phase 1: the CI-parity build-and-verify core, iterated --------------
-fingerprint_start="$(tree_fingerprint)"
 
 iteration=1
 while (( iteration <= loops )); do
@@ -71,23 +87,26 @@ while (( iteration <= loops )); do
     run_step "cargo fmt (apply)" cargo fmt --all
   fi
   run_step "cargo fmt --check" cargo fmt --all -- --check
-  run_step "cargo clippy -D warnings" cargo clippy --all-targets --locked -- -D warnings
-  run_step "cargo test (all targets)" cargo test --all-targets --locked
-  run_step "cargo test (doc)" cargo test --doc --locked
+  run_step "cargo clippy -D warnings" cargo clippy --workspace --all-targets --locked -- -D warnings
+  run_step "cargo test (all targets)" cargo test --workspace --all-targets --locked
+  run_step "cargo test (doc)" cargo test --workspace --doc --locked
   run_step "cargo build (release)" cargo build --release --locked
   if [[ "$(uname -s)" == "Linux" ]]; then
     run_step "journal ENOSPC drill" scripts/verify-journal-enospc.sh
   else
+    GATE_STEPS+=("journal ENOSPC drill|SKIP|0")
     printf '== journal ENOSPC drill: skipped on %s (Linux-only CI step)\n' "$(uname -s)"
   fi
   run_step "english audit (advisory)" scripts/assurance/run_audit.sh
+  run_step "english audit strict" python3 scripts/assurance/english_audit.py --repo . --strict
 
   fingerprint_now="$(tree_fingerprint)"
   if [[ "$fingerprint_now" == "$fingerprint_start" ]]; then
     printf '== tree stability: pass (the gate mutated nothing)\n'
   else
-    printf '== tree stability: FAIL (the gate modified tracked files)\n' >&2
-    git diff --stat >&2
+    printf '== tree stability: FAIL (the gate modified the tree)\n' >&2
+    git status --porcelain=v1 >&2
+    git diff --stat HEAD >&2
     GATE_FAILED=1
   fi
 

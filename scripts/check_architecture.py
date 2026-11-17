@@ -456,7 +456,9 @@ def main() -> int:
         action="store_true",
         help="check architecture traceability (read-only; used by CI)",
     )
-    parser.parse_args()
+    args = parser.parse_args()
+    if not args.check:
+        parser.error("this repository only supports read-only architecture checks; use --check")
 
     errors: list[str] = []
     errors.extend(module_integration_errors())
@@ -465,11 +467,14 @@ def main() -> int:
     documented_sources = set(SOURCE_RESPONSIBILITIES)
     missing_docs = sorted(actual_sources - documented_sources)
     stale_docs = sorted(documented_sources - actual_sources)
+    reachable = collect_module_reachability()
+    unreachable = sorted(actual_sources - reachable)
     if missing_docs:
         errors.append("source files need reviewed responsibility mappings: " + ", ".join(missing_docs))
     if stale_docs:
         errors.append("source responsibility mappings point to removed files: " + ", ".join(stale_docs))
-
+    if unreachable:
+        errors.append("unreachable source files: " + ", ".join(unreachable))
     if not DOC.exists():
         errors.append(f"missing architecture document: {DOC.relative_to(ROOT)}")
         document = ""

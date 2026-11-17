@@ -34,7 +34,7 @@ pub const CHANNEL_TRADES: &str = "trades";
 /// and are therefore excluded from book selection.
 const PERP_PREFIX: &str = "hyperliquid:perp:";
 
-/// One decoded price level (exact coefficient at [`SCALE`]).
+/// One decoded price level (exact coefficient at `SCALE`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BookLevel {
     pub price: i64,

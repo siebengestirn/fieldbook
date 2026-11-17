@@ -1,4 +1,4 @@
-//! Deterministic SplitMix64 pseudo-random number generator.
+//! Deterministic `SplitMix64` pseudo-random number generator.
 //!
 //! The stress harness generates every workload from one explicit, versioned
 //! algorithm so that a run is reproducible from its seed alone — across
@@ -7,7 +7,7 @@
 //! versioned workload contract.
 //!
 //! Reference: Steele, Lea & Flood, "Fast splittable pseudorandom number
-//! generators" (OOPSLA 2014), public-domain SplitMix64 definition:
+//! generators" (OOPSLA 2014), public-domain `SplitMix64` definition:
 //!
 //! ```text
 //! state = state.wrapping_add(0x9E3779B97F4A7C15)
@@ -24,7 +24,7 @@
 /// Algorithm version of the generator. Bump when the algorithm changes.
 pub const PRNG_ALGORITHM_VERSION: u32 = 1;
 
-/// One deterministic counter-based SplitMix64 stream.
+/// One deterministic counter-based `SplitMix64` stream.
 #[derive(Debug, Clone)]
 pub struct SplitMix64 {
     state: u64,

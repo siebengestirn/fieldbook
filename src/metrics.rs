@@ -60,14 +60,14 @@ pub struct CollectorStats {
     /// Core-ingress boundary: normalized events that entered the core.
     #[serde(default)]
     pub core_ingress_events: u64,
-    /// Core-ingress boundary: LevelChange events admitted to the core.
+    /// Core-ingress boundary: `LevelChange` events admitted to the core.
     #[serde(default)]
     pub core_delta_events: u64,
     /// Transport boundary: raw data frames read by the session workers.
     /// Derived from per-source worker status at metrics refresh time.
     #[serde(default)]
     pub transport_frames_received: u64,
-    /// Adapter decode boundary: LevelChange events decoded by adapters.
+    /// Adapter decode boundary: `LevelChange` events decoded by adapters.
     #[serde(default)]
     pub decoded_delta_events: u64,
     /// Terminal dispositions of decoded deltas that are not already covered

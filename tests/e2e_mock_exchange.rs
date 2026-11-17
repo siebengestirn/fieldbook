@@ -183,9 +183,10 @@ async fn wait_for_metric_at_least(address: SocketAddr, metric: &str, expected: f
                 return;
             }
         }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out waiting for {metric} >= {expected} (last value {last:?})");
-        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {metric} >= {expected} (last value {last:?})"
+        );
         sleep(Duration::from_millis(50)).await;
     }
 }
@@ -200,9 +201,10 @@ async fn wait_for_no_resyncing_symbols(address: SocketAddr) {
                 return;
             }
         }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out waiting for recovery to reach Live (last resyncing value {last:?})");
-        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for recovery to reach Live (last resyncing value {last:?})"
+        );
         sleep(Duration::from_millis(50)).await;
     }
 }
@@ -213,9 +215,10 @@ async fn wait_until_for(limit: Duration, what: &str, mut predicate: impl FnMut()
         if predicate() {
             return;
         }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("timed out after {limit:?} waiting for {what}");
-        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out after {limit:?} waiting for {what}"
+        );
         sleep(Duration::from_millis(10)).await;
     }
 }
@@ -2337,9 +2340,10 @@ async fn opt_in_scale_run() {
                 break;
             }
         }
-        if std::time::Instant::now() >= anchor_deadline {
-            panic!("collector anchored {anchored} of {symbols} symbols before the anchor deadline");
-        }
+        assert!(
+            std::time::Instant::now() < anchor_deadline,
+            "collector anchored {anchored} of {symbols} symbols before the anchor deadline"
+        );
         sleep(Duration::from_millis(500)).await;
     }
     println!(
@@ -2366,9 +2370,10 @@ async fn opt_in_scale_run() {
                 break;
             }
         }
-        if std::time::Instant::now() >= settle_deadline {
-            panic!("collector emitted {emitted} of {symbols} deltas before the settle deadline");
-        }
+        assert!(
+            std::time::Instant::now() < settle_deadline,
+            "collector emitted {emitted} of {symbols} deltas before the settle deadline"
+        );
         sleep(Duration::from_millis(500)).await;
     }
     println!("SCALE_PHASE settled symbols={symbols} emitted={emitted}");

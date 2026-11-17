@@ -13,7 +13,7 @@ use crate::util::dtos::challenge_orderbook::{PriceLevelUpdateDomain, SnapshotDom
 ///
 /// Every `LevelChange` admitted to the collector must reach exactly one of
 /// these outcomes. The variants mirror the existing control-flow branches in
-/// [`crate::collector::state::CollectorCore::handle_level_change`]. Expected
+/// `CollectorCore::handle_level_change`. Expected
 /// outcomes (for example a suppressed standby replica) are not failures, but
 /// they must be accounted for explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

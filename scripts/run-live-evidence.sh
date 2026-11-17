@@ -8,7 +8,7 @@
 # (max_shards, max_total_connections, max_estimated_book_memory_mb) is a
 # reviewed, checked-in file rather than ad-hoc CLI flags. Explicit CLI flags
 # below still win over the file.
-set -uo pipefail
+set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

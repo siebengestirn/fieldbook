@@ -63,7 +63,6 @@ intent; it is not a claim that those capabilities are implemented.
 6. [ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md) — journal observation contract.
 7. [Hyperliquid integration](docs/hyperliquid-integration-plan.md) — reference venue design; H0-H3 are synthetic-loopback evidence only.
 8. [JSONL-to-target reference](docs/jsonl-postgres-reference.md) — non-market-data source/target pipeline.
-9. [PR #45 engineering review](docs/reviews/pr45-review-2026-11-16.md) — review findings and verification limits.
 
 Format contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md),
@@ -132,18 +131,30 @@ scripts/assurance/polish.sh            # full gate, once
 scripts/assurance/polish.sh --loop 2   # twice: a gate that only passes sometimes is a failing gate
 ```
 
-The individual steps, identical to CI:
+The task runner is `cargo xtask`. It runs every gate with explicit command
+results and writes a machine-readable report to `target/xtask/last-run.json`.
+CI uses the same commands.
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --all-targets --locked
-cargo test --doc --locked
-cargo build --release --locked
-python3 scripts/check_architecture.py --check
-python3 scripts/check_matrix_tests.py
-python3 -m unittest discover -s scripts -p 'test_*.py'
+cargo xtask fmt       # formatting
+cargo xtask lint      # clippy -D warnings
+cargo xtask test      # all-target and doc tests
+cargo xtask docs      # rustdoc with broken links rejected
+cargo xtask verify    # matrix, architecture and generated-path gates
+cargo xtask e2e       # curated end-to-end suites (no live venues)
+cargo xtask e2e --list-ignored          # opt-in tests and why they are skipped
+cargo xtask e2e --run-ignored <name>    # run one registered opt-in test
+cargo xtask check     # all of the above except the release build
+cargo xtask ci        # the full gate, including release build
+cargo xtask fixtures  # verify checked-in journal fixtures
 ```
+
+Style follows the [Linux kernel Rust guidelines](https://docs.kernel.org/rust/coding-guidelines.html)
+and the [Google Rust style guide](https://google.github.io/styleguide/rustguide.html)
+where they apply to a standalone Cargo project. Formatting is rustfmt; the
+safety, documentation and assertion lints are denied in `Cargo.toml`, and
+rustdoc rejects broken links. Comments explain constraints, trade-offs and
+non-obvious behavior rather than restating code.
 
 Dependency maintenance runs through the same gate: `scripts/assurance/update.sh`
 refreshes the lockfile and keeps it only if the full polish gate passes

@@ -103,9 +103,10 @@ fn wait_for_verification_state(directory: &Path, state: RunState) {
         {
             return;
         }
-        if Instant::now() >= deadline {
-            panic!("run directory never reached {state:?}");
-        }
+        assert!(
+            Instant::now() < deadline,
+            "run directory never reached {state:?}"
+        );
         thread::sleep(Duration::from_millis(10));
     }
 }
