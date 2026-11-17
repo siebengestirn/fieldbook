@@ -1,5 +1,7 @@
 //! Exchange adapters and their common discovery/session interface.
 
+pub mod hyperliquid;
+pub use hyperliquid::HyperliquidExchange;
 pub mod kalshi;
 pub mod polymarket;
 
@@ -45,6 +47,7 @@ pub fn capabilities_for(kind: ExchangeKind) -> ExchangeCapabilities {
         // comparable, so the core uses the clockless recovery path.
         ExchangeKind::Kalshi => ExchangeCapabilities::new(false),
         ExchangeKind::Polymarket => ExchangeCapabilities::new(false),
+        ExchangeKind::Hyperliquid => hyperliquid::capabilities(),
     }
 }
 

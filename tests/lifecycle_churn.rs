@@ -61,7 +61,7 @@ fn churn_config(
         hot_selection: HotSelection::Weighted,
         burst: None,
         journal: true,
-        limits: Some((45, 20)),
+        limits: Some((45, 45)),
         force_capacity_reject: false,
         fail_inject: None,
         lifecycle_scenario: scenario,

@@ -25,7 +25,10 @@ use crate::{
     catalog::Catalog,
     collector::{CollectorCore, CoreConfig},
     config::{CatalogMode, ExchangeKind, JournalSyncMode, Settings},
-    exchange::{DiscoveryResult, DiscoveryStats, Exchange, KalshiExchange, PolymarketExchange},
+    exchange::{
+        DiscoveryResult, DiscoveryStats, Exchange, HyperliquidExchange, KalshiExchange,
+        PolymarketExchange,
+    },
     histogram::{Histogram, StageTimings},
     journal::{JournalConfig, JournalHandle, JournalMeta, SyncMode},
     metrics::{CatalogHealth, MetricsRegistry, ReadinessPolicy, RuntimeStatus, run_server_on},
@@ -128,6 +131,9 @@ pub fn build_exchange(
         ExchangeKind::Polymarket => Ok(Arc::new(PolymarketExchange::new(
             settings.polymarket.clone(),
             settings.network.clone(),
+        )?)),
+        ExchangeKind::Hyperliquid => Ok(Arc::new(HyperliquidExchange::new(
+            settings.hyperliquid.clone(),
         )?)),
     }
 }
