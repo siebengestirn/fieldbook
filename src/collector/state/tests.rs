@@ -1721,6 +1721,98 @@ fn reconciliation_older_round_cannot_resurrect_lifecycle_retired_market() {
     assert!(core.markets.contains_key("A"));
 }
 
+/// L9 (focused contract, not a new behavior): reappearance after retirement is
+/// governed by the discovery round's start time. A round that predates the
+/// terminal notification is vetoed even if the catalog still lists the market;
+/// a later round is authoritative and re-adds it. A duplicated terminal
+/// delivery is suppressed by the lifecycle dedup key on the way through.
+#[test]
+fn retirement_prunes_the_instrument_from_pending_recovery() {
+    let mut core = core();
+    core.apply_discovery(NOW, vec![market("A"), market("B")])
+        .unwrap();
+    connect_sources(&mut core);
+    core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 0));
+    core.handle_event(SOURCE_A, snapshot_event("B", 400_000, 600_000, 1));
+
+    core.request_recovery(SOURCE_A, "A", false);
+    core.request_recovery(SOURCE_A, "B", false);
+    let pending = core.pending_recovery.get(&SOURCE_A).expect("pending batch");
+    assert_eq!(
+        pending.symbols,
+        ["A".to_owned(), "B".to_owned()].into_iter().collect()
+    );
+
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::Settled, Some(NOW + 1_000_000)),
+    );
+    let pending = core
+        .pending_recovery
+        .get(&SOURCE_A)
+        .expect("remaining batch");
+    assert_eq!(pending.symbols, ["B".to_owned()].into_iter().collect());
+
+    // Retiring the last target drops the batch; no snapshot requests remain.
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("B", LifecycleKind::Settled, Some(NOW + 2_000_000)),
+    );
+    assert!(core.pending_recovery.is_empty());
+    assert!(
+        core.drain_controls()
+            .into_iter()
+            .all(|(_, control)| !matches!(control, Control::Recover { .. }))
+    );
+}
+
+#[test]
+fn l9_reappearance_after_retirement_needs_a_later_discovery_round() {
+    let mut core = clocked_core();
+    discover_one(&mut core);
+    core.handle_event(SOURCE_A, snapshot_event("A", 400_000, 600_000, 0));
+
+    let settled = lifecycle_kind("A", LifecycleKind::Settled, Some(NOW + 2_000_000));
+    let outputs = core.handle_event(SOURCE_A, settled.clone());
+    assert_eq!(outputs.len(), 1, "the retirement boundary must be emitted");
+    assert!(!core.markets.contains_key("A"));
+
+    // The same venue notification on the second replica cannot retire twice.
+    let duplicate = core.handle_event(SOURCE_B, settled);
+    assert!(duplicate.is_empty());
+    assert_eq!(core.stats().lifecycle_duplicates, 1);
+    assert_eq!(core.stats().removed_symbols, 1);
+
+    // A REST catalog snapshot taken before the retirement still lists A, but
+    // the lifecycle tombstone vetoes the resurrection.
+    let vetoed = core
+        .apply_discovery_with_epoch(NOW + 3_000_000, vec![market("A")], Some(NOW + 1_000_000))
+        .unwrap();
+    assert!(vetoed.is_empty());
+    assert!(!core.markets.contains_key("A"));
+    assert_eq!(core.stats().lifecycle_discovery_vetoes, 1);
+
+    // A round started after the retirement may re-add the market. The returned
+    // output is the fresh snapshot anchor, not the stale retirement boundary.
+    let readded = core
+        .apply_discovery_with_epoch(NOW + 4_000_000, vec![market("A")], Some(NOW + 3_500_000))
+        .unwrap();
+    assert!(
+        readded.is_empty(),
+        "additions are anchored by a later snapshot"
+    );
+    assert!(core.markets.contains_key("A"));
+    assert_eq!(core.stats().added_symbols, 2);
+
+    // A subsequent nonterminal lifecycle event applies to the reappeared book.
+    let _ = core.handle_event(
+        SOURCE_A,
+        lifecycle_kind("A", LifecycleKind::Activated, Some(NOW + 5_000_000)),
+    );
+    assert_eq!(core.stats().lifecycle_events, 2);
+    assert!(core.markets.contains_key("A"));
+}
+
 #[test]
 fn reconciliation_older_round_keeps_lifecycle_metadata() {
     let mut core = core();
