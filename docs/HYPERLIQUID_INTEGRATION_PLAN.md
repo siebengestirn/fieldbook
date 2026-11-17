@@ -1,12 +1,12 @@
 # Hyperliquid Integration Plan
 
-- **Status:** H0 reference data and H1 telemetry implemented; H2-H3 remain planned. This document defined the staging contract before implementation.
-- **Branch:** `feat/hyperliquid-telemetry` (H1); the plan originated on `docs/hyperliquid-integration-plan`.
+- **Status:** H0 reference data, H1 telemetry and H2 selected books/trades implemented; H3 remains planned. This document defined the staging contract before implementation.
+- **Branch:** `feat/hyperliquid-telemetry` (H1), `feat/hyperliquid-books` (H2); the plan originated on `docs/hyperliquid-integration-plan`.
 - **Scope:** plan the next exchange after the M series on the existing collector seams.
 - **Reading rule:** every statement below is either labelled **Current** (verifiable in this
-  tree) or **Planned** (a decision to implement later). Only H0/H1 are claimed as implemented;
-  no H2/H3 capability, live capture, coverage or latency result is claimed. Where a wire detail
-  is not pinned by a checked-in fixture, it is marked **verify at H0** or explicitly deferred.
+  tree) or **Planned** (a decision to implement later). Only H0/H1/H2 are claimed as implemented;
+  no H3 capability, live capture, latency performance or capacity result is claimed. Where a wire
+  detail is not pinned by a checked-in fixture, it is marked **verify at H0** or explicitly deferred.
 
 The collector today ingests Kalshi and Polymarket prediction-market books only. Hyperliquid
 is a different asset class (perpetual and spot crypto), a different reference-data shape
@@ -49,7 +49,7 @@ the state machine.
 |---|---|---|---|
 | **H0 — reference data** | `HyperliquidSettings` and `ExchangeKind::Hyperliquid` in `config.rs`; `build_exchange`/`capabilities_for` arms; `src/exchange/hyperliquid/{mod,codec,discovery,session}.rs` skeleton; REST `/info` discovery for `meta` (every configured DEX) and `spotMeta`; emit validated `MarketInfo` with DEX/spot-qualified `native_symbol` and full `NumericSpec`; catalog checkpoint round-trip. | `discover` produces a deterministic catalog; every `MarketInfo` passes `MarketInfo::validate()` and `NumericSpec::validate()`; record/outcome counts reconcile with `DiscoveryStats`; golden `meta`/`spotMeta` fixtures include two DEXs sharing a coin name and spot token-index forms; no socket is opened. | No subscriptions, no book events, no live claim, no ADR-0001 reference-model migration, no spot book. |
 | **H1 — low-complexity feeds — IMPLEMENTED** | Subscribe and decode `allMids` and `fastAssetCtxs`; classify as telemetry only; journal typed observation evidence with exact raw bytes; heartbeat policy is `Disabled` (no fixture proves a venue heartbeat, and telemetry must not satisfy one). `assetCtxs` is **not subscribed**: no golden fixture pins its wire shape, so adding it is deferred. | Golden fixtures for mid maps and context arrays with unknown additive fields and malformed numeric values; codec table tests; journal v2 round-trip; **zero** new `Snapshot`/`LevelChange` events and **zero** new coverage anchors proved by `tests/hyperliquid_telemetry.rs`; numeric strings parsed exactly or rejected. | No claim of book coverage, no depth derivation, no market-order/execution view, no synthetic books, no `assetCtxs` subscription. |
-| **H2 — selected books/trades** | 10–20 explicitly selected perpetuals; `l2Book` full snapshots → `ExchangeEvent::Snapshot`; trades parsed but kept out of book deltas; exact subscription reconciliation; recovery via existing `Control::{RequestSnapshot,Recover}` and typed `RecoveryAction`/`RecoveryCause`. | Per-symbol `coverage` certificate for the exact selected set (`expected == acknowledged == anchored`); `completeness` valid (no unanchored deltas); `verify` and `journal verify` pass; one reconnect drill re-anchors before any promoted delta with a new `connection_epoch`; latency percentiles recorded with clock type. | Full universe, spot books, cross-DEX consolidation, order entry, "all coins covered" claims. |
+| **H2 — selected books/trades — IMPLEMENTED** | 10–20 explicitly selected perpetuals (configurable finite list, default 10, main DEX only); `l2Book` full snapshots → `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; trades parsed as telemetry but kept out of book deltas; exact subscription reconciliation; recovery via existing `Control::{RequestSnapshot,Recover}` fences. | Per-symbol `coverage` certificate for the exact selected set (`expected == acknowledged == anchored`); `completeness` valid (no unanchored deltas); `verify` and `journal verify` pass; one reconnect drill re-anchors with a fresh `l2Book` in a new `connection_epoch`; zero `LevelChange`. Received and feed timestamps are kept as separate `EventMeta` fields with a clockless (receive-fence-only) declaration. | Full universe, spot books, cross-DEX consolidation, order entry, "all coins covered" claims, latency/throughput/capacity results. |
 | **H3 — capacity expansion** | Grow the selected universe; shard/replica and `max_symbols_per_socket` sizing; Hyperliquid loopback wire mock in `tests/stress_support`; reuse the stress ledger, coverage hashes, and manifest schema. | Stress manifests per `docs/stress-lab-design.md` §§4–8 with exact coverage, full event accounting, backpressure and recovery sweeps, three repetitions; `docs/operating-envelope.md` updated; live tiers emitted only by a permitted live run. | Production certification, order-entry/execution guarantees, treating synthetic runs as live evidence. |
 
 Cross-stage non-goals: no trading, positions, strategy or pre-trade risk; no change to the SBE
@@ -76,6 +76,35 @@ model is implemented; no new external dependency without the existing dependency
   `connection_idle_timeout_secs` plus frame receipt. No latency, capacity or performance claim
   is made by H1.
 
+### 2.2 H2 implementation notes (Current)
+
+- `HyperliquidSettings.books.perpetuals` is a configurable finite list of perpetual coin
+  names on the main DEX (default ten). H2 subscribes to `l2Book` and `trades` for exactly
+  the intersection of the worker's desired set with that list; spot identities and unlisted
+  perps are never subscribed. `native_symbol = hyperliquid:perp:<dex>:<coin>` is inherited
+  from H0, and a non-empty wire `dex` stays in scope rather than being consolidated.
+- `src/exchange/hyperliquid/books.rs` decodes `l2Book` `levels[0]`/`levels[1]` as complete
+  bid/ask arrays; every accepted push becomes one `ExchangeEvent::Snapshot` whose
+  `EventMeta.received_at_us` is the transport read time and whose `exchange_ts_us` is the
+  advisory feed `time` (milliseconds converted to microseconds). There is no venue sequence,
+  so `seq`/`clock` stay `None` and `has_sequence_clock` stays `false`; the supervisor stamps
+  `(connection_epoch, receive_seq)`. Unknown additive fields are ignored; price/size strings
+  are parsed exactly at SBE scale 6 or the whole frame is rejected. Empty and one-sided books
+  are still snapshots and still anchor.
+- Trades are decoded and validated by the same exact numeric rules, then surfaced as a raw
+  `SessionSignal::ProtocolControl` observation with zero events. No `LevelChange` is ever
+  constructed: the H2 codec has no delta path at all.
+- `apply_subscriptions` reconciles to the exact desired set (subscribe additions,
+  unsubscribe removals); `request_snapshot` maps to unsubscribe/resubscribe of only the
+  selected symbols, i.e. "wait for the next venue-pushed `l2Book`". `Control::Recover` uses
+  the existing `RecoveryReady` receive fence; with `reconnect: true` the fresh book arrives
+  in a later connection epoch and is therefore strictly newer than the acknowledgement.
+- Fixtures under `fixtures/hyperliquid/` cover two-sided, one-sided, empty and deep books,
+  malformed/numeric-boundary cases, unknown additive fields, and trades. `tests/hyperliquid_books.rs`
+  drives the real worker/journal against a loopback mock and proves the H2 evidence gate.
+  All coverage, completeness, verify and recovery evidence is loopback/synthetic; there is no
+  live venue, latency, throughput or capacity claim.
+
 ## 3. Product-level completeness: what each feed can and cannot prove
 
 The existing evidence tools answer different questions and must not be substituted for one
@@ -97,13 +126,14 @@ reconstruction; the journal records what the wire actually said. A mid price is 
   subscribed. Planned rule: context is telemetry; it must not satisfy a heartbeat, an anchor,
   or a stale-probe budget.
 - **`l2Book` is the only in-scope Hyperliquid feed that can anchor a book.** It pushes complete
-  two-sided level arrays (a snapshot feed, not a delta feed — **verify at H0**). Each accepted
-  push maps to `ExchangeEvent::Snapshot`, which seeds/re-anchors continuity. Because there is
-  no delta stream, there is no `LevelChange` from Hyperliquid books; continuity relies on the
-  supervisor's receive fence plus the existing freshness policy, not on gap detection.
+  two-sided level arrays (a snapshot feed, not a delta feed — **verified at H2** against the
+  golden fixtures). Each accepted push maps to `ExchangeEvent::Snapshot`, which seeds/re-anchors
+  continuity. Because there is no delta stream, there is no `LevelChange` from Hyperliquid
+  books; continuity relies on the supervisor's receive fence plus the existing freshness
+  policy, not on gap detection.
 - **Trades are prints, not level changes.** Mapping a trade into `LevelChange` would corrupt
-  book state and SBE output. Planned H2 rule: decode trades as telemetry or behind a separate,
-  explicitly designed trade event; never synthesize book deltas from them.
+  book state and SBE output. H2 rule (implemented): decode trades as telemetry with
+  `SessionSignal::ProtocolControl`; never synthesize book deltas or snapshots from them.
 - A credible claim therefore requires the conjunction: journal evidence of exact wire frames,
   `verify` for reconstruction, `completeness` for anchoring, `coverage` for the exact expected
   set, and recovery evidence for continuity across incidents.
@@ -168,14 +198,16 @@ their tests; not implemented by this document):
 | Lifecycle plane | No separate lifecycle channel | `lifecycle_session_factory()` returns `None`; `capacity.rs` allocates zero lifecycle replicas; new instruments enter via REST discovery. |
 | Subscription scope | Subscribe/unsubscribe by coin within one DEX scope | `apply_subscriptions` reconciles the exact desired set; DEX scoping per source is fixed in H0. |
 
-## 6. Test strategy (H0-H1 implemented; H2-H3 planned)
+## 6. Test strategy (H0-H2 implemented; H3 planned)
 
 - **Protocol fixtures.** `fixtures/hyperliquid/` mirroring the existing layout: `meta` for two
   DEXs with a shared coin name and `spotMeta` with index and pair forms (`reference.json`, H0),
   plus `all_mids`, `all_mids_malformed`, `fast_asset_ctxs`, and `fast_asset_ctxs_malformed` (H1).
   H1 fixtures include unknown additive fields (ignored, not rejected) and inexact numeric values
-  (rejected, not rounded). Golden bytes are retained for journal replay. The H2 `l2_book`,
-  `trades`, subscribe/unsubscribe acknowledgements and malformed-JSON fixtures remain planned.
+  (rejected, not rounded). Golden bytes are retained for journal replay. H2 adds `l2_book`
+  (two-sided/one-sided/empty/deep, malformed numeric, unknown additive fields) and `trades`
+  (valid and malformed) fixtures. Venue subscribe/unsubscribe acknowledgement wire shapes are
+  not pinned by a checked-in fixture, so no acknowledgement-specific behaviour is claimed.
 - **Numeric precision.** Table-driven boundary values for price and size scales, `szDecimals`
   high-precision cases rejected at SBE scale 6, tick-grid and `NumericSpec::validate()` checks,
   and `price_to_sbe`→`price_from_sbe` round-trips. Negative prices remain valid in the model;
@@ -183,14 +215,16 @@ their tests; not implemented by this document):
 - **Latency.** Record `EventMeta.received_at_us` and the feed timestamp as separate fields with
   an explicit clock type; percentiles over fixed one-second bins per `docs/stress-lab-design.md`
   §6. Latency is reported, never gated in CI.
-- **Recovery.** `recovery::decide()` cases for transport/decode/protocol causes with heartbeat
-  disabled; `RecoveryReady` acknowledgements enumerate exact symbols; stale generations and old
-  epochs fence nothing; a reconnect drill proves fresh `l2Book` re-anchoring before promoted
-  deltas.
-- **Journal and replay.** H1: `tests/hyperliquid_telemetry.rs` drives the real worker with a v2
-  journal and proves exact raw bytes, typed `ProtocolControl` observations, and zero book events
-  (hence zero anchors). Planned: `journal verify`/`journal recover` on golden fixtures and the
-  broader replay assertions; v1 readability remains untouched.
+- **Recovery (H2 implemented).** `RecoveryReady` acknowledgements enumerate exact symbols;
+  `request_snapshot` resubscribes only selected books; a reconnect drill proves a fresh `l2Book`
+  re-anchors in a new `connection_epoch` before any promoted non-snapshot data. The existing
+  receive fence and freshness policy remain the ordering authority; no venue clock is used.
+- **Journal and evidence (H2 implemented).** `tests/hyperliquid_books.rs` drives the real worker
+  with a v2 journal against a loopback mock and proves exact raw bytes, `MarketData` book
+  observations, `ProtocolControl` trade observations, zero `LevelChange`, valid `coverage`,
+  `completeness` and `verify`, and `journal verify`. `journal verify`/`journal recover` on
+  checked-in golden journals and broader replay assertions remain planned; v1 readability remains
+  untouched.
 - **Stress-lab reuse.** Add an HL wire mock under `tests/stress_support/` per
   `docs/stress-lab-design.md` §9; reuse the event ledger, three-set coverage hashes, manifest
   schema, and failure classification. HL workload shapes: mid fan-out, fast-context rate,
@@ -204,7 +238,8 @@ their tests; not implemented by this document):
 | Kalshi and Polymarket adapters behind those seams | **Current** — public prediction-market books only. |
 | Hyperliquid H0 discovery, settings, adapter module, identity map, reference fixtures | **Current** — deterministic two-DEX `meta`/`spotMeta` discovery behind the existing seams. |
 | Hyperliquid H1 telemetry session, codec, golden telemetry fixtures, zero-event journal evidence | **Current** — `allMids`/`fastAssetCtxs` only; `assetCtxs` not subscribed; no book events, anchors, heartbeat satisfaction, live capture, coverage or latency claim. |
-| Hyperliquid H2 selected books/trades, H3 capacity expansion, capability breadth extension, stress mock, live evidence | **Planned** — H2–H3 above. None implemented. |
+| Hyperliquid H2 selected books/trades: exact selected universe, `l2Book` snapshots, trade telemetry, reconciliation, recovery drill, golden fixtures, loopback evidence | **Current** — configurable finite perpetual set (default 10, main DEX only); exact receive timestamps and receive fences; zero `LevelChange`; `coverage`/`completeness`/`verify`/`journal verify` pass on loopback. No spot books, full universe, live venue, latency performance or capacity claim. |
+| Hyperliquid H3 capacity expansion, capability breadth extension, stress mock, live evidence | **Planned** — H3 above. None implemented. |
 | ADR-0001 instrument/listing reference model | **Accepted design, not implemented**; this plan does not depend on it and does not claim it. |
 
 ## 8. Follow-on exchange template (Binance / Coinbase / Kraken / OKX — not implemented)
