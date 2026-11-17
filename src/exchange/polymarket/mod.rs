@@ -4,7 +4,7 @@ mod codec;
 mod discovery;
 mod session;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -15,6 +15,10 @@ use crate::{
     config::{ExchangeKind, NetworkSettings, PolymarketSettings},
     exchange::{DiscoveryResult, Exchange, ExchangeCapabilities, capabilities_for},
     model::MarketInfo,
+    products::{
+        BackpressureBehavior, HeartbeatMechanism, OrderingScope, PrecisionModel, ProductKind,
+        RecoveryMode, SourceCapabilities, SubscriptionTopology, UpdateModel,
+    },
     session::SessionFactory,
 };
 
@@ -32,6 +36,10 @@ impl Exchange for PolymarketExchange {
         capabilities_for(ExchangeKind::Polymarket)
     }
 
+    fn source_capabilities(&self) -> SourceCapabilities {
+        typed_capabilities()
+    }
+
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
         Ok(self.fetch_markets(max_markets).await?.markets)
     }
@@ -45,6 +53,26 @@ impl Exchange for PolymarketExchange {
 
     fn session_factory(self: Arc<Self>) -> Arc<dyn SessionFactory> {
         self
+    }
+}
+
+/// Polymarket books are per-instrument outcome-token subscriptions. There is
+/// no cross-replica comparable venue clock, and the heartbeat is application
+/// text rather than a native control frame.
+#[must_use]
+pub fn typed_capabilities() -> SourceCapabilities {
+    SourceCapabilities {
+        products: BTreeSet::from([ProductKind::OrderBookL2]),
+        provides_reference_data: true,
+        update_model: UpdateModel::SnapshotAndDelta,
+        ordering_scope: OrderingScope::ReceiveFence,
+        recovery_mode: RecoveryMode::ResubscribeAndReanchor,
+        heartbeat: HeartbeatMechanism::ApplicationText,
+        subscription_topology: SubscriptionTopology::PerInstrument,
+        telemetry_topology: SubscriptionTopology::NotApplicable,
+        precision: PrecisionModel::FixedPoint,
+        backpressure: BackpressureBehavior::BoundedFailClosed,
+        has_sequence_clock: false,
     }
 }
 

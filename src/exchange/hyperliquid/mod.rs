@@ -15,7 +15,7 @@ pub mod discovery;
 pub mod session;
 pub mod telemetry;
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -24,6 +24,10 @@ use crate::{
     config::{ExchangeKind, HyperliquidSettings, NetworkSettings},
     exchange::{DiscoveryResult, Exchange, ExchangeCapabilities},
     model::MarketInfo,
+    products::{
+        BackpressureBehavior, HeartbeatMechanism, OrderingScope, PrecisionModel, ProductKind,
+        RecoveryMode, SourceCapabilities, SubscriptionTopology, UpdateModel,
+    },
     session::SessionFactory,
 };
 
@@ -71,6 +75,10 @@ impl Exchange for HyperliquidExchange {
         ExchangeCapabilities::new(false)
     }
 
+    fn source_capabilities(&self) -> SourceCapabilities {
+        typed_capabilities()
+    }
+
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
         discovery::discover(&self.settings, &self.client, max_markets).await
     }
@@ -92,6 +100,31 @@ impl Exchange for HyperliquidExchange {
 
 pub fn capabilities() -> ExchangeCapabilities {
     ExchangeCapabilities::new(false)
+}
+
+/// H1 telemetry (`allMids`, `fastAssetCtxs`) is venue-global; H2 books and
+/// trades are per-instrument. `l2Book` supplies full snapshots only, numbers
+/// are decoded exactly, and no venue sequence clock is claimed.
+#[must_use]
+pub fn typed_capabilities() -> SourceCapabilities {
+    SourceCapabilities {
+        products: BTreeSet::from([
+            ProductKind::OrderBookL2,
+            ProductKind::Trades,
+            ProductKind::AssetContext,
+            ProductKind::GlobalStatistics,
+        ]),
+        provides_reference_data: true,
+        update_model: UpdateModel::SnapshotOnly,
+        ordering_scope: OrderingScope::ReceiveFence,
+        recovery_mode: RecoveryMode::ResubscribeAndReanchor,
+        heartbeat: HeartbeatMechanism::Disabled,
+        subscription_topology: SubscriptionTopology::PerInstrument,
+        telemetry_topology: SubscriptionTopology::Global,
+        precision: PrecisionModel::ExactDecimal,
+        backpressure: BackpressureBehavior::BoundedFailClosed,
+        has_sequence_clock: false,
+    }
 }
 
 #[must_use]

@@ -5,7 +5,7 @@ pub(crate) mod codec;
 mod discovery;
 mod session;
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -17,6 +17,10 @@ use crate::{
     config::{ExchangeKind, KalshiSettings, NetworkSettings},
     exchange::{DiscoveryResult, Exchange, ExchangeCapabilities, capabilities_for},
     model::MarketInfo,
+    products::{
+        BackpressureBehavior, HeartbeatMechanism, OrderingScope, PrecisionModel, ProductKind,
+        RecoveryMode, SourceCapabilities, SubscriptionTopology, UpdateModel,
+    },
     session::SessionFactory,
 };
 
@@ -35,6 +39,10 @@ impl Exchange for KalshiExchange {
 
     fn capabilities(&self) -> ExchangeCapabilities {
         capabilities_for(ExchangeKind::Kalshi)
+    }
+
+    fn source_capabilities(&self) -> SourceCapabilities {
+        typed_capabilities()
     }
 
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
@@ -62,6 +70,26 @@ impl Exchange for KalshiExchange {
             auth,
             self.network.clone(),
         )))
+    }
+}
+
+/// Kalshi live books are per-instrument subscriptions; the venue lifecycle is
+/// a separate venue-scoped product. `seq` is per-subscription and the wire
+/// clock is optional, so ordering remains the supervisor's receive fence.
+#[must_use]
+pub fn typed_capabilities() -> SourceCapabilities {
+    SourceCapabilities {
+        products: BTreeSet::from([ProductKind::OrderBookL2, ProductKind::VenueLifecycle]),
+        provides_reference_data: true,
+        update_model: UpdateModel::SnapshotAndDelta,
+        ordering_scope: OrderingScope::ReceiveFence,
+        recovery_mode: RecoveryMode::ResubscribeAndReanchor,
+        heartbeat: HeartbeatMechanism::NativePingPong,
+        subscription_topology: SubscriptionTopology::PerInstrument,
+        telemetry_topology: SubscriptionTopology::NotApplicable,
+        precision: PrecisionModel::FixedPoint,
+        backpressure: BackpressureBehavior::BoundedFailClosed,
+        has_sequence_clock: false,
     }
 }
 
