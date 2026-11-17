@@ -63,6 +63,8 @@ intent; it is not a claim that those capabilities are implemented.
 5. [Design decisions](docs/design-decisions.md) — why the boundaries exist.
 6. [ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md) — accepted journal observation contract; S1a/S1b implemented (journal v2 with typed data/control observations, v1 readers preserved).
 7. [PR #45 engineering review](docs/reviews/PR45-review-2026-11-16.md) and [file-by-file audit](docs/reviews/PR45-file-audit-2026-11-16.csv) — findings, scores, verification limits, and package inventory.
+8. [Event accounting contract](docs/EVENT_ACCOUNTING_CONTRACT.md), [engineering guarantees](docs/ENGINEERING_GUARANTEES.md), and [durability contract](docs/DURABILITY_CONTRACT.md) — implemented versus intended guarantees.
+9. [Universal platform architecture](docs/UNIVERSAL_PLATFORM_ARCHITECTURE.md), [architecture evolution](docs/ARCHITECTURE_EVOLUTION.md), and [state of the art roadmap](docs/STATE_OF_THE_ART_ROADMAP.md) — direction, not implemented capability.
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
