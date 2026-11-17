@@ -51,6 +51,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/capacity.rs": "startup and fixed-topology discovery capacity admission",
     "src/catalog.rs": "versioned discovery checkpoint with integrity envelope, age, and counts",
     "src/persistence.rs": "latest-wins metadata/catalog background writer and lifecycle status",
+    "src/products.rs": "typed data-product and source-capability contracts, deterministic subscription keys, and explicit subscription state transitions",
     "src/collector/mod.rs": "collector core module boundary",
     "src/collector/state.rs": "serialized per-symbol/source state machine, discovery and failover decisions",
     "src/collector/state/tests.rs": "collector state-machine tests for discovery, ordering, capabilities, snapshots, recovery, and readiness",
@@ -175,6 +176,15 @@ REQUIRED_ANCHORS = {
     "src/verify.rs": ["pub fn run"],
     "src/identity.rs": [
         "pub struct InstrumentId", "pub struct ReferenceCatalog", "pub fn venue_mappings_from_markets",
+    ],
+    "src/products.rs": [
+        "pub enum DataProduct", "pub enum ProductKind", "pub struct SubscriptionSet",
+        "pub struct SourceCapabilities", "pub fn from_legacy", "pub enum SubscriptionState",
+        "pub struct SubscriptionLease",
+    ],
+    "src/exchange/mod.rs": [
+        "pub fn capabilities_for", "pub fn source_capabilities_for",
+        "fn source_capabilities(&self) -> SourceCapabilities",
     ],
     "src/journal.rs": [
         "pub struct JournalHandle", "pub fn verify_run", "pub fn read_records",
