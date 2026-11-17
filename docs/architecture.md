@@ -142,6 +142,13 @@ implements H0 reference data in `src/exchange/kraken/`: namespaced `AssetPairs`
 decoding with exact scales and an active-only filter, offline-fixture and
 read-only REST discovery, and a no-network session seam. H1-H3 remain planned;
 no Kraken socket, book, telemetry or live evidence exists.
+Binance implements H0 reference data in `src/exchange/binance/`: deterministic
+discovery of spot and perpetual instruments from an offline `exchangeInfo`-style
+fixture, with explicit `binance:spot:<BASE>/<QUOTE>` /
+`binance:perp:<SYMBOL>` identities, canonical-quote scoping and exact numeric
+steps. Its session is a no-network stub with a disabled heartbeat and no
+lifecycle plane; `has_sequence_clock` is `false`. H1-H3 are planned gates, not
+implemented behavior, and no websocket, live, latency or capacity claim is made.
 
 Ownership and dependency direction are deliberate:
 
@@ -222,6 +229,7 @@ flowchart LR
 | Adapter telemetry | `exchange/hyperliquid/telemetry.rs` | H1 exact-decimal decoding of venue-wide `allMids`/`fastAssetCtxs` statistics into typed `ProtocolControl` observations; unknown additive fields ignored, inexact numbers rejected; no depth, `Snapshot`, `LevelChange` or heartbeat acknowledgement |
 | Adapter books | `exchange/hyperliquid/books.rs` | H2 exact-decimal decoding of full two-sided `l2Book` pushes into `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; `trades` stay `ProtocolControl` telemetry; identity is `hyperliquid:perp:<dex>:<coin>`; no spot books, no `LevelChange`, no full universe |
 | Adapter reference (Kraken) | `exchange/kraken/{mod,codec,discovery,session}.rs` | H0 namespaced `kraken:spot:BASE/QUOTE` identity from `wsname` or normalized legacy base/quote; exact `tick_size`/`lot_decimals` scales with precision rejection; `status == "online"` active filter; offline-fixture and read-only REST `AssetPairs` discovery; H0 no-network session with disabled heartbeat. H1-H3 planned, no live claim. |
+| Adapter reference (Binance H0) | `exchange/binance/{mod,codec,discovery,session}.rs` | Offline `exchangeInfo` decoding into validated `MarketInfo` with explicit `binance:spot:<BASE>/<QUOTE>` / `binance:perp:<SYMBOL>` identity, canonical-quote filter and exact steps from `PRICE_FILTER`/`LOT_SIZE`; precision beyond scale 6 rejected, never rounded; no-network session stub, disabled heartbeat, no lifecycle plane; H1-H3 planned only |
 | Stress lab (test-only) | `tests/stress_support/{mock,hyperliquid,runner,manifest}.rs`, `tests/full_universe_stress.rs`, `tests/hyperliquid_capacity.rs` | Deterministic loopback venues (Kalshi, Hyperliquid) and a shared fail-closed cell runner. The Hyperliquid H3 mock serves `meta` discovery, WS subscribe/unsubscribe, `allMids`, `fastAssetCtxs`, `l2Book`, trades and a scripted reconnect from a seed-derived explicit schedule; three profiles drive mid fan-out, fast-context rate, book refresh cadence and trade bursts. The cell reuses the event ledger, dispositions, three-set coverage hashes and v16 manifest schema. Evidence is synthetic loopback: not live certification and no latency/capacity claim. |
 | Control plane | `exchange/kalshi/session.rs` (`SessionMode::Lifecycle`), `coordinator.rs`, `collector/state.rs` | Dedicated Kalshi `market_lifecycle_v2` subscription, cross-connection dedup, reconciliation triggers |
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |

@@ -82,6 +82,10 @@ SOURCE_RESPONSIBILITIES = {
     "src/exchange/okx/codec.rs": "OKX instruments document to validated MarketInfo decoding: product-type scoping, explicit namespace identity, exact tickSz/lotSz scales, live-state filter and no silent rounding",
     "src/exchange/okx/discovery.rs": "offline OKX instruments reference-data discovery with reconciled page/record telemetry and fail-closed missing fixture",
     "src/exchange/okx/session.rs": "OKX H0 no-network session stub with disabled heartbeat that fails closed instead of opening a socket",
+    "src/exchange/binance/mod.rs": "Binance H0 reference-data exchange composition, clockless capability declaration and no-network session factory wiring",
+    "src/exchange/binance/codec.rs": "Binance exchangeInfo to MarketInfo decoding with explicit spot/perp namespace identity, canonical quote filter and exact price/lot steps",
+    "src/exchange/binance/discovery.rs": "offline-fixture-only Binance reference-data discovery with page/record telemetry, finite caps and no network fallback",
+    "src/exchange/binance/session.rs": "Binance H0 no-network session stub: disabled heartbeat, fatal-on-network operations and no subscriptions or lifecycle plane",
     "src/util/aligned_sbe_reader.rs": "aligned SBE capture reader",
     "src/util/aligned_sbe_writer.rs": "aligned SBE chunk writer and sink helpers",
     "src/util/build.rs": "build-time SBE DTO/codec generation integration",
@@ -156,6 +160,16 @@ REQUIRED_ANCHORS = {
     "src/exchange/okx/discovery.rs": ["discover_with_stats"],
     "src/exchange/okx/session.rs": [
         "OkxSessionFactory", "OkxNoNetworkSession", "fn heartbeat_spec", "Disabled",
+    ],
+    "src/exchange/binance/mod.rs": ["BinanceExchange", "capabilities", "kind"],
+    "src/exchange/binance/codec.rs": [
+        "parse_reference_document", "parse_section", "exact_step", "parse_decimal",
+    ],
+    "src/exchange/binance/discovery.rs": [
+        "discover_with_stats", "reference_fixture", "network discovery is not implemented",
+    ],
+    "src/exchange/binance/session.rs": [
+        "BinanceSessionFactory", "BinanceSession", "heartbeat_spec", "HeartbeatSpec::disabled",
     ],
     "src/verify.rs": ["pub fn run"],
     "src/journal.rs": [

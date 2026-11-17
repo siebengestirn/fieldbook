@@ -26,6 +26,9 @@ pub enum ExchangeKind {
     /// OKX reference-data connector (H0). The connector is a selector, not a
     /// venue registry: product-type scope is part of instrument identity.
     Okx,
+    /// Binance reference-data connector (H0). Offline-only discovery; spot and
+    /// perpetual products are distinguished by canonical quote scoping.
+    Binance,
 }
 
 impl std::fmt::Display for ExchangeKind {
@@ -37,6 +40,7 @@ impl std::fmt::Display for ExchangeKind {
             Self::Coinbase => f.write_str("coinbase"),
             Self::Kraken => f.write_str("kraken"),
             Self::Okx => f.write_str("okx"),
+            Self::Binance => f.write_str("binance"),
         }
     }
 }
@@ -336,6 +340,47 @@ impl Default for OkxSettings {
             inst_types: vec!["SPOT".to_owned(), "SWAP".to_owned()],
             reference_fixture: None,
             rest_url: "https://www.okx.com/api/v5/public/instruments".to_owned(),
+            request_timeout_secs: 20,
+        }
+    }
+}
+
+/// Reference-data settings for Binance (H0).
+///
+/// H0 is offline-only: discovery reads an explicitly configured
+/// `exchangeInfo`-style fixture, never a network endpoint. The two URLs are
+/// documented endpoints reserved for later staged gates; they are not
+/// contacted here. `canonical_quotes` bounds the universe to a single quote
+/// currency per product type, so a symbol quoting anything else is excluded
+/// rather than silently merged under a bare base-asset name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BinanceSettings {
+    /// Public spot `exchangeInfo` endpoint (reserved for a later stage).
+    pub spot_info_url: String,
+    /// Public USDⓈ-M futures `exchangeInfo` endpoint (reserved for a later stage).
+    pub perp_info_url: String,
+    /// Quote assets admitted as canonical. Symbols quoting any other asset are
+    /// excluded from discovery.
+    pub canonical_quotes: Vec<String>,
+    /// Include spot `exchangeInfo` symbols in discovery.
+    pub spot_enabled: bool,
+    /// Include perpetual `exchangeInfo` symbols in discovery.
+    pub perp_enabled: bool,
+    /// Explicit offline reference fixture. Required in H0; no network fallback.
+    pub reference_fixture: Option<PathBuf>,
+    pub request_timeout_secs: u64,
+}
+
+impl Default for BinanceSettings {
+    fn default() -> Self {
+        Self {
+            spot_info_url: "https://api.binance.com/api/v3/exchangeInfo".to_owned(),
+            perp_info_url: "https://fapi.binance.com/fapi/v1/exchangeInfo".to_owned(),
+            canonical_quotes: vec!["USDT".to_owned()],
+            spot_enabled: true,
+            perp_enabled: true,
+            reference_fixture: None,
             request_timeout_secs: 20,
         }
     }
@@ -686,6 +731,7 @@ pub struct FileConfig {
     pub coinbase: CoinbaseSettings,
     pub kraken: KrakenSettings,
     pub okx: OkxSettings,
+    pub binance: BinanceSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -702,6 +748,7 @@ pub struct Settings {
     pub coinbase: CoinbaseSettings,
     pub kraken: KrakenSettings,
     pub okx: OkxSettings,
+    pub binance: BinanceSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -727,6 +774,7 @@ impl Settings {
             coinbase: file.coinbase,
             kraken: file.kraken,
             okx: file.okx,
+            binance: file.binance,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -753,6 +801,7 @@ impl Settings {
             coinbase: file.coinbase,
             kraken: file.kraken,
             okx: file.okx,
+            binance: file.binance,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -773,6 +822,7 @@ impl Settings {
                 "coinbase" => ExchangeKind::Coinbase,
                 "kraken" => ExchangeKind::Kraken,
                 "okx" => ExchangeKind::Okx,
+                "binance" => ExchangeKind::Binance,
                 other => bail!("unknown COLLECTOR_EXCHANGE `{other}`"),
             };
         }
@@ -1393,6 +1443,19 @@ mod tests {
         assert!(settings.environment.ws_url().contains("external-api-ws"));
         assert!(!settings.environment.ws_url().contains("demo"));
         assert!(settings.environment.rest_base().contains("external-api"));
+    }
+
+    #[test]
+    fn binance_settings_defaults_are_offline_and_quote_scoped() {
+        let settings = Settings::for_exchange(ExchangeKind::Binance);
+        assert_eq!(settings.exchange, ExchangeKind::Binance);
+        assert_eq!(settings.exchange.to_string(), "binance");
+        assert!(settings.binance.reference_fixture.is_none());
+        assert_eq!(settings.binance.canonical_quotes, vec!["USDT".to_owned()]);
+        assert!(settings.binance.spot_enabled && settings.binance.perp_enabled);
+        let parsed: BinanceSettings = toml::from_str("canonical_quotes = [\"USDT\"]").unwrap();
+        assert!(parsed.spot_info_url.starts_with("https://"));
+        assert!(parsed.perp_info_url.starts_with("https://"));
     }
 
     #[test]

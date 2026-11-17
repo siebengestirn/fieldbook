@@ -1,6 +1,8 @@
 //! Exchange adapters and their common discovery/session interface.
 
+pub mod binance;
 pub mod coinbase;
+pub use binance::BinanceExchange;
 pub use coinbase::CoinbaseExchange;
 pub mod hyperliquid;
 pub use hyperliquid::HyperliquidExchange;
@@ -60,6 +62,7 @@ pub fn capabilities_for(kind: ExchangeKind) -> ExchangeCapabilities {
         // OKX H0 publishes no cross-replica comparable sequence clock; H1-H3
         // keep the receive-fence-only ordering authority.
         ExchangeKind::Okx => okx::capabilities(),
+        ExchangeKind::Binance => binance::capabilities(),
     }
 }
 
@@ -159,6 +162,8 @@ mod tests {
         assert!(!capabilities_for(ExchangeKind::Hyperliquid).has_sequence_clock);
         // Coinbase H0 has no verified cross-replica sequence clock either.
         assert!(!capabilities_for(ExchangeKind::Coinbase).has_sequence_clock);
+        assert!(!capabilities_for(ExchangeKind::Kraken).has_sequence_clock);
         assert!(!capabilities_for(ExchangeKind::Okx).has_sequence_clock);
+        assert!(!capabilities_for(ExchangeKind::Binance).has_sequence_clock);
     }
 }

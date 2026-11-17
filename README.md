@@ -69,6 +69,7 @@ intent; it is not a claim that those capabilities are implemented.
 11. [Coinbase Exchange integration plan](docs/COINBASE_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same seams; H0 offline reference data implemented, H1-H3 planned (no websocket, book, telemetry, live evidence or performance claim).
 12. [Kraken integration plan](docs/KRAKEN_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same gates; H0 reference data implemented (offline fixtures only, no websocket/book/telemetry/live evidence), H1-H3 planned.
 13. [OKX integration plan](docs/OKX_INTEGRATION_PLAN.md) — staged, evidence-gated design for OKX; H0 reference data implemented (offline, no socket), H1-H3 planned. No live or performance claim.
+14. [Binance integration plan](docs/BINANCE_INTEGRATION_PLAN.md) — staged, evidence-gated design; H0 reference data implemented (offline fixture, exact numeric specs, no-network session stub), H1-H3 planned; no websocket, live, latency or capacity claim.
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),

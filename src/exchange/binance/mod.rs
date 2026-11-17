@@ -1,0 +1,157 @@
+//! Binance adapter.
+//!
+//! H0 implements reference data only: deterministic discovery of spot and
+//! perpetual instruments from an offline `exchangeInfo`-style fixture, with
+//! explicit `binance:spot:BASE/QUOTE` / `binance:perp:SYMBOL` identities and
+//! exact numeric specs. No socket is opened, no book or telemetry event is
+//! produced, and no live or performance claim is made. H1-H3 are planned gates,
+//! not implemented behavior; see `docs/BINANCE_INTEGRATION_PLAN.md`.
+
+pub mod codec;
+pub mod discovery;
+pub mod session;
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use crate::{
+    config::{BinanceSettings, ExchangeKind, NetworkSettings},
+    exchange::{DiscoveryResult, Exchange, ExchangeCapabilities},
+    model::MarketInfo,
+    session::SessionFactory,
+};
+
+pub use codec::parse_reference_document;
+
+/// Binance exchange adapter (H0 reference data).
+pub struct BinanceExchange {
+    settings: BinanceSettings,
+    // Retained to match the composition-root signature of the other adapters;
+    // unused because H0 opens no transport of any kind.
+    _network: NetworkSettings,
+}
+
+impl BinanceExchange {
+    pub fn new(settings: BinanceSettings, network: NetworkSettings) -> anyhow::Result<Self> {
+        Ok(Self {
+            settings,
+            _network: network,
+        })
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> &BinanceSettings {
+        &self.settings
+    }
+}
+
+#[async_trait]
+impl Exchange for BinanceExchange {
+    fn name(&self) -> &'static str {
+        "binance"
+    }
+
+    fn environment(&self) -> &'static str {
+        "public"
+    }
+
+    fn capabilities(&self) -> ExchangeCapabilities {
+        ExchangeCapabilities::new(false)
+    }
+
+    async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
+        discovery::discover(&self.settings, max_markets).await
+    }
+
+    async fn discover_markets_with_stats(
+        &self,
+        max_markets: usize,
+    ) -> anyhow::Result<DiscoveryResult> {
+        discovery::discover_with_stats(&self.settings, max_markets).await
+    }
+
+    fn session_factory(self: Arc<Self>) -> Arc<dyn SessionFactory> {
+        Arc::new(session::BinanceSessionFactory::new(
+            self.settings.clone(),
+            NetworkSettings::default(),
+        ))
+    }
+}
+
+pub fn capabilities() -> ExchangeCapabilities {
+    ExchangeCapabilities::new(false)
+}
+
+#[must_use]
+pub const fn kind() -> ExchangeKind {
+    ExchangeKind::Binance
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{capacity, config::Settings, exchange::capabilities_for};
+
+    const REFERENCE: &str = include_str!("../../../fixtures/binance/reference.json");
+
+    fn fixture_settings() -> BinanceSettings {
+        BinanceSettings {
+            reference_fixture: Some(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("fixtures/binance/reference.json"),
+            ),
+            ..BinanceSettings::default()
+        }
+    }
+
+    #[test]
+    fn h0_identity_uniqueness_across_spot_and_perp() {
+        let value: serde_json::Value = serde_json::from_str(REFERENCE).expect("fixture JSON");
+        let markets = parse_reference_document(&value, &["USDT".to_owned()]).unwrap();
+        assert_eq!(markets.len(), 4);
+        let mut identities = std::collections::BTreeSet::new();
+        for market in &markets {
+            assert!(identities.insert(market.native_symbol.as_str()));
+            assert_eq!(market.symbol, market.native_symbol);
+        }
+        // A shared base asset is allowed but must not collapse two products.
+        assert!(identities.contains("binance:spot:BTC/USDT"));
+        assert!(identities.contains("binance:perp:BTCUSDT"));
+        assert!(!identities.contains("binance:spot:BTCUSDT"));
+    }
+
+    #[test]
+    fn h0_capability_is_clockless_and_lifecycle_plane_absent() {
+        let exchange =
+            BinanceExchange::new(BinanceSettings::default(), NetworkSettings::default()).unwrap();
+        assert_eq!(exchange.name(), "binance");
+        assert_eq!(exchange.environment(), "public");
+        assert!(!exchange.capabilities().has_sequence_clock);
+        assert_eq!(capabilities(), exchange.capabilities());
+        assert!(!capabilities_for(kind()).has_sequence_clock);
+        assert_eq!(kind(), ExchangeKind::Binance);
+
+        let settings = Settings::for_exchange(ExchangeKind::Binance);
+        assert_eq!(settings.exchange, ExchangeKind::Binance);
+        let exchange: Arc<dyn Exchange> = Arc::new(
+            BinanceExchange::new(settings.binance.clone(), settings.network.clone()).unwrap(),
+        );
+        let lifecycle: Option<Arc<dyn SessionFactory>> =
+            Exchange::lifecycle_session_factory(Arc::clone(&exchange));
+        assert!(lifecycle.is_none());
+        // No phantom lifecycle socket is charged in capacity planning.
+        let plan = capacity::plan(&settings, &[]).expect("capacity plan");
+        assert_eq!(plan.lifecycle_connections, 0);
+    }
+
+    #[tokio::test]
+    async fn h0_reference_fixture_discovers_offline_universe() {
+        let exchange =
+            BinanceExchange::new(fixture_settings(), NetworkSettings::default()).unwrap();
+        let result = exchange.discover_markets_with_stats(0).await.unwrap();
+        assert_eq!(result.markets.len(), 4);
+        assert_eq!(result.stats.selected_markets, 4);
+        assert_eq!(result.stats.pages, 2);
+    }
+}
