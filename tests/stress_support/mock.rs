@@ -22,7 +22,7 @@
 //! built first and exercised by its own tests before the stress suite uses it.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     net::SocketAddr,
     sync::{
         Arc, Mutex,
@@ -44,7 +44,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use engineering_challenge::Side;
 
 use super::rng::SplitMix64;
-use super::universe::SyntheticUniverse;
+use super::universe::{SyntheticMarket, SyntheticUniverse};
 
 /// Default bounded outbound queue depth per websocket connection. A full
 /// queue is recorded as saturation; nothing is dropped without a counter.
@@ -75,6 +75,9 @@ pub struct MockLedger {
     pub in_flight: u64,
     pub snapshots_sent: u64,
     pub deltas_sent: u64,
+    /// Lifecycle frames whose websocket send completed. One venue notification
+    /// is written once per subscribed lifecycle replica.
+    pub lifecycle_sent: u64,
     pub acks_sent: u64,
     /// Frames the harness deliberately dropped before the wire (injection).
     pub injected_pre_wire_drops: u64,
@@ -89,6 +92,7 @@ pub struct MockLedger {
     pub forwarder_delay_ms: u64,
 }
 
+#[derive(Debug)]
 struct MockBook {
     /// price level (micros) -> quantity (micros)
     bids: BTreeMap<i64, i64>,
@@ -154,6 +158,12 @@ pub struct MockState {
     /// delay, so the queue holds accepted-but-waiting work.
     forwarder_delay_ms: AtomicU64,
     lifecycle_tx: broadcast::Sender<LifecycleMsg>,
+    /// Lifecycle-driven changes to the authoritative REST catalog. The venue
+    /// catalog is the source of truth for discovery: a `settled` notification
+    /// removes a record, a `created` notification adds one. Keeping the overlay
+    /// here means a later reconciliation cannot resurrect a retired market or
+    /// forget an added one.
+    catalog_overlay: Mutex<CatalogOverlay>,
     close: Mutex<HashMap<usize, oneshot::Sender<()>>>,
     /// Fault knob: when set, the WS listener drops new TCP connections before
     /// the handshake, so the collector's workers cannot re-anchor. Used by the
@@ -171,6 +181,13 @@ pub struct MockState {
 struct LifecycleMsg {
     ts_ms: i64,
     msg: Value,
+}
+
+#[derive(Debug, Default)]
+struct CatalogOverlay {
+    retired: BTreeSet<String>,
+    added: Vec<Value>,
+    added_books: BTreeMap<String, MockBook>,
 }
 
 impl MockState {
@@ -214,6 +231,7 @@ impl MockState {
             outbound_capacity: AtomicUsize::new(DEFAULT_OUTBOUND_CAPACITY),
             forwarder_delay_ms: AtomicU64::new(0),
             lifecycle_tx,
+            catalog_overlay: Mutex::new(CatalogOverlay::default()),
             close: Mutex::new(HashMap::new()),
             reject_connections: std::sync::atomic::AtomicBool::new(false),
             clock_counter: AtomicU64::new(1),
@@ -244,10 +262,6 @@ impl MockState {
         self.book_subscribed_count.load(Ordering::SeqCst)
     }
 
-    #[expect(
-        dead_code,
-        reason = "read by the subscription-topology cells, which this increment does not wire yet"
-    )]
     pub fn lifecycle_subscribed_count(&self) -> usize {
         self.lifecycle_subscribed_count.load(Ordering::SeqCst)
     }
@@ -294,6 +308,63 @@ impl MockState {
         self.ticker_index.get(ticker).copied()
     }
 
+    /// Remove one ticker from the authoritative REST catalog. Discovery rounds
+    /// started after this call can no longer re-add the retired market.
+    pub fn retire_market(&self, ticker: &str) {
+        if let Ok(mut overlay) = self.catalog_overlay.lock() {
+            overlay.retired.insert(ticker.to_owned());
+            overlay.added.retain(|record| record["ticker"] != ticker);
+            overlay.added_books.remove(ticker);
+        }
+    }
+
+    /// Restore a previously retired record from the original universe. A later
+    /// discovery round is authoritative and may re-add a market that an older
+    /// round was forbidden to resurrect.
+    pub fn restore_market(&self, ticker: &str) {
+        if let Ok(mut overlay) = self.catalog_overlay.lock() {
+            overlay.retired.remove(ticker);
+        }
+    }
+
+    /// Add one eligible REST record and a deterministic book for it. The record
+    /// is served by `/markets` on the next discovery round.
+    pub fn add_market(&self, record: Value) {
+        let Some(ticker) = record["ticker"].as_str().map(str::to_owned) else {
+            return;
+        };
+        let mut book = MockBook::new();
+        book.bids.insert(250_000, 10_000_000);
+        book.asks.insert(700_000, 5_000_000);
+        if let Ok(mut overlay) = self.catalog_overlay.lock() {
+            overlay.retired.remove(&ticker);
+            overlay
+                .added
+                .retain(|existing| existing["ticker"].as_str() != Some(ticker.as_str()));
+            overlay.added.push(record);
+            overlay.added_books.insert(ticker, book);
+        }
+    }
+
+    /// REST records currently served by `/markets`, including lifecycle-driven
+    /// additions and excluding lifecycle-driven retirements.
+    #[must_use]
+    fn catalog_records(&self) -> Vec<Value> {
+        let overlay = self.catalog_overlay.lock().ok();
+        let retired = overlay.as_ref().map(|guard| &guard.retired);
+        let mut records: Vec<Value> = self
+            .universe
+            .markets
+            .iter()
+            .filter(|market| retired.is_none_or(|set| !set.contains(&market.ticker)))
+            .map(SyntheticMarket::rest_record)
+            .collect();
+        if let Some(overlay) = overlay.as_ref() {
+            records.extend(overlay.added.iter().cloned());
+        }
+        records
+    }
+
     /// Counter snapshot of the transmit-side ledger for the cell.
     #[must_use]
     pub fn ledger_snapshot(&self) -> MockLedger {
@@ -304,6 +375,7 @@ impl MockState {
             in_flight: self.in_flight.load(Ordering::SeqCst),
             snapshots_sent: self.sent_snapshots.load(Ordering::SeqCst),
             deltas_sent: self.sent_deltas.load(Ordering::SeqCst),
+            lifecycle_sent: self.sent_lifecycle.load(Ordering::SeqCst),
             acks_sent: self.sent_acks.load(Ordering::SeqCst),
             injected_pre_wire_drops: self.injected_drops.load(Ordering::SeqCst),
             queue_saturated: self.queue_saturated.load(Ordering::SeqCst),
@@ -385,7 +457,11 @@ impl MockState {
     fn snapshot_body(&self, market: &str, sid: i64, seq: u64) -> Value {
         let (yes, no) = {
             let books = self.books.lock().unwrap();
-            match books.get(market) {
+            let overlay = self.catalog_overlay.lock().unwrap();
+            match books
+                .get(market)
+                .or_else(|| overlay.added_books.get(market))
+            {
                 Some(book) => (
                     book.bids
                         .iter()
@@ -505,12 +581,15 @@ impl MockState {
 
     /// Publish one lifecycle notification to every lifecycle connection with a
     /// shared timestamp (both replicas see the same venue event).
-    #[expect(
-        dead_code,
-        reason = "called by the lifecycle-churn cells, which this increment does not wire yet"
-    )]
     pub fn publish_lifecycle(&self, event_type: &str, market: &str, extra: Value) {
         let ts = 1_700_000_000_000 + self.sent_count.load(Ordering::SeqCst) as i64;
+        self.publish_lifecycle_at(ts, event_type, market, extra);
+    }
+
+    /// Publish one notification with an explicit venue timestamp. The schedule
+    /// pins timestamps so duplicates share a dedup key and an out-of-order
+    /// event is deterministically older than the state it must not regress.
+    pub fn publish_lifecycle_at(&self, ts_ms: i64, event_type: &str, market: &str, extra: Value) {
         let mut msg = json!({
             "market_ticker": market,
             "event_type": event_type,
@@ -520,7 +599,7 @@ impl MockState {
                 msg[key] = value;
             }
         }
-        let _ = self.lifecycle_tx.send(LifecycleMsg { ts_ms: ts, msg });
+        let _ = self.lifecycle_tx.send(LifecycleMsg { ts_ms, msg });
     }
 
     /// Close all book connections (or only a subset) to inject a connection
@@ -720,12 +799,17 @@ fn route(state: &MockState, target: &str) -> (u16, String) {
     if !target.starts_with("/markets") {
         return (404, "{}".to_owned());
     }
-    let page = cursor.unwrap_or(0);
-    let page = match cursor {
-        Some(offset) => offset / limit.max(1),
-        None => page,
+    let offset = cursor.unwrap_or(0);
+    let catalog = state.catalog_records();
+    let page_size = limit.max(1);
+    let start = offset.min(catalog.len());
+    let end = (start + page_size).min(catalog.len());
+    let records = catalog[start..end].to_vec();
+    let next_cursor = if end < catalog.len() {
+        Some(end.to_string())
+    } else {
+        None
     };
-    let (records, next_cursor) = state.universe.rest_page(page, limit.max(1));
     let body = json!({
         "markets": records,
         "cursor": next_cursor,
@@ -902,15 +986,31 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
                                         array.iter().filter_map(|value| value.as_str().map(str::to_owned)).collect()
                                     })
                                     .unwrap_or_default();
-                                let full = {
+                                let (full, newly_added) = {
                                     let mut connections = state.connections.lock().unwrap();
                                     if let Some(entry) = connections.get_mut(&id) {
+                                        let newly: Vec<String> = markets
+                                            .iter()
+                                            .filter(|ticker| !entry.subscriptions.contains(*ticker))
+                                            .cloned()
+                                            .collect();
                                         entry.subscriptions.extend(markets.iter().cloned());
-                                        entry.subscriptions.iter().cloned().collect::<Vec<_>>()
+                                        (
+                                            entry.subscriptions.iter().cloned().collect::<Vec<_>>(),
+                                            newly,
+                                        )
                                     } else {
-                                        Vec::new()
+                                        (Vec::new(), Vec::new())
                                     }
                                 };
+                                // A discovery-added market must be snapshot
+                                // anchored just like one added at subscribe
+                                // time; otherwise it is acknowledged but never
+                                // becomes a live book.
+                                for ticker in &newly_added {
+                                    let seq = next_seq(&state, id);
+                                    state.send_json(id, state.snapshot_body(ticker, sid, seq));
+                                }
                                 state.book_subscribed_count.fetch_add(markets.len(), Ordering::SeqCst);
                                 let seq = next_seq(&state, id);
                                 state.send_json(

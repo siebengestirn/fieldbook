@@ -7,6 +7,7 @@
 pub mod backpressure;
 pub mod faults;
 pub mod host;
+pub mod lifecycle;
 pub mod manifest;
 pub mod mock;
 pub mod rng;
