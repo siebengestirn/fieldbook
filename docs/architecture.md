@@ -131,11 +131,13 @@ creates a `MarketDataSession` for one source, and `src/session.rs` supervises
 reconnects, heartbeats, status, and control handling around it. Kalshi and
 Polymarket implement these boundaries in `src/exchange/{kalshi,polymarket}/`.
 Hyperliquid implements them in `src/exchange/hyperliquid/`: H0 reference data,
-H1 telemetry and H2 selected perpetuals behind the same seams, with no branch
-in the state machine. H2 reconciles an exact finite book set, emits only full
-snapshots from `l2Book`, maps `trades` to telemetry, and uses the existing
-`Control::{RequestSnapshot,Recover}` fences for recovery; `has_sequence_clock`
-stays `false`.
+H1 telemetry, H2 selected perpetuals and H3 synthetic capacity evidence behind
+the same seams, with no branch in the state machine. H2 reconciles an exact
+finite book set, emits only full snapshots from `l2Book`, maps `trades` to
+telemetry, and uses the existing `Control::{RequestSnapshot,Recover}` fences for
+recovery; `has_sequence_clock` stays `false`. H3 adds a test-only loopback wire
+mock that reuses the shared stress ledger, coverage hashes and manifest schema;
+it produces no production behavior and no live or capacity claim.
 
 Ownership and dependency direction are deliberate:
 
@@ -215,6 +217,7 @@ flowchart LR
 | Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance. Hyperliquid's session subscribes to H1 telemetry (`allMids`/`fastAssetCtxs`) plus H2 `l2Book`/`trades` for the exact selected perpetuals; `request_snapshot` resubscribes/wait-for-next-push and `Recover` fences by the existing receive epoch/sequence. |
 | Adapter telemetry | `exchange/hyperliquid/telemetry.rs` | H1 exact-decimal decoding of venue-wide `allMids`/`fastAssetCtxs` statistics into typed `ProtocolControl` observations; unknown additive fields ignored, inexact numbers rejected; no depth, `Snapshot`, `LevelChange` or heartbeat acknowledgement |
 | Adapter books | `exchange/hyperliquid/books.rs` | H2 exact-decimal decoding of full two-sided `l2Book` pushes into `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; `trades` stay `ProtocolControl` telemetry; identity is `hyperliquid:perp:<dex>:<coin>`; no spot books, no `LevelChange`, no full universe |
+| Stress lab (test-only) | `tests/stress_support/{mock,hyperliquid,runner,manifest}.rs`, `tests/full_universe_stress.rs`, `tests/hyperliquid_capacity.rs` | Deterministic loopback venues (Kalshi, Hyperliquid) and a shared fail-closed cell runner. The Hyperliquid H3 mock serves `meta` discovery, WS subscribe/unsubscribe, `allMids`, `fastAssetCtxs`, `l2Book`, trades and a scripted reconnect from a seed-derived explicit schedule; three profiles drive mid fan-out, fast-context rate, book refresh cadence and trade bursts. The cell reuses the event ledger, dispositions, three-set coverage hashes and v16 manifest schema. Evidence is synthetic loopback: not live certification and no latency/capacity claim. |
 | Control plane | `exchange/kalshi/session.rs` (`SessionMode::Lifecycle`), `coordinator.rs`, `collector/state.rs` | Dedicated Kalshi `market_lifecycle_v2` subscription, cross-connection dedup, reconciliation triggers |
 | Diagnostics | `probe.rs` | `network-probe`: stage-timed transport diagnostic, JSON report |
 | Output | `writer.rs`, `util/aligned_sbe_*.rs`, `util/dtos.rs` | Ordered SBE writes, chunk framing, supplied-schema DTOs |

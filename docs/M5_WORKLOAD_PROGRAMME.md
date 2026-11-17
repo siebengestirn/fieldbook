@@ -37,8 +37,8 @@ logical deltas. No new generator is introduced by this programme.
 The selected stage plus model is translated into the ordinary stress-runner
 configuration (`tests/stress_support/capacity.rs`): shards are derived by the
 production capacity planner, replicas and the lifecycle plane are unchanged,
-and the journal is enabled. Scenario schema `v15` records the stage, workload
-model and expected event count in every manifest. Earlier v3-v14 manifests are
+and the journal is enabled. Scenario schema `v16` records the stage, workload
+model and expected event count in every manifest. Earlier v3-v15 manifests are
 immutable historical evidence and are not regenerated.
 
 ## Workload models
@@ -129,12 +129,41 @@ verification, resources and explicit unavailable reasons.
 
 - This scaffold does not itself implement burst, lifecycle churn, disconnect
   sweeps, backpressure characterization or stage-timing instrumentation; those
-  are separate M5.2-M5.6 work streams carried in the same integrated v15 schema.
+  are separate M5.2-M5.6 work streams carried in the same integrated v16 schema.
   Existing failure fixtures for bounded queues and shutdown remain
   failure-injection tests, not capacity results.
-- No new venue (including Hyperliquid) and no framework rewrite: capacity
-  cells reuse the Kalshi-shaped loopback mock, the synthetic generator and the
-  existing scheduling/certification path.
+- The M5 capacity scaffold itself introduces no new venue and no framework
+  rewrite: its cells reuse the Kalshi-shaped loopback mock, the synthetic
+  generator and the existing scheduling/certification path. A separate H3
+  integration below adds a Hyperliquid loopback mock behind the same ledger,
+  coverage-hash, manifest and scenario-version seams; it does not change this
+  scaffold or add a framework.
 - A short correctness cell does not establish sustained throughput, a maximum
   sustainable rate, or live-venue behavior. Discovery pagination results are
   explicitly not capacity evidence.
+
+## Hyperliquid H3 capacity cells (integrated at `scenario_version = 16`)
+
+The H3 increment adds a venue-specific synthetic cell that reuses the same
+fail-closed gates rather than a new harness. `tests/stress_support/hyperliquid.rs`
+serves REST `meta` discovery and the `allMids`, `fastAssetCtxs`, `l2Book`,
+`trades` websocket channels plus a scripted reconnect from one seed-derived
+explicit schedule. Three declared workload profiles change only frame counts:
+`balanced`, `telemetry_heavy` (mid fan-out and fast-context rate) and
+`book_refresh_burst` (`l2Book` refresh cadence and trade bursts).
+
+`tests/hyperliquid_capacity.rs` runs the exact ten selected perpetuals through
+the real adapter, worker, journal and `CollectorCore` and requires exact
+three-set coverage (expected == acknowledged == anchored), a reconciled
+`EventLedger` and terminal dispositions, a bounded writer queue, journal/SBE
+verification, zero `LevelChange`, and a fresh book re-anchored under reconnect.
+The ignored `reference_hyperliquid_manifest_is_versioned` generator publishes a
+v16 manifest under `STRESS_MANIFEST_OUT` using the shared manifest schema; cell
+ids are content-addressed by version, profile and seed so existing evidence is
+never overwritten.
+
+**These are synthetic loopback cells. They are not live certification, and they
+make no latency, throughput or capacity performance claim.** They establish
+correctness at ten instruments only; no universe growth, live tier, order entry
+or production capacity is implied. See
+[`HYPERLIQUID_INTEGRATION_PLAN.md`](HYPERLIQUID_INTEGRATION_PLAN.md).

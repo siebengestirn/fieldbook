@@ -1514,7 +1514,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(15));
+    assert_eq!(document["scenario_version"].as_u64(), Some(16));
     outcome
 }
 
@@ -1604,7 +1604,7 @@ fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
 }
 
 fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
-    assert_eq!(document["scenario_version"], 15);
+    assert_eq!(document["scenario_version"], 16);
     assert_eq!(document["backpressure"]["profile"], profile);
     let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
     assert!(!boundary.is_empty(), "boundary must be named");
@@ -1987,7 +1987,7 @@ async fn backpressure_combined_hot_quiet_writer_queue_4000_certifies() {
 }
 
 /// Ignored reference generator for the M5.5 boundary profiles. Uses the same
-/// `STRESS_MANIFEST_OUT` publication protocol and v15 cell ids as the other
+/// `STRESS_MANIFEST_OUT` publication protocol and v16 cell ids as the other
 /// reference generators; prior evidence is never overwritten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
@@ -2035,7 +2035,7 @@ async fn reference_backpressure_profiles_manifest_is_reproducible() {
         let outcome =
             stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
         let document = build_cell_manifest_for_reference(&out, seed);
-        assert_eq!(document["scenario_version"], 15);
+        assert_eq!(document["scenario_version"], 16);
         assert_eq!(document["backpressure"]["profile"], expected);
         assert!(
             !outcome.acceptance.valid || expected == "writer_queue_saturation",
@@ -2058,7 +2058,7 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
 }
 
 // ---------------------------------------------------------------------------
-// M5.4 deterministic disconnect and recovery sweeps (scenario_version 15).
+// M5.4 deterministic disconnect and recovery sweeps (scenario_version 16).
 // ---------------------------------------------------------------------------
 
 fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {
@@ -2551,7 +2551,7 @@ fn disconnect_fault_steps_carry_full_matrix_evidence() {
 
 /// Ignored reference generator for the disconnect sweep manifest. Run with
 /// `STRESS_MANIFEST_OUT` set to a fresh directory; prior evidence is never
-/// overwritten because v15 cell ids are content-addressed by seed and verdict.
+/// overwritten because v16 cell ids are content-addressed by seed and verdict.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
 async fn reference_disconnect_sweep_manifest() {
@@ -2697,7 +2697,7 @@ async fn stage_timing_cell_records_real_writer_write_latency() {
             .unwrap_or(0)
             > 0
     );
-    assert_eq!(stage["provenance"]["scenario_version"], 15);
+    assert_eq!(stage["provenance"]["scenario_version"], 16);
     assert!(stage["provenance"]["clock_source"].is_string());
     assert!(
         stage["boundaries"]["sbe_write"]["report"]["buckets"]
@@ -2815,7 +2815,7 @@ fn capacity_manifest_records_stage_model_and_unavailable_reasons() {
     };
     let document = build_cell_manifest(&outcome, &config, "capacity-cell");
     let capacity = &document["capacity"];
-    assert_eq!(document["scenario_version"], 15);
+    assert_eq!(document["scenario_version"], 16);
     assert_eq!(document["scenario"]["capacity_stage"], "10k");
     assert_eq!(
         document["scenario"]["capacity_workload_model"],
