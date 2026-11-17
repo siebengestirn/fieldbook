@@ -68,6 +68,7 @@ intent; it is not a claim that those capabilities are implemented.
 10. [Hyperliquid integration plan](docs/HYPERLIQUID_INTEGRATION_PLAN.md) — staged, evidence-gated design for the next exchange; H0-H3 implemented (H3 synthetic loopback capacity cells only, not live certification or a capacity/latency claim).
 11. [Coinbase Exchange integration plan](docs/COINBASE_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same seams; H0 offline reference data implemented, H1-H3 planned (no websocket, book, telemetry, live evidence or performance claim).
 12. [Kraken integration plan](docs/KRAKEN_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same gates; H0 reference data implemented (offline fixtures only, no websocket/book/telemetry/live evidence), H1-H3 planned.
+13. [OKX integration plan](docs/OKX_INTEGRATION_PLAN.md) — staged, evidence-gated design for OKX; H0 reference data implemented (offline, no socket), H1-H3 planned. No live or performance claim.
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
