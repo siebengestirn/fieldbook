@@ -11,10 +11,11 @@ tree. It therefore verifies both that the source file exists and that the named
 test is declared in that exact file. Wildcards, grouped references, bare names,
 and module-qualified Rust paths are rejected as ambiguous.
 
-The matrix must contain M1-M9 and E1-E5, every requirement must have at least
-one test reference, and the 24 mandatory evidence tests must remain
-represented. This is the single test-evidence gate; the architecture checker no
-longer keeps a duplicate list.
+The matrix must contain M1-M9, E1-E5 and P5, every requirement must have at
+least one test reference, and the 24 mandatory evidence tests must remain
+represented. P5 is the non-market-data JSONL-to-target reference application;
+its identifiers use the same file-qualified contract. This is the single
+test-evidence gate; the architecture checker no longer keeps a duplicate list.
 """
 from __future__ import annotations
 
@@ -27,8 +28,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = ROOT / "docs/requirement-test-matrix.md"
 
-REQUIRED_REQUIREMENTS = tuple(f"M{index}" for index in range(1, 10)) + tuple(
-    f"E{index}" for index in range(1, 6)
+REQUIRED_REQUIREMENTS = (
+    tuple(f"M{index}" for index in range(1, 10))
+    + tuple(f"E{index}" for index in range(1, 6))
+    + ("P5",)
 )
 
 # Moved here from scripts/check_architecture.py. These names must remain in the
@@ -62,7 +65,7 @@ REQUIRED_EVIDENCE_TESTS = frozenset(
     }
 )
 
-ID_RE = re.compile(r"^([ME])(\d+)$")
+ID_RE = re.compile(r"^([MEP])(\d+)$")
 REFERENCE_RE = re.compile(
     r"^(?P<file>(?:src|tests)/[A-Za-z0-9_./-]+\.rs)::"
     r"(?P<test>[A-Za-z_][A-Za-z0-9_]*)$"
