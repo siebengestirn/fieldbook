@@ -85,7 +85,9 @@ replicated durability; that remains future work.
 
 ## Status
 
-Implemented for the 4,000-instrument synthetic reference workload as of
-scenario schema v5. Stage-specific latency histograms, replication and
-generalized destination obligations are future contracts and are not claimed
-here.
+Implemented for the synthetic reference workload through scenario schema v16.
+Five stage-specific histograms are implemented and documented in
+[`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md); they are synthetic
+measurements, not a performance certificate. Replication and generalized
+destination obligations remain future contracts. See
+[`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md) for authoritative status.

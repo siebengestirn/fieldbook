@@ -376,11 +376,12 @@ async fn reference_lifecycle_churn_manifest_is_versioned() {
     let entries = index["cells"].as_object().expect("cells");
     let (cell_id, entry) = entries
         .iter()
-        .find(|(_, value)| {
-            value["publication_state"] == stress_support::manifest::PUBLICATION_PUBLISHED
+        .find(|(id, value)| {
+            id.contains("lifecycle-churn_under_load")
+                && value["publication_state"] == stress_support::manifest::PUBLICATION_PUBLISHED
                 && value["run_status"] == "success"
         })
-        .expect("a published success entry");
+        .expect("a published lifecycle-churn success entry");
     assert!(cell_id.contains("lifecycle-churn_under_load-v16"));
     let manifest: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(out.join(entry["path"].as_str().unwrap())).expect("manifest body"),

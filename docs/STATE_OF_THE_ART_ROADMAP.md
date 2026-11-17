@@ -5,8 +5,9 @@ the next evidence gates. It does not claim future work is complete.
 
 ## Current verified state
 
-- `main` contains S1a/S1b, M3/M4, GIT-001, M5.1, M5.1-CERT and M5.1-CERT.1.
-- M5.2 and M5.5 are merged; M5.3, M5.4, M5.6 and M5.7 are in integration.
+- `main` contains S1a/S1b, M3/M4, GIT-001, M5.1 through M5.7, Hyperliquid H0-H3,
+  and H0 reference data for Coinbase, Kraken, OKX and Binance.
+- Exact per-milestone status is in [`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md).
 - Assurance: formatting, Clippy `-D warnings`, all-target tests, doc tests,
   architecture traceability, matrix validation and generated-path policy are
   enforced by `scripts/assurance/polish.sh`.
@@ -17,12 +18,12 @@ the next evidence gates. It does not claim future work is complete.
 
 | Gate | Exit condition |
 |---|---|
-| M5.3 lifecycle | Reproducible universe epochs, exact coverage, complete dispositions |
-| M5.4 disconnect | Deterministic fault schedule, exact recovery, bounded queues |
-| M5.6 performance | Real stage histograms with sample counts; no fabricated metrics |
-| M5.7 capacity | 10k/25k/50k opt-in correctness cells; no capacity claim without evidence |
-| Hyperliquid | Reference-data/product model, then lower-complexity feeds, then selected books |
-| Additional venues | Binance/Coinbase/Kraken/OKX only after adapter contract is stable |
+| Platform M2 | Persistent instrument and reference identity (ADR-0001) |
+| Platform M3 | Typed data-product and capability contracts |
+| Platform M4 | Canonical event model and normalized persistence |
+| P5 | Independent JSONL-to-PostgreSQL reference application |
+| P8 | Replicated durability profiles with explicit failure models |
+| Performance | End-to-end reproducible measurements; current histograms are stage-only |
 
 ## Governing standard
 

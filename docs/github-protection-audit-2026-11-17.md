@@ -27,6 +27,8 @@
   requirement cannot be satisfied by the sole developer. The enforced
   substitute is an explicit self-review checklist plus independent CI on the
   exact PR head.
-- PR #45 and PR #47 are both `MERGED`; there were no open PRs at audit time. A
-  provenance comment on PR #45 records the merge chain.
+- PR #45 (`d54aa08`) and PR #47 (`9ba0141`) are both `MERGED`; PR #45 was
+  reconciled from its obsolete draft state and its current description records
+  the complete delivered scope. `c480da8` is an ancestor of `origin/main`.
+  No open PRs remain; a provenance comment on PR #45 records the merge chain.
 - This record must be refreshed after any material branch-protection change.

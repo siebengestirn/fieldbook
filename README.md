@@ -14,7 +14,7 @@ permitted production connection produces a verified capture. Polymarket
 full-universe discovery is verified, but simultaneous subscription at that
 fan-out is not claimed.
 
-## Current increment: feed-continuity contracts
+## Integrated foundation: feed continuity, recovery and multi-venue evidence
 
 A preserved 60-minute full-universe Polymarket run
 ([evidence](measurements/live/2026-11-14-universe-capture-failed/)) showed a
@@ -70,6 +70,8 @@ intent; it is not a claim that those capabilities are implemented.
 12. [Kraken integration plan](docs/KRAKEN_INTEGRATION_PLAN.md) — staged, evidence-gated plan on the same gates; H0 reference data implemented (offline fixtures only, no websocket/book/telemetry/live evidence), H1-H3 planned.
 13. [OKX integration plan](docs/OKX_INTEGRATION_PLAN.md) — staged, evidence-gated design for OKX; H0 reference data implemented (offline, no socket), H1-H3 planned. No live or performance claim.
 14. [Binance integration plan](docs/BINANCE_INTEGRATION_PLAN.md) — staged, evidence-gated design; H0 reference data implemented (offline fixture, exact numeric specs, no-network session stub), H1-H3 planned; no websocket, live, latency or capacity claim.
+
+**Programme status:** see [`docs/PROGRAMME_STATUS.md`](docs/PROGRAMME_STATUS.md) — the authoritative, multi-dimensional status record.
 
 Implementation contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md), [latency](docs/latency.md),
