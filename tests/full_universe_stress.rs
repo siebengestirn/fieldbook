@@ -32,6 +32,7 @@ mod stress_support;
 use std::collections::BTreeSet;
 
 use stress_support::{
+    faults::SweepProfile,
     rng::SplitMix64,
     runner::{
         BurstProfile, CellConfig, CellOutcome, FailInject, HotSelection, canonical_set_sha256,
@@ -93,6 +94,7 @@ fn headless_cell_config(seed: u64, symbols: usize) -> CellConfig {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     }
 }
 
@@ -124,6 +126,7 @@ async fn smoke_cell_anchors_applies_and_certifies() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
     assert!(
@@ -452,6 +455,7 @@ async fn malformed_index_fixture_fails_closed() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
@@ -698,6 +702,7 @@ async fn reference_success_manifest_is_reproducible() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
@@ -1142,6 +1147,7 @@ async fn mixed_hot_quiet_4000_cell_reconciles_and_certifies() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
     assert!(
@@ -1205,6 +1211,7 @@ async fn reference_mixed_hot_quiet_manifest_is_reproducible() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
@@ -1246,6 +1253,7 @@ async fn mixed_hot_quiet_exact_4000_cell_assigns_320_hot_events() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
     assert!(
@@ -1301,6 +1309,7 @@ async fn reference_exact_hot_quiet_manifest_is_reproducible() {
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     };
     let outcome =
         stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
@@ -1338,6 +1347,7 @@ fn burst_cell_config(profile: BurstProfile, seed: u64, selection: HotSelection) 
         writer_queue: None,
         worktree_dir: None,
         require_clean_worktree: None,
+        fault_schedule: None,
     }
 }
 
