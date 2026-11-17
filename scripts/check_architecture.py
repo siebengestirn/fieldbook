@@ -26,6 +26,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/coordinator.rs": "startup, orchestration loop, discovery reconciliation, controls, shutdown",
     "src/egress.rs": "egress policy: direct/proxy routing, fail-closed tunnelling, route provenance and redaction",
     "src/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",
+    "src/histogram.rs": "fixed-bucket stage-latency histograms, nearest-rank percentiles and unavailable-boundary reporting",
     "src/inspect.rs": "offline SBE capture inspection command",
     "src/journal.rs": "raw-frame journal writer, segment/manifest format, verification, ordered reading",
     "src/journal/tests.rs": "journal unit tests for framing, checksums, durability, recovery, and failure handling",
