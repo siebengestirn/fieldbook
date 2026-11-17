@@ -1080,6 +1080,7 @@ struct DrainBaselines {
     deltas_emitted: f64,
     writer_messages: f64,
     writer_errors: f64,
+    suppressed_replica_duplicates: Option<u64>,
     /// Sum of `collector_source_decode_errors` across all sources.
     source_decode_errors: Option<u64>,
     data_frames_received: Option<u64>,
@@ -1154,9 +1155,46 @@ fn evaluate_barrier(
     if required.writer_errors < base.writer_errors {
         return BarrierState::CounterReset("collector_writer_errors_total");
     }
+    let base_dispositions: u64 = [
+        base.deltas_emitted as u64,
+        base.suppressed_replica_duplicates.unwrap_or(0),
+        base.no_active_source.unwrap_or(0),
+        base.unknown_symbol.unwrap_or(0),
+        base.non_live.unwrap_or(0),
+        base.unassigned_source.unwrap_or(0),
+        base.invalid_book.unwrap_or(0),
+        base.shadow_clock_regression.unwrap_or(0),
+        base.zero_noop.unwrap_or(0),
+        base.sbe_conversion_failed.unwrap_or(0),
+    ]
+    .into_iter()
+    .sum();
+    let current_dispositions: Option<u64> = [
+        "collector_deltas_emitted_total",
+        "collector_suppressed_replica_duplicates_total",
+        "collector_delta_no_active_source_total",
+        "collector_delta_unknown_symbol_total",
+        "collector_delta_non_live_total",
+        "collector_delta_unassigned_source_total",
+        "collector_delta_invalid_book_total",
+        "collector_delta_shadow_clock_regression_total",
+        "collector_delta_zero_noop_total",
+        "collector_delta_sbe_conversion_failed_total",
+    ]
+    .into_iter()
+    .try_fold(0u64, |total, name| {
+        let value = match sample.read(name) {
+            MetricRead::Present(value) if value >= 0.0 && value.fract() == 0.0 => value as u64,
+            _ => 0,
+        };
+        Some(total.saturating_add(value))
+    });
+    let dispositions_ready = current_dispositions
+        .is_some_and(|current| current >= base_dispositions.saturating_add(expected as u64));
     if in_flight == 0
         && required.deltas_emitted >= base.deltas_emitted + expected
         && required.decoded_delta_events >= base.delta_events_decoded.unwrap_or(0) as f64 + expected
+        && dispositions_ready
         && required.writer_messages >= base.writer_messages + expected
         && required.writer_queue_depth == 0.0
         && required.writer_errors == base.writer_errors
@@ -1190,6 +1228,8 @@ async fn capture_baseline_until(
                             deltas_emitted: required.deltas_emitted,
                             writer_messages: required.writer_messages,
                             writer_errors: required.writer_errors,
+                            suppressed_replica_duplicates: sample
+                                .count_sum("collector_suppressed_replica_duplicates_total"),
                             source_decode_errors: sample
                                 .count_sum("collector_source_decode_errors"),
                             data_frames_received: sample
@@ -2537,6 +2577,7 @@ mod tests {
             deltas_emitted: 0.0,
             writer_messages: 0.0,
             writer_errors: 0.0,
+            suppressed_replica_duplicates: Some(0),
             source_decode_errors: Some(0),
             data_frames_received: Some(0),
             delta_events_decoded: Some(0),
@@ -2635,6 +2676,7 @@ mod tests {
             deltas_emitted: 100.0,
             writer_messages: 100.0,
             writer_errors: 0.0,
+            suppressed_replica_duplicates: Some(0),
             source_decode_errors: Some(0),
             data_frames_received: Some(0),
             delta_events_decoded: Some(0),
