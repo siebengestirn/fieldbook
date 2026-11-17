@@ -4,7 +4,7 @@ These files are raw output from actual local runs, not benchmark claims. The
 four 2026-10-24 latency files are single 60-second observations each; the
 source-port/CDN-hashing and Nagle/delayed-ACK explanations in `docs/latency.md`
 are hypotheses, not causal findings. The final offline gate results are in
-[`docs/verification.md`](../docs/verification.md).
+[`docs/programme-status.md`](../docs/programme-status.md).
 
 - `remediation/`: raw run reports, metadata sidecars, and the Gamma offset-cap
   failure log from the 2026-10-24 validation runs. The smoke/scale reports used

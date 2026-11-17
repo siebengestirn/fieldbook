@@ -1,4 +1,4 @@
-# Canonical event model (Platform M4, Phase 1)
+# Canonical event model
 
 This document describes the **implemented** canonical event envelope and
 normalized event taxonomy in `src/canonical.rs`. It is additive to the existing

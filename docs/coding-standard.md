@@ -3,7 +3,7 @@
 **Version:** 1.0
 **Status:** normative for this repository.
 **Authority:** this document, `Cargo.toml` `[lints]`, `.rustfmt.toml`, `clippy.toml`.
-**Enforcement:** `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --release`, review.
+**Enforcement:** `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --all-targets --locked`, review.
 
 ## 1. Scope and normative language
 
@@ -129,7 +129,7 @@ The repository has one formatting authority and one lint authority. Reviewers do
 
 | ID | Rule |
 | --- | --- |
-| G1 | `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --release` pass. |
+| G1 | `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --all-targets --locked` pass. |
 | G2 | A new public item has documentation and, where fallible, an `# Errors` section. |
 | G3 | A new dependency carries a license, MSRV, maintenance and binary-size justification. |
 | G4 | A style change and a behavior change use separate commits. |

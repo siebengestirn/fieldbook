@@ -1,4 +1,4 @@
-# M5 workload specification (frozen workload, versioned evidence increments)
+# M5 workload specification
 
 This document freezes the M5 workloads before results are collected. It
 describes what the harness produces, not what has been measured. M5.2 adds
@@ -6,12 +6,9 @@ deterministic burst schedules without changing the frozen 4,000-instrument
 exact/weighted workload, its seed, its hot-set definition or its event budget;
 M5.5 adds backpressure boundary profiles that constrain admission and
 terminal dispositions without changing that frozen workload either. The
-authoritative design for the stress laboratory remains
-[`stress-lab-design.md`](stress-lab-design.md); the canonical starting point is
-[`baseline-post-m4.md`](baseline-post-m4.md). The M5.7 capacity progression and
-its three workload models are defined in
-[`M5_WORKLOAD_PROGRAMME.md`](M5_WORKLOAD_PROGRAMME.md); this document keeps the
-frozen hot/quiet workload and its v5 evidence unchanged.
+stress laboratory design is in [`stress-lab-design.md`](stress-lab-design.md).
+Capacity stages and their opt-in rules are summarised in this document; status
+and retained evidence are in [`programme-status.md`](programme-status.md).
 
 The current combined scenario schema is **v16** (M5.2 burst = 6, M5.3 = 7,
 M5.4 = 8, M5.5 backpressure = 9, M5.6 stage timing = 10, M5.7 capacity = 11,
@@ -42,7 +39,7 @@ overwritten by a v16 run; cell ids carry the scenario version suffix.
   sample counts. Unexercised boundaries stay `unavailable` with a reason, never
   zero. CPU, throughput, RSS and disk fields remain `unavailable`. Synthetic
   mock send timestamps are not used as measured latency. See
-  [`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md).
+  [`performance-methodology.md`](performance-methodology.md).
 - Backpressure admission is boundary-specific. A cell declares its boundary
   before the run; the manifest records capacity, admission rule, timeout,
   drop/reject policy, recovery path and five distinct terminal-state counters.
@@ -126,10 +123,8 @@ Scenario `scenario_version` was bumped to **6** for the burst increment
 the profile label so two profiles never overwrite one another in the index. The
 v5 disposition-certified manifests remain immutable historical evidence.
 
-The three M5.7 models are capacity *selection* modes for the existing generator
-and publish scheduler; they are not new generators. See
-[`M5_WORKLOAD_PROGRAMME.md`](M5_WORKLOAD_PROGRAMME.md) for the stage progression
-and opt-in evidence rules.
+Capacity stages are selector modes for the existing generator and publish
+scheduler, not new generators. They are opt-in and never run at 50k in CI.
 
 ## Frozen first workload
 
@@ -215,8 +210,8 @@ all run in default CI. The 10k/25k/50k short correctness cells are `#[ignore]`d 
 opt-in via `STRESS_CAPACITY_STAGE` / `STRESS_MANIFEST_OUT`; 50k is never run in
 CI. Manifests carry a `capacity` object with stage, instrument count, workload
 model, expected events, coverage, journal/SBE verification, host resources and
-explicit `unavailable` reasons. Full definitions and limits are in
-[`M5_WORKLOAD_PROGRAMME.md`](M5_WORKLOAD_PROGRAMME.md).
+explicit `unavailable` reasons. These are short correctness cells, not
+capacity certification.
 
 **Discovery success is not capacity certification.** Pagination of the full
 universe establishes metadata coverage only; it does not establish that a
@@ -279,7 +274,7 @@ evidence; a diagnostic regression test pins it. Current certification uses
 core-accumulated monotonic counters.
 
 Stage-latency instrumentation now exists for the five boundaries defined in
-[`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md): core processing,
+[`performance-methodology.md`](performance-methodology.md): core processing,
 writer queue wait, SBE write, flush and journal append. Each publishes raw
 bucket counts, explicit sample counts and nearest-rank percentiles, with build
 and clock provenance. CPU, peak RSS, throughput and disk latency remain
@@ -302,7 +297,7 @@ decoded deltas = emitted + suppressed replica + no active source
 Transport counters are owned by the session worker and include malformed
 frames; core-ingress counters are sampled separately under distinct metric
 names. The full contract is in
-[`EVENT_ACCOUNTING_CONTRACT.md`](EVENT_ACCOUNTING_CONTRACT.md).
+[`event-accounting-contract.md`](event-accounting-contract.md).
 
 ## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 16`)
 
@@ -445,7 +440,7 @@ estimates from merged bucket counts, never averages of worker percentiles. The
 host clock step (`clock_resolution_ns`), build profile, target triple and
 scenario version are published alongside the counts. Nanoseconds are the
 storage unit, not an accuracy claim. `lifecycle`, `disconnect` and combined
-`mixed` profile remains **Planned**; `lifecycle` (M5.3), `disconnect` (M5.4),
+The combined `mixed` profile is not certified as one run; `lifecycle` (M5.3), `disconnect` (M5.4),
 `burst` (M5.2) and `backpressure` (M5.5) are implemented workload profiles
 carried into the combined v16 schema. Hyperliquid H3 adds synthetic loopback
 capacity cells at ten instruments only; it makes **no** capacity, throughput,

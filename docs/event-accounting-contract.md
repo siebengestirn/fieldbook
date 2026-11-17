@@ -1,4 +1,4 @@
-# Event Accounting Contract
+# Event accounting contract
 
 This document defines the accounting contract currently implemented for the
 market-data collector and its stress laboratory. It intentionally separates
@@ -116,9 +116,9 @@ failure for target B.
 
 Implemented for the synthetic reference workload through scenario schema v16.
 Five stage-specific histograms are implemented and documented in
-[`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md); they are synthetic
+[`performance-methodology.md`](performance-methodology.md); they are synthetic
 measurements, not a performance certificate. Destination obligations are
 implemented for the non-market-data reference application (Platform P6) but are
 not wired into the market collector. Replication, live database delivery and
 production exactly-once remain future contracts. See
-[`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md) for authoritative status.
+[`programme-status.md`](programme-status.md) for authoritative status.
