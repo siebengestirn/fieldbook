@@ -1,12 +1,18 @@
 # M5 workload specification (frozen workload, versioned evidence increments)
 
-This document freezes the M5 workload before results are collected. It
+This document freezes the M5 workloads before results are collected. It
 describes what the harness produces, not what has been measured. M5.2 adds
 deterministic burst schedules without changing the frozen 4,000-instrument
-exact/weighted workload, its seed, its hot-set definition or its event budget.
-The authoritative design for the stress laboratory remains
+exact/weighted workload, its seed, its hot-set definition or its event budget;
+M5.5 adds backpressure boundary profiles that constrain admission and
+terminal dispositions without changing that frozen workload either. The
+authoritative design for the stress laboratory remains
 [`stress-lab-design.md`](stress-lab-design.md); the canonical starting point is
 [`baseline-post-m4.md`](baseline-post-m4.md).
+
+The current scenario schema is **v9** (M5.2 = 6, M5.3 = 7, M5.4 = 8, M5.5 = 9).
+Earlier v3-v5 evidence files are retained byte-for-byte and are never
+overwritten by a v9 run; cell ids carry the scenario version suffix.
 
 ## Invariants
 
@@ -24,6 +30,17 @@ The authoritative design for the stress laboratory remains
 - Latency, CPU, and per-stage timing fields stay `unavailable` with an explicit
   reason until real instrumentation exists. Synthetic mock send timestamps are
   not used as measured latency.
+- Backpressure admission is boundary-specific. A cell declares its boundary
+  before the run; the manifest records capacity, admission rule, timeout,
+  drop/reject policy, recovery path and five distinct terminal-state counters.
+  `accepted_but_waiting`, `rejected`, `dropped`, `completed` and
+  `uncertain_acknowledgement` are never collapsed into a generic error. A cell
+  whose declared disposition cannot be evidenced is rejected by the same
+  fail-closed path as a ledger gap.
+- A backpressure cell that dies before capture verification still publishes a
+  failure manifest: the journal rejection latch is preserved as a journal
+  `failed` state with the collector's terminal error, and unavailable SBE
+  evidence is rendered as an explicit `unavailable` marker rather than zero.
 
 ## Profiles
 
@@ -36,8 +53,8 @@ The authoritative design for the stress laboratory remains
 | `burst` | **Implemented in M5.2** | Four deterministic profiles (`step`, `impulse`, `repeated_impulses`, `ramp`) that partition the same 400 logical deltas into publish phases. No sleeps, timing instrumentation or performance claims. |
 | `lifecycle` | Planned | Add/remove/settle universe churn through the mock's lifecycle channel. |
 | `disconnect` | Planned | Deterministic replica/source closure and re-anchoring sweep. |
-| `backpressure` | Existing failure fixture | Bounded mock/writer queues with explicit saturation classification. |
-| `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell. |
+| `backpressure` | **Implemented in M5.5 (`scenario_version = 9`)** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
+| `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell (M5.5 adds only the single-injection hot/quiet + writer-queue cell, not the full mixed profile). |
 
 ## M5.2 burst profiles
 
@@ -110,6 +127,57 @@ decoys, and reproducible by
 `SyntheticUniverse::generate(seed, symbols, decoys).hot_tickers(50_000)`.
 Bumping the generator or scenario schema version is required before changing the
 semantics of this table.
+
+## Backpressure profiles (M5.5, `scenario_version = 9`)
+
+Each profile is one boundary, one injection and one terminal disposition. The
+runner derives the profile from `CellConfig` before the run, reconciles the five
+observed states from independent counters, and refuses a success verdict when
+the observed disposition does not match the declared one.
+
+| Profile | Boundary | Capacity | Admission | Timeout | Drop / reject policy | Recovery | Declared disposition |
+|---|---|---|---|---|---|---|---|
+| `mock_queue_saturation` | Mock websocket outbound queue | `FailInject::MockQueueSaturate.capacity` (fixture: 8) | non-blocking `try_send`, one queue per connection | cell drain limit (fixture: 2 s) | full queue increments `queue_saturated`; an explicit drop, never retried and never silent | none in-run: forwarder is stalled until shutdown | `dropped` |
+| `writer_queue_saturation` | Production SBE writer queue | `CellConfig.writer_queue` (fixture: 128) | bounded `send().await` | `writer_send_timeout_secs` (10 s) | a timed-out send never enters the queue and returns an error | shutdown closes admission and drains every accepted message | `completed` |
+| `slow_downstream` | Socket consumer after mock admission | mock default outbound capacity (4,096) | ordinary bounded enqueue; completion delayed after admission | cell drain limit (fixture: 2 s) | no drop and no rejection: frames remain in flight and are counted as accepted-but-waiting | queue drains after the injected delay; this cell cuts at the drain barrier | `accepted_but_waiting` |
+| `journal_storage_pressure` | Raw-frame journal admission / durable write | `queue_capacity` (fixture: 1 record) | bounded `send_timeout` with an fsync per record | `enqueue_timeout_ms` (fixture: 1 ms) | enqueue timeout rejects the record and latches the run failed; the frame is not silently discarded | latched failure is terminal; accepted records drain at finalization | `rejected` |
+| `shutdown_uncertain_acknowledgement` | Shutdown before the drain barrier | not applicable | normal admission until shutdown is signalled | 0 (no drain wait) | no drop policy can be verified because observation ends at shutdown | none in this cell; the outcome stays uncertain by contract | `uncertain_acknowledgement` |
+
+### State semantics
+
+- **accepted_but_waiting** — admitted to a bounded queue; `in_flight` or
+  `writer.queue_depth` shows it has not completed. Not a drop.
+- **rejected** — the boundary refused admission and returned an error
+  (journal enqueue timeout, writer send timeout). Not a completed write.
+- **dropped** — accepted for transmission but discarded with a counter
+  (`queue_saturated`). Not a rejection and not an acknowledgement.
+- **completed** — socket send, writer message or journal record completed and
+  was independently observed.
+- **uncertain_acknowledgement** — shutdown ended observation before the fate
+  of an offered frame could be established. Never claimed as dropped or
+  completed.
+
+### Evidence contract
+
+Every profile manifest carries a `backpressure` object with the frozen policy
+fields, the five state counters, boundary-specific evidence (queue high-water,
+forwarder delay, journal rejection detail, applied shortfall), journal state
+and SBE verification verdicts. Profile-specific required fields are checked in
+addition to the global manifest fields before a success verdict is kept. The
+ordinary event ledger and disposition reconciliation still apply: a profile
+cannot pass on the strength of its own counters alone.
+
+Journal/storage limitation: this harness does not inject kernel ENOSPC. The
+journal profile shrinks the admission queue to one record, shortens the
+enqueue timeout to 1 ms and forces an fsync per record, which reliably latches
+a real journal rejection before any capture is produced. Durable-media fault
+injection remains covered by the offline journal fault-hook tests in
+`src/journal/tests.rs`; no new ENOSPC claim is made here.
+
+Combined workload: `backpressure_combined_hot_quiet_writer_queue_4000_certifies`
+runs the 4,000-instrument hot/quiet profile with a single writer-queue bound
+injection and no lifecycle, disconnect or chaos injection. It is added only
+after all five individual profile gates pass.
 
 ## Stage accounting
 
@@ -198,6 +266,10 @@ names. The full contract is in
 | Evidence | `mixed_hot_quiet_4000_cell_reconciles_and_certifies` passes offline; `reference_mixed_hot_quiet_manifest_is_reproducible` emits a versioned manifest when run explicitly with `STRESS_MANIFEST_OUT` |
 | M5.2 burst phases | `burst_step_cell_reconciles_all_phases` and `burst_impulse_cell_reconciles_all_phases` prove acceptance, exact per-phase counts (100/200/100 and 40/280/80), cumulative drain completion, reconciled ledger, exact 4,000 coverage, SBE/completeness/journal verification, empty fault schedule and a manifest carrying the full workload schedule |
 | M5.2 determinism | `burst_profiles_partition_the_budget_exactly_and_deterministically` and `burst_profile_counts_are_pinned` pin the four partitions; `schedule_records_id_seed_hot_definition_and_empty_faults` pins the recorded schedule fields |
+| Backpressure fail-closed | each `*_profile_fails_closed*` cell names its boundary class and does not certify: `mock_outbound_queue_dropped`, `slow_downstream_accepted_waiting`, `journal_pressure_rejected`, `uncertain_acknowledgement`; the writer profile reconciles with a bounded queue |
+| Bounded queues | mock `queue_high_water <= capacity`; writer `queue_high_water <= capacity + 1` (one-slot counter lag); journal queue fixed at one record |
+| Disposition reconciliation | the five manifest state counters are distinct and the dominant state matches the declared disposition; ledger gaps and disposition gaps still block certification |
+| Journal / SBE | every profile manifest records journal state and SBE verdicts; a journal rejection preserves the collector error rather than reporting a generic failure |
 
 The earlier `seed-0017-4000-hotquiet.json` manifest was generated by the
 pre-correction sampler (residual draws could include hot instruments, giving
@@ -210,7 +282,8 @@ artifacts are `seed-0007-4000-uniform-v4.json`,
 `seed-0007-4000-uniform-v5.json`, `seed-0017-4000-hotquiet-v5.json`,
 `seed-001d-4000-hotquiet-v5.json` and
 `failed-v5-seed-000b-200-coverage_set_mismatch.json` are tied to `5bb54e6`. Do not use the v2 manifest for comparative
-workload claims.
+workload claims. The M5.5 v9 manifests are generated only into a caller-supplied
+`STRESS_MANIFEST_OUT` directory and are not copied over the v3-v5 artifacts.
 
 Performance gates (p50/p95/p99/p99.9, CPU, RSS, disk, queue wait) are **not**
 claimed by this increment. They require the instrumentation work identified in
@@ -232,7 +305,20 @@ STRESS_MANIFEST_OUT=/tmp/stress-v6 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_burst_step_manifest_is_reproducible --test-threads=1 --nocapture
 
+# M5.5 boundary profiles (non-ignored)
+cargo test --test full_universe_stress profile_ -- --test-threads=1
+cargo test --test full_universe_stress backpressure_combined_hot_quiet_writer_queue_4000_certifies
+
 STRESS_MANIFEST_OUT=/tmp/stress-v3 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_exact_hot_quiet_manifest_is_reproducible --test-threads=1 --nocapture
+
+STRESS_MANIFEST_OUT=/tmp/stress-v9 \
+  cargo test --release --locked --test full_universe_stress -- \
+  --ignored reference_backpressure_profiles_manifest_is_reproducible --test-threads=1 --nocapture
 ```
+
+Limitations: the slow-downstream delay is fixed per delta frame and is not a
+bandwidth or latency model; the journal profile does not inject ENOSPC; the
+writer profile uses the production 10 s send timeout rather than measuring a
+queue-wait distribution. None of these profiles produces performance claims.
