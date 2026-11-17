@@ -21,6 +21,7 @@ pub enum ExchangeKind {
     Kalshi,
     Polymarket,
     Hyperliquid,
+    Coinbase,
 }
 
 impl std::fmt::Display for ExchangeKind {
@@ -29,6 +30,7 @@ impl std::fmt::Display for ExchangeKind {
             Self::Kalshi => f.write_str("kalshi"),
             Self::Polymarket => f.write_str("polymarket"),
             Self::Hyperliquid => f.write_str("hyperliquid"),
+            Self::Coinbase => f.write_str("coinbase"),
         }
     }
 }
@@ -231,6 +233,38 @@ impl Default for HyperliquidSettings {
             request_timeout_secs: 20,
             telemetry: HyperliquidTelemetrySettings::default(),
             books: HyperliquidBookSettings::default(),
+        }
+    }
+}
+
+/// Reference-data settings for Coinbase Exchange (H0).
+///
+/// `reference_fixture` is an explicitly configured offline `products` document
+/// for deterministic discovery. When absent, discovery uses the `rest_url`
+/// `/products` endpoint. H0 opens no websocket and produces no market events;
+/// the session seam is a no-network stub with a disabled heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CoinbaseSettings {
+    /// Public Coinbase Exchange REST base URL used for `/products`.
+    pub rest_url: String,
+    /// Optional offline products fixture. H0 tests and catalog checkpoints use
+    /// this so discovery does not depend on a live venue.
+    pub reference_fixture: Option<PathBuf>,
+    pub request_timeout_secs: u64,
+    /// Require an explicit `status == "online"` and `trading_disabled == false`
+    /// for a product to enter the discovered universe. A missing status is
+    /// unconfirmed and is excluded while this is enabled.
+    pub require_online: bool,
+}
+
+impl Default for CoinbaseSettings {
+    fn default() -> Self {
+        Self {
+            rest_url: "https://api.exchange.coinbase.com".to_owned(),
+            reference_fixture: None,
+            request_timeout_secs: 20,
+            require_online: true,
         }
     }
 }
@@ -577,6 +611,7 @@ pub struct FileConfig {
     pub kalshi: KalshiSettings,
     pub polymarket: PolymarketSettings,
     pub hyperliquid: HyperliquidSettings,
+    pub coinbase: CoinbaseSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -590,6 +625,7 @@ pub struct Settings {
     pub kalshi: KalshiSettings,
     pub polymarket: PolymarketSettings,
     pub hyperliquid: HyperliquidSettings,
+    pub coinbase: CoinbaseSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -612,6 +648,7 @@ impl Settings {
             kalshi: file.kalshi,
             polymarket: file.polymarket,
             hyperliquid: file.hyperliquid,
+            coinbase: file.coinbase,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -635,6 +672,7 @@ impl Settings {
             kalshi: file.kalshi,
             polymarket: file.polymarket,
             hyperliquid: file.hyperliquid,
+            coinbase: file.coinbase,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -652,6 +690,7 @@ impl Settings {
                 "kalshi" => ExchangeKind::Kalshi,
                 "polymarket" => ExchangeKind::Polymarket,
                 "hyperliquid" => ExchangeKind::Hyperliquid,
+                "coinbase" => ExchangeKind::Coinbase,
                 other => bail!("unknown COLLECTOR_EXCHANGE `{other}`"),
             };
         }
@@ -908,6 +947,12 @@ impl Settings {
             &self.polymarket.ws_url,
             "wss",
             Some("ws"),
+        )?;
+        validate_endpoint(
+            "coinbase.rest_url",
+            &self.coinbase.rest_url,
+            "https",
+            Some("http"),
         )?;
         validate_endpoint(
             "Kalshi REST base URL",
@@ -1207,6 +1252,22 @@ fn same_existing_file(_left: &Path, _right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coinbase_settings_default_to_public_reference_data() {
+        let settings = Settings::for_exchange(ExchangeKind::Coinbase);
+        assert_eq!(settings.exchange, ExchangeKind::Coinbase);
+        assert_eq!(
+            settings.coinbase.rest_url,
+            "https://api.exchange.coinbase.com"
+        );
+        assert!(settings.coinbase.require_online);
+        assert!(settings.coinbase.reference_fixture.is_none());
+        assert_eq!(ExchangeKind::Coinbase.to_string(), "coinbase");
+        settings
+            .validate()
+            .expect("default Coinbase settings validate");
+    }
 
     #[test]
     fn capture_fingerprint_tracks_capture_settings_not_credentials() {

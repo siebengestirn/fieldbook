@@ -26,8 +26,8 @@ use crate::{
     collector::{CollectorCore, CoreConfig},
     config::{CatalogMode, ExchangeKind, JournalSyncMode, Settings},
     exchange::{
-        DiscoveryResult, DiscoveryStats, Exchange, HyperliquidExchange, KalshiExchange,
-        PolymarketExchange,
+        CoinbaseExchange, DiscoveryResult, DiscoveryStats, Exchange, HyperliquidExchange,
+        KalshiExchange, PolymarketExchange,
     },
     histogram::{Histogram, StageTimings},
     journal::{JournalConfig, JournalHandle, JournalMeta, SyncMode},
@@ -136,6 +136,7 @@ pub fn build_exchange(
             settings.hyperliquid.clone(),
             settings.network.clone(),
         )?)),
+        ExchangeKind::Coinbase => Ok(Arc::new(CoinbaseExchange::new(settings.coinbase.clone())?)),
     }
 }
 
