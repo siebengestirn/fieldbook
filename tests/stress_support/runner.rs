@@ -29,7 +29,7 @@ use tokio::{
 
 use engineering_challenge::{
     Side, completeness,
-    config::{ExchangeKind, Settings},
+    config::{ExchangeKind, JournalSyncMode, Settings},
     coordinator, coverage,
     report::RunReport,
     util::sha256_hex,
@@ -54,10 +54,11 @@ const METRICS_POLL: Duration = Duration::from_millis(25);
 const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
 /// Scenario schema version. Bumped when workload semantics change so a
-/// corrected generator never silently replaces an earlier manifest. v6 adds
-/// explicit phased burst schedules; v5 disposition-certified cell IDs remain
-/// immutable historical evidence.
-const SCENARIO_VERSION: u32 = 6;
+/// corrected generator never silently replaces an earlier manifest. v6 added
+/// explicit phased burst schedules; v7-v8 carried later stress increments;
+/// v9 adds the M5.5 backpressure boundary profiles and their manifest evidence.
+/// Earlier version-certified cell IDs remain immutable historical evidence.
+const SCENARIO_VERSION: u32 = 9;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -72,8 +73,20 @@ pub enum FailInject {
     /// consumed; protocol-invisible loss only event accounting can catch).
     DroppedFrames { count: usize },
     /// Bound the mock's outbound queue hard and stall the forwarder so the
-    /// drain barrier cannot complete in time.
+    /// drain barrier cannot complete in time. Frames admitted before the
+    /// bound are completed; the rest are explicit drops (`queue_saturated`).
     MockQueueSaturate { capacity: usize },
+    /// Delay each delta frame on the wire after admission. The bounded queue
+    /// holds accepted-but-waiting work; no frame is dropped or rejected, and
+    /// the drain barrier must not certify the run before completion.
+    SlowDownstream { delay_ms: u64 },
+    /// Shrink the raw-frame journal's admission queue to its minimum, shorten
+    /// its enqueue timeout and force an fsync per record. A burst then makes
+    /// journal admission reject records and latch the run failed.
+    JournalQueuePressure {
+        queue_capacity: usize,
+        enqueue_timeout_ms: u64,
+    },
     /// Publish each logical delta a second time on the wire. A dedup-correct
     /// collector still applies exactly one copy; the extra application is the
     /// over-application the ledger must detect.
@@ -944,6 +957,18 @@ fn settings_for(mock: &MockKalshi, directory: &Path, config: &CellConfig) -> Set
     } else {
         None
     };
+    // Journal-storage admission profile: a one-record queue, a very short
+    // enqueue timeout and an fsync per record make rejection observable
+    // without needing a privileged ENOSPC injection.
+    if let Some(FailInject::JournalQueuePressure {
+        queue_capacity,
+        enqueue_timeout_ms,
+    }) = config.fail_inject
+    {
+        settings.journal.queue_capacity = queue_capacity.max(1);
+        settings.journal.enqueue_timeout_ms = enqueue_timeout_ms.max(1);
+        settings.journal.sync_mode = JournalSyncMode::Always;
+    }
     settings.network = Default::default();
     settings
 }
@@ -1113,8 +1138,13 @@ fn apply_failure_injection(mock: &MockKalshi, config: &CellConfig, tickers: &[St
             mock.state().set_outbound_capacity(capacity);
             mock.state().stall_forwarder();
         }
-        Some(FailInject::OverApplication { .. }) | Some(FailInject::ShutdownBeforeDrain) | None => {
+        Some(FailInject::SlowDownstream { delay_ms }) => {
+            mock.state().set_forwarder_delay(delay_ms);
         }
+        Some(FailInject::JournalQueuePressure { .. })
+        | Some(FailInject::OverApplication { .. })
+        | Some(FailInject::ShutdownBeforeDrain)
+        | None => {}
     }
 }
 
@@ -1359,6 +1389,11 @@ fn evaluate_barrier(
     sample: &MetricSample,
     base: &DrainBaselines,
     expected: f64,
+    // Wire-frame count the decode and disposition counters must reach. The
+    // source counters are per-replica while `expected` is logical, so using
+    // the logical count here lets the barrier pass before every replica has
+    // decoded its copy (and makes the final sample race the capture).
+    expected_frames: f64,
     in_flight: u64,
 ) -> BarrierState {
     let required = match required_drain_sample(sample) {
@@ -1412,10 +1447,11 @@ fn evaluate_barrier(
         Some(total.saturating_add(value))
     });
     let dispositions_ready = current_dispositions
-        .is_some_and(|current| current >= base_dispositions.saturating_add(expected as u64));
+        .is_some_and(|current| current >= base_dispositions.saturating_add(expected_frames as u64));
     if in_flight == 0
         && required.deltas_emitted >= base.deltas_emitted + expected
-        && required.decoded_delta_events >= base.delta_events_decoded.unwrap_or(0) as f64 + expected
+        && required.decoded_delta_events
+            >= base.delta_events_decoded.unwrap_or(0) as f64 + expected_frames
         && dispositions_ready
         && required.writer_messages >= base.writer_messages + expected
         && required.writer_queue_depth == 0.0
@@ -1510,19 +1546,32 @@ struct DrainResult {
     last_deltas: Option<f64>,
 }
 
+/// Cumulative counts a phase drain barrier must reach. Grouping them keeps
+/// `await_drain` within the argument-count lint while preserving every
+/// independent evidence condition.
+struct DrainTargets {
+    /// Logical/wire-frame count the emission and writer counters must reach.
+    /// Cumulative across phases: the baseline is captured once, before any
+    /// phase, so a later barrier waits for a larger count.
+    expected: u64,
+    /// Wire-frame count the decode and disposition counters must reach. The
+    /// source counters are per-replica while `expected` is logical, so using
+    /// the logical count here lets the barrier pass before every replica has
+    /// decoded its copy (and makes the final sample race the capture).
+    expected_frames: u64,
+    /// Absolute minimum decoded-frame total. The mock's send counter leads the
+    /// sampled decode counter, so a logical-event barrier alone can pass while
+    /// wire frames are still being decoded; requiring this closes that gap.
+    min_decoded_frames: u64,
+}
+
 /// Wait until every production counter has caught up with `expected` new
-/// deltas since `base` and the mock's outbound queue is empty. `expected` is
-/// cumulative across phases: the baseline is captured once, before any phase,
-/// so each later barrier waits for a larger count. No fixed sleep is part of
-/// the schedule; `METRICS_POLL` is only the observation cadence.
+/// deltas since `base` and the mock's outbound queue is empty. No fixed sleep
+/// is part of the schedule; `METRICS_POLL` is only the observation cadence.
 async fn await_drain(
     addr: SocketAddr,
     base: &DrainBaselines,
-    expected: u64,
-    // Absolute minimum decoded-frame total. The mock's send counter leads the
-    // sampled decode counter, so a logical-event barrier alone can pass while
-    // wire frames are still being decoded; requiring this closes that gap.
-    min_decoded_frames: u64,
+    targets: &DrainTargets,
     in_flight: impl Fn() -> u64,
     deadline: Instant,
     mut last_deltas: Option<f64>,
@@ -1533,12 +1582,18 @@ async fn await_drain(
             if let MetricRead::Present(deltas) = sample.read("collector_deltas_emitted_total") {
                 last_deltas = Some(deltas);
             }
-            match evaluate_barrier(&sample, base, expected as f64, in_flight()) {
+            match evaluate_barrier(
+                &sample,
+                base,
+                targets.expected as f64,
+                targets.expected_frames as f64,
+                in_flight(),
+            ) {
                 BarrierState::Satisfied => {
                     let decoded = sample
                         .count("collector_decoded_delta_events_total")
                         .unwrap_or(u64::MAX);
-                    if decoded >= min_decoded_frames {
+                    if decoded >= targets.min_decoded_frames {
                         return DrainResult {
                             completed: true,
                             detail: None,
@@ -1649,7 +1704,10 @@ fn finalize_outcome(
     let document = build_cell_manifest(&outcome, config, &cell_id);
 
     if outcome.acceptance.valid {
-        let missing = super::manifest::missing_required_fields(&document);
+        let mut missing = super::manifest::missing_required_fields(&document);
+        missing.extend(super::backpressure::missing_required_fields(
+            config, &document,
+        ));
         if !missing.is_empty() {
             let mut reasons = vec!["manifest_incomplete".to_owned()];
             reasons.extend(
@@ -1722,6 +1780,19 @@ fn with_manifest_failure(
     }
 }
 
+/// An aborted cell still gets a boundary-specific failure class. The primary
+/// collector error is kept in the reason list, but a declared backpressure
+/// profile leads so the manifest names the boundary that actually failed.
+fn abort_reasons(reasons: Vec<String>, config: &CellConfig) -> Vec<String> {
+    let mut classified = super::backpressure::acceptance_reasons(
+        config,
+        &super::backpressure::BackpressureObservation::default(),
+        None,
+    );
+    classified.extend(reasons);
+    classified
+}
+
 async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     // Worktree provenance is captured before anything else runs so it
     // describes the state the cell actually executed in.
@@ -1788,7 +1859,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             return CellOutcome {
                 output: None,
                 provenance: Some(provenance),
-                acceptance: CellAcceptance::from_reasons(vec![reason]),
+                acceptance: CellAcceptance::from_reasons(abort_reasons(vec![reason], config)),
             };
         }
         if let Some(addr) = metrics_addr
@@ -1912,8 +1983,13 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             let result = await_drain(
                 addr,
                 &base,
-                target,
-                min_decoded,
+                &DrainTargets {
+                    expected: target,
+                    // Per-replica decode/disposition evidence: the mock's send
+                    // counter is logical, but the collector counts every replica.
+                    expected_frames: target.saturating_mul(config.replicas.max(1) as u64),
+                    min_decoded_frames: min_decoded,
+                },
                 || mock.state().in_flight(),
                 Instant::now() + drain_limit,
                 last_deltas,
@@ -1970,27 +2046,30 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             return CellOutcome {
                 output: None,
                 provenance: Some(provenance),
-                acceptance: CellAcceptance::from_reasons(vec![format!(
-                    "collector_task_failed: {error:#}"
-                )]),
+                acceptance: CellAcceptance::from_reasons(abort_reasons(
+                    vec![format!("collector_task_failed: {error:#}")],
+                    config,
+                )),
             };
         }
         Ok(Err(error)) => {
             return CellOutcome {
                 output: None,
                 provenance: Some(provenance),
-                acceptance: CellAcceptance::from_reasons(vec![format!(
-                    "collector_task_join_failed: {error}"
-                )]),
+                acceptance: CellAcceptance::from_reasons(abort_reasons(
+                    vec![format!("collector_task_join_failed: {error}")],
+                    config,
+                )),
             };
         }
         Err(_) => {
             return CellOutcome {
                 output: None,
                 provenance: Some(provenance),
-                acceptance: CellAcceptance::from_reasons(vec![
-                    "collector_did_not_stop_within_limit".to_owned(),
-                ]),
+                acceptance: CellAcceptance::from_reasons(abort_reasons(
+                    vec!["collector_did_not_stop_within_limit".to_owned()],
+                    config,
+                )),
             };
         }
     };
@@ -2332,53 +2411,65 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         }
     }
 
+    let output = CellOutput {
+        writer_queue_high_water: report.writer.queue_high_water,
+        report,
+        coverage: coverage_result.ok(),
+        coverage_error,
+        completeness_error,
+        verify_error,
+        completeness_valid,
+        verify_valid,
+        anchored_time,
+        harness_process_rss_sample_bytes: rss_sample,
+        expected_symbols: expected_set,
+        acknowledged_symbols: acknowledged_set,
+        observed_symbols: observed,
+        anchored_symbols: anchored,
+        eligible_count: eligible.len(),
+        hot_tickers: hot.len(),
+        decoy_absent,
+        journal_complete,
+        journaled_records,
+        transmitted_frames: transmit.sent,
+        events_published: plan.generated,
+        hot_events: plan.hot_events,
+        cold_events: plan.cold_events,
+        applied_events,
+        capacity_connections,
+        anchor_wait_expired,
+        drain_completed,
+        drain_detail,
+        sbe_deltas,
+        sbe_snapshots,
+        sbe_messages,
+        incidents,
+        ledger,
+        schedule,
+        phase_results,
+        mock: transmit,
+    };
+
+    // Backpressure evidence is derived after the output exists, and its own
+    // reasons are appended to the ledger and delivery reasons. A reconciled
+    // ledger alone never certifies a bounded-queue boundary.
+    let profile = super::backpressure::BackpressureProfile::from_config(config);
+    let observation = super::backpressure::observe(profile.as_ref(), Some(&output));
+    reasons.extend(super::backpressure::acceptance_reasons(
+        config,
+        &observation,
+        Some(&output),
+    ));
+
     let acceptance = if reasons.is_empty() {
         CellAcceptance::valid()
     } else {
         CellAcceptance::from_reasons(reasons)
     };
-
     CellOutcome {
         provenance: Some(provenance),
         acceptance,
-        output: Some(CellOutput {
-            writer_queue_high_water: report.writer.queue_high_water,
-            report,
-            coverage: coverage_result.ok(),
-            coverage_error,
-            completeness_error,
-            verify_error,
-            completeness_valid,
-            verify_valid,
-            anchored_time,
-            harness_process_rss_sample_bytes: rss_sample,
-            expected_symbols: expected_set,
-            acknowledged_symbols: acknowledged_set,
-            observed_symbols: observed,
-            anchored_symbols: anchored,
-            eligible_count: eligible.len(),
-            hot_tickers: hot.len(),
-            decoy_absent,
-            journal_complete,
-            journaled_records,
-            transmitted_frames: transmit.sent,
-            events_published: plan.generated,
-            hot_events: plan.hot_events,
-            cold_events: plan.cold_events,
-            applied_events,
-            capacity_connections,
-            anchor_wait_expired,
-            drain_completed,
-            drain_detail,
-            sbe_deltas,
-            sbe_snapshots,
-            sbe_messages,
-            incidents,
-            ledger,
-            schedule,
-            phase_results,
-            mock: transmit,
-        }),
+        output: Some(output),
     }
 }
 
@@ -2699,6 +2790,7 @@ pub fn build_cell_manifest(
             "queue_high_water": output.map(|o| o.mock.queue_high_water),
             "queue_saturated": output.map(|o| o.mock.queue_saturated),
             "injected_pre_wire_drops": output.map(|o| o.mock.injected_pre_wire_drops),
+            "forwarder_delay_ms": output.map(|o| o.mock.forwarder_delay_ms),
         }),
     );
 
@@ -2896,6 +2988,19 @@ pub fn build_cell_manifest(
             "injected_pre_wire_drops": output.map(|output| output.mock.injected_pre_wire_drops),
             "writer_errors": output.map(|output| output.report.writer.errors),
         }),
+    );
+
+    let backpressure_profile = super::backpressure::BackpressureProfile::from_config(config);
+    let backpressure_observation =
+        super::backpressure::observe(backpressure_profile.as_ref(), output);
+    document.insert(
+        "backpressure".to_owned(),
+        super::backpressure::manifest_json(
+            backpressure_profile.as_ref(),
+            &backpressure_observation,
+            output,
+            &outcome.acceptance.reasons,
+        ),
     );
 
     document.insert("performance".to_owned(), json!({
@@ -3112,7 +3217,7 @@ mod tests {
              collector_writer_queue_depth 0\n\
              collector_writer_errors_total 0\n",
         );
-        match evaluate_barrier(&sample, &base(), 10.0, 0) {
+        match evaluate_barrier(&sample, &base(), 10.0, 10.0, 0) {
             BarrierState::Unavailable(message) => {
                 assert!(
                     message.contains("collector_writer_messages_total"),
@@ -3133,7 +3238,7 @@ mod tests {
              collector_writer_errors_total 0\n",
         );
         assert!(matches!(
-            evaluate_barrier(&sample, &base(), 10.0, 0),
+            evaluate_barrier(&sample, &base(), 10.0, 10.0, 0),
             BarrierState::Unavailable(_)
         ));
     }
@@ -3169,7 +3274,7 @@ mod tests {
              collector_writer_errors_total 0\n",
         );
         assert_eq!(
-            evaluate_barrier(&sample, &base, 10.0, 0),
+            evaluate_barrier(&sample, &base, 10.0, 10.0, 0),
             BarrierState::CounterReset("collector_deltas_emitted_total")
         );
     }
@@ -3184,11 +3289,11 @@ mod tests {
              collector_writer_errors_total 0\n",
         );
         assert_eq!(
-            evaluate_barrier(&sample, &base(), 10.0, 0),
+            evaluate_barrier(&sample, &base(), 10.0, 10.0, 0),
             BarrierState::Satisfied
         );
         assert_eq!(
-            evaluate_barrier(&sample, &base(), 10.0, 1),
+            evaluate_barrier(&sample, &base(), 10.0, 10.0, 1),
             BarrierState::Waiting
         );
     }

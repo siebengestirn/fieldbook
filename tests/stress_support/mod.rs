@@ -4,6 +4,7 @@
 //! not compiled into the collector binary and contributes nothing to
 //! production behavior.
 
+pub mod backpressure;
 pub mod host;
 pub mod manifest;
 pub mod mock;
