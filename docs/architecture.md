@@ -227,6 +227,7 @@ flowchart LR
 | State | `collector/state.rs`, `orderbook.rs`, `model.rs`, `fixed.rs` | Serialized books, failover, fixed-point values, output model |
 | Data-product contracts | `products.rs`, `exchange/mod.rs` (`source_capabilities_for`) | Platform M3 Phase 1 typed products, stable subscription keys from legacy native symbols, typed source capabilities, and an explicit subscription state machine with connection epochs; declarations only, no session-API, SBE, journal, replay or catalog change. H0-only venues declare reference data and no live products. |
 | Canonical event model | `canonical.rs`, `docs/CANONICAL_EVENT_MODEL.md` | Platform M4 Phase 1 typed canonical envelope and taxonomy with deterministic opaque event ids, explicit provenance, schema-versioned serialization and a fail-closed reader; exact `ExchangeEvent` mappings only (no fabricated trades, BBO, assets or gaps). `NormalizedStore` is a contract with a test-only in-memory implementation; the raw journal is independent, the SBE writer is one projection, and no durable store, connector, performance or live claim is made. |
+| Non-market-data reference app | `application.rs`, `application/postgres.rs`, `docs/JSONL_POSTGRES_REFERENCE.md` | Platform P5 second application proving source/target independence: JSONL source -> typed `CanonicalBusinessEvent` -> idempotent target contract with five-way receipts, obligations and checkpointed resume; parameterized PostgreSQL SQL plus a deterministic in-memory simulator. No driver, live database, market-data module, SBE/journal/replay/catalog change, or performance/live claim. |
 | Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance. Hyperliquid's session subscribes to H1 telemetry (`allMids`/`fastAssetCtxs`) plus H2 `l2Book`/`trades` for the exact selected perpetuals; `request_snapshot` resubscribes/wait-for-next-push and `Recover` fences by the existing receive epoch/sequence. |
 | Adapter telemetry | `exchange/hyperliquid/telemetry.rs` | H1 exact-decimal decoding of venue-wide `allMids`/`fastAssetCtxs` statistics into typed `ProtocolControl` observations; unknown additive fields ignored, inexact numbers rejected; no depth, `Snapshot`, `LevelChange` or heartbeat acknowledgement |
 | Adapter books | `exchange/hyperliquid/books.rs` | H2 exact-decimal decoding of full two-sided `l2Book` pushes into `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; `trades` stay `ProtocolControl` telemetry; identity is `hyperliquid:perp:<dex>:<coin>`; no spot books, no `LevelChange`, no full universe |
@@ -248,6 +249,10 @@ prove that a live venue delivered every update. The collector is a market-data
 component and is **not a production certification** for order entry, execution,
 or trading. Order management, execution, portfolio management, and risk remain
 separate bounded contexts under the [platform charter](platform-charter.md).
+The second, non-market-data reference application is described in
+[`docs/JSONL_POSTGRES_REFERENCE.md`](JSONL_POSTGRES_REFERENCE.md): its target
+is a deterministic simulator plus a parameterized SQL contract, not a live
+database, and it makes no performance or live claim.
 See [`operating-envelope.md`](operating-envelope.md) for measured
 limits and [`design-decisions.md`](design-decisions.md) for the rationale.
 Implementation contracts are in [`replay-format.md`](replay-format.md),
