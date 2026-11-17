@@ -352,9 +352,9 @@ async fn lifecycle_churn_under_load_reconciles_and_certifies() {
     );
 }
 
-/// Ignored reference generator. Publishes the v15 lifecycle-churn manifest under
-/// `STRESS_MANIFEST_OUT`; it never overwrites earlier v3-v13 artifacts because
-/// the cell id carries `lifecycle-churn_under_load-v15`.
+/// Ignored reference generator. Publishes the v16 lifecycle-churn manifest under
+/// `STRESS_MANIFEST_OUT`; it never overwrites earlier v3-v15 artifacts because
+/// the cell id carries `lifecycle-churn_under_load-v16`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly with STRESS_MANIFEST_OUT"]
 async fn reference_lifecycle_churn_manifest_is_versioned() {
@@ -381,12 +381,12 @@ async fn reference_lifecycle_churn_manifest_is_versioned() {
                 && value["run_status"] == "success"
         })
         .expect("a published success entry");
-    assert!(cell_id.contains("lifecycle-churn_under_load-v15"));
+    assert!(cell_id.contains("lifecycle-churn_under_load-v16"));
     let manifest: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(out.join(entry["path"].as_str().unwrap())).expect("manifest body"),
     )
     .expect("manifest JSON");
-    assert_eq!(manifest["scenario_version"], 15);
+    assert_eq!(manifest["scenario_version"], 16);
     assert_eq!(
         manifest["scenario"]["lifecycle_scenario"],
         "churn_under_load"

@@ -74,9 +74,11 @@ const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 /// schema that additionally carries the M5.6 stage-timing performance block.
 /// v15 folds in the M5.7 capacity characterization (4k/10k/25k/50k stages and
 /// the fixed-per-instrument, fixed-aggregate and skewed hot/quiet workload
-/// models) with its own manifest evidence block. Earlier version-certified
-/// cell IDs remain immutable historical evidence.
-const SCENARIO_VERSION: u32 = 15;
+/// models) with its own manifest evidence block. v16 integrates the Hyperliquid
+/// H3 capacity profile (loopback wire mock, mid/fast-context/book/trade
+/// workload shapes and reconnect recovery) under the same manifest schema.
+/// Earlier version-certified cell IDs remain immutable historical evidence.
+pub const SCENARIO_VERSION: u32 = 16;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
