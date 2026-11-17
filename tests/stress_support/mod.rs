@@ -5,6 +5,7 @@
 //! production behavior.
 
 pub mod backpressure;
+pub mod faults;
 pub mod host;
 pub mod manifest;
 pub mod mock;
