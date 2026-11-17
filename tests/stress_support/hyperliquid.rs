@@ -7,7 +7,7 @@
 //! one explicit schedule derived from a seed, so a run is reproducible from the
 //! seed alone.
 //!
-//! It deliberately reuses the shared stress ledger, disposition accounting,
+//! It uses the shared stress ledger, disposition accounting,
 //! three-set coverage hashes, manifest schema and scenario version from
 //! `runner`/`manifest`. Evidence produced here is **synthetic loopback**: it is
 //! not live certification and makes no latency, throughput or capacity claim.
@@ -381,7 +381,7 @@ pub fn derive_schedule(profile: HyperliquidProfile, seed: u64) -> HyperliquidSch
     }
 
     // Push all frames in ascending sequence order within each epoch. Books are
-    // deliberately interleaved with telemetry/trade frames by sorting on seq.
+    // interleaved with telemetry/trade frames by sorting on seq.
     epoch_one.sort_by_key(|frame| frame.seq);
     epoch_two.sort_by_key(|frame| frame.seq);
 

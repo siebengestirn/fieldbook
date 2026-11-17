@@ -53,7 +53,7 @@ pub enum RecoveryCause {
     OperatorRequested,
 }
 
-/// Conditions observed by the caller. This is deliberately a snapshot of
+/// Conditions observed by the caller. This snapshot of
 /// facts, not a decision: the policy owns the cause-to-action mapping.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RecoverySignals {
@@ -240,7 +240,7 @@ pub enum RecoveryOutcome {
 }
 
 /// One queued recovery request. Causes are accumulated, attempts are bounded,
-/// and the outcome records what actually happened.
+/// and the outcome records the resulting state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryRequest {
     pub action: RecoveryAction,
@@ -606,7 +606,7 @@ impl RecoveryCoordinator {
         Ok(key)
     }
 
-    /// Coalesce repeated causes onto the exact same target and generation.
+    /// Merge repeated causes for one recovery target and generation.
     pub fn merge_instrument_causes(
         &mut self,
         key: &InstrumentRecoveryKey,

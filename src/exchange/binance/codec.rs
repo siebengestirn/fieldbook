@@ -2,7 +2,7 @@
 //!
 //! Decodes an offline `exchangeInfo`-style document into validated
 //! [`MarketInfo`] records. There is no websocket or price-frame path here;
-//! later stages add their own boundaries. The decoder is deliberately strict:
+//! later stages add their own boundaries. The decoder rejects values that cannot be represented:
 //! a value that cannot be represented exactly at the canonical SBE scale is
 //! rejected rather than silently rounded.
 

@@ -566,7 +566,7 @@ async fn connect_once(
 
 /// Extract an HTTP status from a failed websocket handshake, if the underlying
 /// tungstenite error carried one. Authentication failures can then be treated as
-/// fatal instead of being retried forever.
+/// fatal instead of retrying without a deadline.
 pub fn http_status(error: &anyhow::Error) -> Option<u16> {
     error.chain().find_map(|cause| {
         cause

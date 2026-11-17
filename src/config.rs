@@ -154,7 +154,7 @@ impl Default for PolymarketSettings {
 ///
 /// Subscriptions are channel-level and venue-wide: `allMids` and
 /// `fastAssetCtxs` are statistics feeds, never book subscriptions. `assetCtxs`
-/// is deliberately absent — no checked-in golden fixture pins its wire shape,
+/// is absent because no checked-in golden fixture pins its wire shape,
 /// so H1 does not subscribe to it. Adding it is a later, fixture-gated change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -176,7 +176,7 @@ impl Default for HyperliquidTelemetrySettings {
 /// Selected-book settings for Hyperliquid (H2).
 ///
 /// The book universe is an explicit, finite list of perpetual coin names on the
-/// main DEX. It is deliberately small by default and never expands to the full
+/// main DEX. The default contains a finite selection and does not expand to the full
 /// venue universe. Spot instruments are never subscribed to `l2Book` or
 /// `trades`; identity and numeric semantics come from H0 discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,7 +215,7 @@ impl Default for HyperliquidBookSettings {
 /// defaults: an H0 configuration that predates them still deserializes and
 /// now opens a telemetry-only websocket. `books` is likewise defaulted so an
 /// older configuration keeps parsing; the session subscribes to book feeds
-/// only for native symbols it actually receives in its desired set.
+/// only for native symbols present in the desired set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HyperliquidSettings {
@@ -447,7 +447,7 @@ pub struct CollectorSettings {
     pub max_snapshot_bytes_per_sec: u64,
     /// Maximum concurrent websocket connection attempts.
     pub connect_concurrency: usize,
-    /// Last-known-good catalog checkpoint. `None` disables persistence.
+    /// Most recent accepted catalog checkpoint. `None` disables persistence.
     pub catalog_path: Option<PathBuf>,
     /// Catalog bootstrap policy.
     pub catalog_mode: CatalogMode,

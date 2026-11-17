@@ -1,7 +1,7 @@
 //! Per-symbol feed-completeness accounting for an aligned SBE capture.
 //!
 //! `verify` answers whether deltas reconstruct the next snapshots exactly.
-//! This report answers the adjacent question a backtest actually depends on:
+//! This report answers a question used by backtests:
 //! **which symbols never became anchored**, how much of the stream was
 //! captured before the first snapshot for each symbol, and whether any
 //! symbol's book state was ever accepted without a complete baseline.
@@ -491,8 +491,7 @@ mod tests {
 
     #[test]
     fn unanchored_counts_include_deltas_after_the_last_snapshot_when_unanchored() {
-        // A symbol that never receives a snapshot is unanchored forever;
-        // later snapshots for other symbols do not help it.
+        // A snapshot for another symbol cannot anchor this symbol.
         let (_directory, path) = write_capture(vec![
             update(SYMBOL_A, 1, Side::Buy, 400_000, 10),
             snapshot(SYMBOL_B, 2, &[(500_000, 10)], &[]),

@@ -13,7 +13,7 @@
 //! Deterministic synthetic full-universe stress laboratory.
 //!
 //! The synthetic Kalshi venue serves a seeded universe of
-//! `STRESS-{seed:04x}-{i:06}` markets (regular challenge-eligible markets
+//! `STRESS-{seed:04x}-{index:06}` markets (regular challenge-eligible markets
 //! plus MVE/closed decoys as negative controls) over real REST pagination
 //! and WebSocket subscriptions. Every run drives the production collector
 //! path (adapter → discovery → capacity planning → coordinator → books →
@@ -649,7 +649,7 @@ async fn worktree_gate_accepts_clean_repository() {
     );
 }
 
-/// Deliberately-failing reference cell: forces a capacity-plan rejection so
+/// Failure reference cell: forces a capacity-plan rejection so
 /// a failure manifest is produced on demand (ignored in CI; run locally to
 /// regenerate `measurements/stress/reference-*.json`). The manifest preserves
 /// the exact planner rejection reason — an infeasible cell is recorded, not
@@ -1067,7 +1067,7 @@ fn ledger_reconciliation_is_two_sided() {
         "persistence gap must not reconcile"
     );
 
-    // The certification path, not just the helper, must reject each defect.
+    // The certification path must reject each defect.
     for (mut bad, reason) in [
         (ledger(100, 100), "pre_wire_loss"),
         (ledger(100, 100), "enqueue_excess"),
@@ -1246,9 +1246,8 @@ async fn reference_mixed_hot_quiet_manifest_is_reproducible() {
     assert!(output.ledger.reconciled());
 }
 
-/// M5 exact-quota profile: the same 4,000-instrument universe receives exactly
-/// 320 hot and 80 cold logical deltas. Event assignment, not just membership,
-/// is pinned by the seed.
+/// M5 exact-quota profile: the 4,000-instrument universe receives 320 hot and
+/// 80 cold logical deltas. The seed pins both hot-set membership and event assignment.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mixed_hot_quiet_exact_4000_cell_assigns_320_hot_events() {
     let directory = tempfile::tempdir().unwrap();
@@ -1865,7 +1864,7 @@ async fn journal_storage_pressure_profile_fails_closed() {
     assert_eq!(
         outcome.acceptance.failure_class.as_deref(),
         Some("journal_pressure_rejected"),
-        "the boundary, not just the collector symptom, must be the primary class"
+        "the boundary must be the primary class, not the collector symptom"
     );
     // A fatal journal rejection stops the collector before a capture is
     // produced. That is itself the fail-closed outcome; the manifest must

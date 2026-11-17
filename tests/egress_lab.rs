@@ -537,7 +537,7 @@ async fn http_connect_trailing_bytes_are_rejected() {
         format!("{error:#}").contains("unexpected byte"),
         "error must reject the extra bytes: {error:#}"
     );
-    // The proxy relays regardless of what the client later discards; the
+    // The proxy relays the response; the client rejects it. The
     // invariant is that the client, not the venue handshake, rejected it.
     assert_eq!(proxy.requests.lock().unwrap().len(), 1);
 }
@@ -672,7 +672,7 @@ async fn socks5_refused_connect_is_a_proxy_stage_failure() {
 
 #[tokio::test]
 async fn rest_requests_fail_closed_through_a_dead_proxy() {
-    // The HTTP client the adapters use, with a proxy endpoint that cannot be
+    // The adapter HTTP client uses a proxy endpoint that cannot be
     // reached. The request must fail fast; there is no fallback to direct.
     let client = rest_client("http://127.0.0.1:1");
     let start = std::time::Instant::now();
@@ -881,7 +881,7 @@ async fn start_gamma_stub() -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
 #[tokio::test]
 async fn rest_through_socks5_tunnels_to_the_gamma_stub() {
     let (stub_addr, requests) = start_gamma_stub().await;
-    // The mock SOCKS5 server forwards every tunnel to the Gamma stub.
+    // The mock SOCKS5 server forwards each tunnel to the Gamma stub.
     let proxy = start_socks5_proxy(
         SocksBehavior {
             require_password: None,

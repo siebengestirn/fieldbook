@@ -1,6 +1,6 @@
 //! Typed data-product and source-capability contracts (Platform M3, Phase 1).
 //!
-//! This module is deliberately additive. `MarketDataSession::apply_subscriptions`
+//! These contracts coexist with `MarketDataSession::apply_subscriptions`
 //! still takes `&BTreeSet<String>`, and `ExchangeCapabilities::new(bool)` still
 //! reports the legacy sequence-clock flag. Nothing here changes the SBE,
 //! journal, replay or catalog formats, and no adapter behavior is altered.
@@ -384,7 +384,7 @@ pub enum SubscriptionState {
 }
 
 impl SubscriptionState {
-    /// Explicit transition table. A socket write (`Sent`) is deliberately not
+    /// Explicit transition table. A socket write (`Sent`) is not
     /// an acknowledgement, and only a venue acknowledgement can produce
     /// `Acknowledged`.
     #[must_use]

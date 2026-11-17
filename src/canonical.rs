@@ -1,6 +1,6 @@
 //! Canonical event envelope and normalized event taxonomy (Platform M4, Phase 1).
 //!
-//! This module is deliberately additive. [`crate::model::ExchangeEvent`] stays
+//! This module adds canonical event types without changing [`crate::model::ExchangeEvent`]. The legacy type remains
 //! the market-specific collector/SBE/replay wire contract and is **not**
 //! changed here. Nothing in this module alters the SBE writer, raw-frame
 //! journal, replay JSONL, or catalog checksums. No dependency is added, and no
@@ -151,7 +151,7 @@ impl From<(&str, &model::BookSnapshot)> for BookSnapshot {
 }
 
 /// Absolute replacement or signed adjustment of one level. An absolute change
-/// and a delta change are deliberately distinct.
+/// and a delta change have distinct meanings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CanonicalChange {

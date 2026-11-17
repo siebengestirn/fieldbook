@@ -24,12 +24,10 @@ use crate::{
 
 /// Convert one discovery page, isolating malformed records.
 ///
-/// A record that fails conversion is counted and skipped with a warning so a
-/// single bad entry cannot abort reconciliation for every valid market. If
-/// every record on a non-empty page fails, the response is untrustworthy and
-/// an error is returned so the round is retried instead of silently
-/// reconciling a partial set. Records removed by the active/MVE filters
-/// are not failures.
+/// A malformed record is counted and skipped with a warning. If every record
+/// on a non-empty page fails conversion, the response is untrustworthy; return
+/// an error so the round is retried rather than reconciling a partial set.
+/// Records removed by the active/MVE filters are not failures.
 fn convert_kalshi_page(
     page: Vec<RawMarket>,
     max_markets: usize,

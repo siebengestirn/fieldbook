@@ -288,7 +288,7 @@ fn sbe_json(output: Option<&CellOutput>) -> Value {
     })
 }
 
-/// Reconcile the declared profile with the counters the run actually produced.
+/// Reconcile the declared profile with the run counters.
 #[must_use]
 pub fn observe(
     profile: Option<&BackpressureProfile>,

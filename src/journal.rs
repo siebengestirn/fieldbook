@@ -1752,7 +1752,7 @@ pub struct SegmentVerification {
 /// terminated. Recovery does not take a cross-process lease and must not race
 /// a live writer.
 ///
-/// Recovery is deliberately conservative: it never promotes a `.partial`
+/// Recovery does not promote a `.partial`
 /// segment or an unmanifested `.pmj` file into the run. `Starting` and `Open`
 /// manifests become `Incomplete`; terminal states are left unchanged. Repeated
 /// calls are idempotent because an `Incomplete`, `Failed`, or `Finalized`
@@ -1893,7 +1893,7 @@ pub fn verify_run(run_directory: &Path) -> anyhow::Result<JournalVerification> {
 /// An incomplete or failed report may contain queued or active-segment records,
 /// but its finalized counters must match the committed manifest prefix.
 ///
-/// The report's free-form `last_error` string is deliberately not compared
+/// The report's free-form `last_error` string is not compared
 /// byte-for-byte to the manifest's `failure` field. The manifest records the
 /// first writer error that failed the run, while `last_error` is overwritten
 /// by later symptoms such as "journal writer stopped" when a second record is

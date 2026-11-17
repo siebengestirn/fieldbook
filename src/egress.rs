@@ -56,9 +56,8 @@ impl ProxyScheme {
 
 /// Proxy credentials read exclusively from the environment.
 ///
-/// `Debug` and `Display` are not implemented: the type exists only to be
-/// passed to a client library; it is intentionally impossible to log by
-/// accident.
+/// `Debug` and `Display` are not implemented because instances carry proxy
+/// credentials and are passed only to the client library.
 #[derive(Clone)]
 struct ProxyAuth {
     username: String,

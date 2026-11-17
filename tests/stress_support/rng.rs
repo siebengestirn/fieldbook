@@ -4,7 +4,7 @@
 //! algorithm so that a run is reproducible from its seed alone — across
 //! machines and Rust releases. `rand` is available in the dependency tree but
 //! is unsuitable here: its algorithms and output order are not a stable
-//! contract we want to version as `prng_algorithm_version`.
+//! versioned workload contract.
 //!
 //! Reference: Steele, Lea & Flood, "Fast splittable pseudorandom number
 //! generators" (OOPSLA 2014), public-domain SplitMix64 definition:

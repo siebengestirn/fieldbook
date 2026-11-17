@@ -1,6 +1,6 @@
 //! OKX H0 no-network session stub.
 //!
-//! H0 provides reference data only. The adapter deliberately opens no socket,
+//! H0 provides reference data only. The adapter opens no socket,
 //! subscribes to no channel and produces no frame: the supervisor can be wired
 //! through the same seams as other venues, but a live collection attempt fails
 //! closed with a fatal error instead of pretending to have a feed. The

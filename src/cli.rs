@@ -86,7 +86,7 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "SECONDS")]
     pub fsync_interval_secs: Option<u64>,
 
-    /// Last-known-good catalog checkpoint.
+    /// Most recent accepted catalog checkpoint.
     #[arg(long, global = true, value_name = "FILE")]
     pub catalog: Option<PathBuf>,
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy verification: prove the documented deployment path actually works.
+# Deploy verification: exercise the documented deployment path.
 #
 # This is not a unit test and not a simulation. It builds the release
 # binary, installs it into a sandbox that mirrors the layout from

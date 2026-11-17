@@ -6,7 +6,7 @@
 //! produced here. Numeric strings are parsed exactly at the canonical SBE
 //! scale and rejected when inexact; unknown additive fields are ignored.
 //!
-//! `assetCtxs` is deliberately not subscribed in H1: no checked-in golden
+//! `assetCtxs` is not subscribed in H1: no checked-in golden
 //! fixture pins its wire shape. Adding it is a later, fixture-gated change.
 
 use anyhow::{Context, bail};

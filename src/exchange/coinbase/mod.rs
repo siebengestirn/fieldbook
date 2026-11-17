@@ -94,7 +94,7 @@ pub fn capabilities() -> ExchangeCapabilities {
 }
 
 /// H0 is reference-data-only: no socket, no live products and no heartbeat.
-/// The `products` set is deliberately empty; reference data is declared
+/// The `products` set is empty; reference data is declared
 /// separately rather than disguised as a live product.
 #[must_use]
 pub fn typed_capabilities() -> SourceCapabilities {

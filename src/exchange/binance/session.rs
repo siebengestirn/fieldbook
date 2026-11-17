@@ -4,7 +4,7 @@
 //! adapter satisfies the shared [`SessionFactory`] seam, but the returned
 //! session opens no socket, accepts no subscriptions and reads no frames. The
 //! heartbeat is explicitly disabled. A later staged gate replaces this stub;
-//! until then a Binance collector cannot accidentally reach the network here.
+//! until then, a Binance collector cannot reach the network through this session.
 
 use std::collections::BTreeSet;
 

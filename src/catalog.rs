@@ -1,4 +1,4 @@
-//! Persisted last-known-good discovery catalog.
+//! Persisted discovery catalog containing the most recent accepted round.
 //!
 //! A checkpoint is written only after a complete discovery round has been
 //! accepted. It carries a schema version, the generation time, the selected
