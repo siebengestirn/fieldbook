@@ -192,6 +192,7 @@ fn default_target(settings: &Settings) -> String {
     match settings.exchange {
         ExchangeKind::Kalshi => settings.kalshi.environment.ws_url().to_owned(),
         ExchangeKind::Polymarket => settings.polymarket.ws_url.clone(),
+        ExchangeKind::Hyperliquid => settings.hyperliquid.info_url.clone(),
     }
 }
 

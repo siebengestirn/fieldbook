@@ -20,6 +20,7 @@ pub enum ExchangeKind {
     #[default]
     Kalshi,
     Polymarket,
+    Hyperliquid,
 }
 
 impl std::fmt::Display for ExchangeKind {
@@ -27,6 +28,7 @@ impl std::fmt::Display for ExchangeKind {
         match self {
             Self::Kalshi => f.write_str("kalshi"),
             Self::Polymarket => f.write_str("polymarket"),
+            Self::Hyperliquid => f.write_str("hyperliquid"),
         }
     }
 }
@@ -132,6 +134,34 @@ impl Default for PolymarketSettings {
             request_timeout_secs: 20,
             discovery_page_delay_ms: 50,
             require_accepting_orders: true,
+        }
+    }
+}
+
+/// Reference-data settings for Hyperliquid (H0).
+///
+/// `reference_fixture` is an explicitly configured offline source for
+/// deterministic discovery. When absent, discovery uses the `info_url` REST
+/// endpoint. No websocket is opened during H0 discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HyperliquidSettings {
+    pub info_url: String,
+    /// Perpetual DEX names to include. The empty string is the main DEX.
+    pub dexs: Vec<String>,
+    pub spot_enabled: bool,
+    pub reference_fixture: Option<PathBuf>,
+    pub request_timeout_secs: u64,
+}
+
+impl Default for HyperliquidSettings {
+    fn default() -> Self {
+        Self {
+            info_url: "https://api.hyperliquid.xyz/info".to_owned(),
+            dexs: vec![String::new()],
+            spot_enabled: false,
+            reference_fixture: None,
+            request_timeout_secs: 20,
         }
     }
 }
@@ -477,6 +507,7 @@ pub struct FileConfig {
     pub exchange: ExchangeKind,
     pub kalshi: KalshiSettings,
     pub polymarket: PolymarketSettings,
+    pub hyperliquid: HyperliquidSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -489,6 +520,7 @@ pub struct Settings {
     pub exchange: ExchangeKind,
     pub kalshi: KalshiSettings,
     pub polymarket: PolymarketSettings,
+    pub hyperliquid: HyperliquidSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -510,6 +542,7 @@ impl Settings {
             exchange: file.exchange,
             kalshi: file.kalshi,
             polymarket: file.polymarket,
+            hyperliquid: file.hyperliquid,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -532,6 +565,7 @@ impl Settings {
             exchange: file.exchange,
             kalshi: file.kalshi,
             polymarket: file.polymarket,
+            hyperliquid: file.hyperliquid,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -548,6 +582,7 @@ impl Settings {
             self.exchange = match exchange.to_ascii_lowercase().as_str() {
                 "kalshi" => ExchangeKind::Kalshi,
                 "polymarket" => ExchangeKind::Polymarket,
+                "hyperliquid" => ExchangeKind::Hyperliquid,
                 other => bail!("unknown COLLECTOR_EXCHANGE `{other}`"),
             };
         }
