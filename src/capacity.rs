@@ -84,7 +84,8 @@ pub fn plan(settings: &Settings, markets: &[MarketInfo]) -> anyhow::Result<Capac
         crate::config::ExchangeKind::Polymarket
         | crate::config::ExchangeKind::Hyperliquid
         | crate::config::ExchangeKind::Coinbase
-        | crate::config::ExchangeKind::Kraken => 0,
+        | crate::config::ExchangeKind::Kraken
+        | crate::config::ExchangeKind::Okx => 0,
     };
     let total_connections = shards
         .saturating_mul(replicas)

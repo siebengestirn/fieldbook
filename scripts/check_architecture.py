@@ -78,6 +78,10 @@ SOURCE_RESPONSIBILITIES = {
     "src/exchange/kraken/codec.rs": "Kraken AssetPairs to MarketInfo decoding with namespaced identity, exact numeric specs and active-only filter",
     "src/exchange/kraken/discovery.rs": "offline-fixture and REST AssetPairs reference-data discovery with telemetry and explicit pair selection",
     "src/exchange/kraken/session.rs": "H0 no-network session seam with disabled heartbeat",
+    "src/exchange/okx/mod.rs": "OKX H0 exchange composition: identity, clockless capability declaration, offline discovery wiring and inert no-network session factory",
+    "src/exchange/okx/codec.rs": "OKX instruments document to validated MarketInfo decoding: product-type scoping, explicit namespace identity, exact tickSz/lotSz scales, live-state filter and no silent rounding",
+    "src/exchange/okx/discovery.rs": "offline OKX instruments reference-data discovery with reconciled page/record telemetry and fail-closed missing fixture",
+    "src/exchange/okx/session.rs": "OKX H0 no-network session stub with disabled heartbeat that fails closed instead of opening a socket",
     "src/util/aligned_sbe_reader.rs": "aligned SBE capture reader",
     "src/util/aligned_sbe_writer.rs": "aligned SBE chunk writer and sink helpers",
     "src/util/build.rs": "build-time SBE DTO/codec generation integration",
@@ -145,6 +149,14 @@ REQUIRED_ANCHORS = {
     "src/exchange/kraken/codec.rs": ["parse_asset_pairs", "decode_pair", "parse_reference_document"],
     "src/exchange/kraken/discovery.rs": ["discover_with_stats"],
     "src/exchange/kraken/session.rs": ["KrakenSessionFactory"],
+    "src/exchange/okx/mod.rs": ["OkxExchange", "capabilities", "pub const fn kind"],
+    "src/exchange/okx/codec.rs": [
+        "parse_instruments_document", "tickSz", "lotSz", "state", "native_symbol",
+    ],
+    "src/exchange/okx/discovery.rs": ["discover_with_stats"],
+    "src/exchange/okx/session.rs": [
+        "OkxSessionFactory", "OkxNoNetworkSession", "fn heartbeat_spec", "Disabled",
+    ],
     "src/verify.rs": ["pub fn run"],
     "src/journal.rs": [
         "pub struct JournalHandle", "pub fn verify_run", "pub fn read_records",

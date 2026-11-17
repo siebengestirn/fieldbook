@@ -7,7 +7,10 @@ pub use hyperliquid::HyperliquidExchange;
 pub mod kalshi;
 pub mod kraken;
 pub use kraken::KrakenExchange;
+pub mod okx;
 pub mod polymarket;
+
+pub use okx::OkxExchange;
 
 use std::{sync::Arc, time::Instant};
 
@@ -54,6 +57,9 @@ pub fn capabilities_for(kind: ExchangeKind) -> ExchangeCapabilities {
         ExchangeKind::Hyperliquid => hyperliquid::capabilities(),
         ExchangeKind::Coinbase => coinbase::capabilities(),
         ExchangeKind::Kraken => kraken::capabilities(),
+        // OKX H0 publishes no cross-replica comparable sequence clock; H1-H3
+        // keep the receive-fence-only ordering authority.
+        ExchangeKind::Okx => okx::capabilities(),
     }
 }
 
@@ -150,7 +156,9 @@ mod tests {
         // a cross-replica comparable clock is verified.
         assert!(!capabilities_for(ExchangeKind::Kalshi).has_sequence_clock);
         assert!(!capabilities_for(ExchangeKind::Polymarket).has_sequence_clock);
+        assert!(!capabilities_for(ExchangeKind::Hyperliquid).has_sequence_clock);
         // Coinbase H0 has no verified cross-replica sequence clock either.
         assert!(!capabilities_for(ExchangeKind::Coinbase).has_sequence_clock);
+        assert!(!capabilities_for(ExchangeKind::Okx).has_sequence_clock);
     }
 }
