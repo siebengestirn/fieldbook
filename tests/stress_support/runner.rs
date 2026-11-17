@@ -39,6 +39,10 @@ use engineering_challenge::{
 use super::{
     faults::{FaultSchedule, FaultStep, SweepProfile},
     host::HostInfo,
+    lifecycle::{
+        CatalogEffect, LIFECYCLE_SCHEDULE_VERSION, LifecycleScenario, LifecycleSchedule,
+        UniverseEpoch,
+    },
     mock::{MockKalshi, MockLedger},
     rng::SplitMix64,
     universe::SyntheticUniverse,
@@ -56,14 +60,15 @@ const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
 /// Scenario schema version. Bumped when workload semantics change so a
 /// corrected generator never silently replaces an earlier manifest. v6 added
-/// explicit phased burst schedules; v7-v8 carried later stress increments;
-/// v9 added the M5.5 backpressure boundary profiles and their manifest evidence;
-/// v10 and v11 carried the M5.6 and M5.7 increments. v12 is the combined
-/// integrated schema: it folds in the deterministic disconnect fault schedule
-/// and recovery evidence alongside the burst, backpressure and capacity
-/// profiles. Earlier version-certified cell IDs remain immutable historical
-/// evidence.
-const SCENARIO_VERSION: u32 = 12;
+/// explicit phased burst schedules; v7 introduced the M5.3 lifecycle-churn
+/// scenarios and universe-epoch coverage; v8 carried the M5.4 disconnect
+/// fault schedule and recovery evidence; v9 added the M5.5 backpressure
+/// boundary profiles and their manifest evidence; v10 and v11 carried the
+/// M5.6 and M5.7 increments. v13 is the combined integrated schema: it folds
+/// in the lifecycle scenarios and universe-epoch coverage alongside the
+/// burst, disconnect, backpressure and capacity profiles. Earlier
+/// version-certified cell IDs remain immutable historical evidence.
+const SCENARIO_VERSION: u32 = 13;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -343,6 +348,8 @@ pub struct CellConfig {
     pub force_capacity_reject: bool,
     /// One named failure-injection mode; `None` for ordinary cells.
     pub fail_inject: Option<FailInject>,
+    /// Typed lifecycle-churn scenario. `None` keeps the pre-M5.3 workload.
+    pub lifecycle_scenario: LifecycleScenario,
     /// Override the writer queue bound (harness self-test knob).
     pub writer_queue: Option<usize>,
     /// Repository directory the clean-worktree gate inspects. Defaults to the
@@ -376,6 +383,7 @@ impl Default for CellConfig {
             limits: None,
             force_capacity_reject: false,
             fail_inject: None,
+            lifecycle_scenario: LifecycleScenario::None,
             writer_queue: None,
             worktree_dir: None,
             require_clean_worktree: None,
@@ -843,6 +851,20 @@ pub struct CellOutput {
     pub ws_connections: usize,
     /// Book subscription entries accepted by the mock (including resubscribes).
     pub book_subscriptions: usize,
+    /// Resolved lifecycle schedule (seed + explicit event sequence).
+    pub lifecycle_schedule: LifecycleSchedule,
+    /// Application-side lifecycle counters from the run report.
+    pub lifecycle_applied: u64,
+    pub lifecycle_duplicates: u64,
+    pub lifecycle_stale_dropped: u64,
+    pub lifecycle_unknown_symbols: u64,
+    pub lifecycle_discovery_vetoes: u64,
+    /// Lifecycle frames written to every replica by the mock.
+    pub lifecycle_sent_frames: u64,
+    pub lifecycle_subscribed: usize,
+    pub lifecycle_barrier_completed: bool,
+    pub lifecycle_barrier_detail: Option<String>,
+    pub anchored_extras_ok: bool,
 }
 
 /// One finished cell: output plus the runner's acceptance verdict plus the
@@ -1288,7 +1310,13 @@ fn publish_events(
     events: usize,
     rng: &mut SplitMix64,
     skip_ticker: Option<&str>,
+    published_base: usize,
+    mut on_publish: impl FnMut(usize),
 ) -> PublishPlan {
+    // Fire schedule entries pinned to the start of this phase before any new
+    // delta exists, so an added market is anchored before it can be targeted.
+    // The base is the cumulative logical-delta count across earlier phases.
+    on_publish(published_base);
     let mut generated = 0usize;
     if matches!(config.fail_inject, Some(FailInject::UpdateOnly { .. }))
         && let Some(ticker) = skip_ticker
@@ -1344,7 +1372,9 @@ fn publish_events(
         }
         publish_delta_event(mock, publishable[index], rng);
         generated += 1;
+        on_publish(published_base + generated);
     }
+    on_publish(published_base + events);
     // Over-application fixture: publish the same logical events again without
     // increasing `generated`. The expected ledger stays correct; a collector
     // that applies both copies exceeds it and must fail two-sided accounting.
@@ -1722,10 +1752,15 @@ fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
         } else {
             "uniform".to_owned()
         };
-        let suffix = if SCENARIO_VERSION > 2 {
-            format!("{shape}-v{SCENARIO_VERSION}")
+        let lifecycle = if config.lifecycle_scenario == LifecycleScenario::None {
+            String::new()
         } else {
-            shape.to_owned()
+            format!("-lifecycle-{}", config.lifecycle_scenario.as_str())
+        };
+        let suffix = if SCENARIO_VERSION > 2 {
+            format!("{shape}{lifecycle}-v{SCENARIO_VERSION}")
+        } else {
+            format!("{shape}{lifecycle}")
         };
         return format!("seed-{:04x}-{}-{suffix}", config.seed, config.symbols);
     }
@@ -2004,6 +2039,25 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         SyntheticUniverse::generate(config.seed, config.symbols, config.decoy_fraction_ppm);
     let eligible = universe.eligible_tickers_sorted();
     let hot = universe.hot_tickers(config.hot_fraction_ppm);
+    let lifecycle_schedule = LifecycleSchedule::build(
+        config.lifecycle_scenario,
+        config.seed,
+        &eligible,
+        config.events,
+    );
+    // Deltas never target a ticker that is retired during this cell, so every
+    // published delta remains attributable to a live, anchored book.
+    let all_retired: BTreeSet<String> = lifecycle_schedule
+        .events
+        .iter()
+        .filter(|event| event.catalog_effect == CatalogEffect::Retire)
+        .map(|event| event.ticker.clone())
+        .collect();
+    let delta_tickers: Vec<String> = eligible
+        .iter()
+        .filter(|ticker| !all_retired.contains(*ticker))
+        .cloned()
+        .collect();
     let mock = MockKalshi::start(universe).await;
     // A reconnect legitimately re-sends one snapshot per instrument on every
     // socket. Give the disconnect sweeps a larger per-connection bound so a
@@ -2017,6 +2071,17 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         mock.state().seed_book(&market.ticker, &mut seed_rng);
     }
     apply_failure_injection(&mock, config, &eligible);
+    // An added instrument is placed in the startup catalog when the scenario
+    // calls for one. The lifecycle `created` event still exercises the channel,
+    // while bootstrap discovery anchors the new market without an in-flight
+    // reconciliation overlapping later churn.
+    if lifecycle_schedule.events.iter().any(|event| {
+        event.catalog_effect == CatalogEffect::Add
+            && lifecycle_schedule.added_ticker.as_ref() == Some(&event.ticker)
+    }) && let Some(record) = lifecycle_schedule.added_record()
+    {
+        mock.state().add_market(record);
+    }
 
     let settings = settings_for(&mock, directory, config);
     let metrics_addr = settings.metrics.listen;
@@ -2067,7 +2132,9 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         if let Some(addr) = metrics_addr
             && let Some(value) = scrape_metric(addr, "collector_symbols_anchored").await
         {
-            if value >= eligible.len() as f64 {
+            let lifecycle_ready = config.lifecycle_scenario == LifecycleScenario::None
+                || mock.state().lifecycle_subscribed_count() >= config.lifecycle_replicas;
+            if value >= eligible.len() as f64 && lifecycle_ready {
                 anchor_wait_expired = false;
                 break;
             }
@@ -2162,12 +2229,87 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         Vec::new()
     };
 
-    // Publish the synthetic workload and derive what *must* be applied.
+    // Publish the synthetic workload and derive what *must* be applied. The
+    // lifecycle callback applies each catalog mutation immediately before its
+    // wire event, then publishes the event with its pinned venue timestamp.
     let skip_ticker = skip_target(config, &eligible);
-    let mut publish_rng = SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E);
+    // Lifecycle churn: the callback applies each catalog mutation immediately
+    // before its wire event, then publishes the event with its pinned venue
+    // timestamp. `published` is the cumulative logical-delta count so far, so
+    // events pinned to a phase boundary fire exactly once across all phases.
+    let mut next_lifecycle_event = 0usize;
+    let mut lifecycle_sent_frames = 0u64;
+    let added_record = lifecycle_schedule.added_record();
+    let phase_zero_count = lifecycle_schedule
+        .events
+        .iter()
+        .filter(|event| event.after_deltas == 0)
+        .count();
+    let mut lifecycle_publisher = |published: usize| {
+        while next_lifecycle_event < lifecycle_schedule.events.len()
+            && lifecycle_schedule.events[next_lifecycle_event].after_deltas <= published
+        {
+            let event = &lifecycle_schedule.events[next_lifecycle_event];
+            match event.catalog_effect {
+                CatalogEffect::None => {}
+                CatalogEffect::Retire => mock.state().retire_market(&event.ticker),
+                CatalogEffect::Add => {
+                    if mock.state().market_index(&event.ticker).is_some() {
+                        mock.state().restore_market(&event.ticker);
+                    } else if let Some(record) = &added_record
+                        && record["ticker"].as_str() == Some(event.ticker.as_str())
+                    {
+                        mock.state().add_market(record.clone());
+                    }
+                }
+            }
+            mock.state().publish_lifecycle_at(
+                event.exchange_ts_ms,
+                event.event_type,
+                &event.ticker,
+                event.extra.clone(),
+            );
+            lifecycle_sent_frames += config.lifecycle_replicas.max(1) as u64;
+            next_lifecycle_event += 1;
+        }
+    };
+
+    // Phase-zero events (normally an add) are published before any delta and
+    // their discovery round is allowed to finish. Otherwise a round started
+    // before a later retirement can finish after it and re-add the market:
+    // venue timestamps from a mock in the past cannot veto a local round.
+    lifecycle_publisher(0);
+    if config.lifecycle_scenario != LifecycleScenario::None && phase_zero_count > 0 {
+        let published = &lifecycle_schedule.events[..phase_zero_count];
+        let expected_active = (eligible.len() as i64
+            + published
+                .iter()
+                .filter(|event| event.catalog_effect == CatalogEffect::Add)
+                .count() as i64
+            - published
+                .iter()
+                .filter(|event| event.catalog_effect == CatalogEffect::Retire)
+                .count() as i64)
+            .max(0) as f64;
+        let deadline = Instant::now() + drain_limit;
+        loop {
+            let active = match metrics_addr {
+                Some(addr) => scrape_metric(addr, "collector_symbols_active").await,
+                None => None,
+            };
+            if active == Some(expected_active) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            sleep(METRICS_POLL).await;
+        }
+    }
 
     // Aggregate plan over all phases. The ledger still reconciles the whole
     // run once, at final, so every existing disposition check is preserved.
+    let mut publish_rng = SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E);
     let mut plan = PublishPlan {
         generated: 0,
         hot_events: 0,
@@ -2178,6 +2320,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let mut phase_results: Vec<PhaseOutcome> = Vec::new();
     let mut cumulative_expected = 0u64;
     let mut cumulative_extra_frames = 0u64;
+    let mut cumulative_published = 0usize;
 
     let skip_drain = matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain))
         || baseline_error.is_some();
@@ -2204,13 +2347,16 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     for phase in &schedule.phases {
         let phase_plan = publish_events(
             &mock,
-            &eligible,
+            &delta_tickers,
             &hot,
             config,
             phase.events,
             &mut publish_rng,
             skip_ticker.as_deref(),
+            cumulative_published,
+            &mut lifecycle_publisher,
         );
+        cumulative_published = cumulative_published.saturating_add(phase_plan.generated);
         plan.generated = plan.generated.saturating_add(phase_plan.generated);
         plan.hot_events = plan.hot_events.saturating_add(phase_plan.hot_events);
         plan.cold_events = plan.cold_events.saturating_add(phase_plan.cold_events);
@@ -2280,6 +2426,50 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     }
     plan.drain_target = cumulative_expected.saturating_add(cumulative_extra_frames);
 
+    // Lifecycle delivery barrier: every non-terminal notification must be
+    // written to each lifecycle replica and the active-symbol gauge must reach
+    // the final epoch's expected set. Metadata-only events are confirmed later
+    // from the run report's lifecycle counters, not inferred here.
+    let mut lifecycle_barrier_completed = config.lifecycle_scenario == LifecycleScenario::None;
+    let mut lifecycle_barrier_detail: Option<String> = None;
+    if !lifecycle_barrier_completed {
+        let deadline = Instant::now() + drain_limit;
+        let pre_drain: Vec<_> = lifecycle_schedule
+            .events
+            .iter()
+            .filter(|event| event.after_deltas != usize::MAX)
+            .collect();
+        let expected_active = (eligible.len() as i64
+            + pre_drain
+                .iter()
+                .filter(|event| event.catalog_effect == CatalogEffect::Add)
+                .count() as i64
+            - pre_drain
+                .iter()
+                .filter(|event| event.catalog_effect == CatalogEffect::Retire)
+                .count() as i64)
+            .max(0) as f64;
+        let expected_wire = pre_drain.len() as u64 * config.lifecycle_replicas.max(1) as u64;
+        loop {
+            let sent = mock.state().ledger_snapshot().lifecycle_sent;
+            let active = match metrics_addr {
+                Some(addr) => scrape_metric(addr, "collector_symbols_active").await,
+                None => None,
+            };
+            if sent >= expected_wire && active == Some(expected_active) {
+                lifecycle_barrier_completed = true;
+                break;
+            }
+            if Instant::now() >= deadline {
+                lifecycle_barrier_detail = Some(format!(
+                    "lifecycle barrier: wire={sent}/{expected_wire}, active={active:?}/{expected_active}"
+                ));
+                break;
+            }
+            sleep(METRICS_POLL).await;
+        }
+    }
+
     // Final scrape before shutdown: applied counter and incident counters.
     let final_sample = match metrics_addr {
         Some(addr) => scrape_metrics(addr).await,
@@ -2312,6 +2502,22 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             .as_ref()
             .and_then(|sample| sample.count("collector_suppressed_replica_duplicates_total")),
     };
+
+    // Terminal events are published after the delta drain barrier. The
+    // coordinator's shutdown drain still applies them, and keeping the
+    // retirement outside the workload avoids an in-flight recovery batch that
+    // would otherwise ask for snapshots of an already retired instrument.
+    if config.lifecycle_scenario != LifecycleScenario::None {
+        lifecycle_publisher(usize::MAX);
+        let expected_wire =
+            lifecycle_schedule.events.len() as u64 * config.lifecycle_replicas.max(1) as u64;
+        let deadline = Instant::now() + drain_limit;
+        while mock.state().ledger_snapshot().lifecycle_sent < expected_wire
+            && Instant::now() < deadline
+        {
+            sleep(METRICS_POLL).await;
+        }
+    }
 
     done.notify_one();
     let report = match tokio::time::timeout(FINISH_LIMIT, &mut handle).await {
@@ -2622,11 +2828,45 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         decode_failure_count: decode_errors,
     };
 
-    // Exact three-way set comparison against the independently generated
-    // eligible universe.
-    let expected_set: BTreeSet<String> = eligible.iter().cloned().collect();
+    // Exact three-way set comparison against the epoch-aware expected universe.
+    // For lifecycle cells the expected set is the final epoch, not the startup
+    // catalog. Extra anchored symbols are permitted only when the lifecycle
+    // schedule retired them: their final empty snapshot is a retirement
+    // boundary, not a permanent coverage obligation.
+    let expected_set: BTreeSet<String> = if config.lifecycle_scenario == LifecycleScenario::None {
+        eligible.iter().cloned().collect()
+    } else {
+        lifecycle_schedule.final_expected().clone()
+    };
     let acknowledged_set: BTreeSet<String> = report.acknowledged_symbols.iter().cloned().collect();
-    let set_mismatch = expected_set != acknowledged_set || expected_set != anchored;
+    let anchored_expected: BTreeSet<String> =
+        anchored.intersection(&expected_set).cloned().collect();
+    let anchored_extras: BTreeSet<String> = anchored.difference(&expected_set).cloned().collect();
+    let retired_all: BTreeSet<String> = lifecycle_schedule
+        .events
+        .iter()
+        .filter(|event| event.catalog_effect == CatalogEffect::Retire)
+        .map(|event| event.ticker.clone())
+        .collect();
+    let anchored_extras_ok = if config.lifecycle_scenario == LifecycleScenario::None {
+        anchored_extras.is_empty()
+    } else {
+        anchored_extras.is_subset(&retired_all)
+    };
+    let set_mismatch = expected_set != acknowledged_set
+        || expected_set != anchored_expected
+        || !anchored_extras_ok;
+
+    // The report's core counters are the independent application-side witness
+    // for the schedule's explicit dedup/ordering expectations.
+    let lifecycle_applied = report.core.lifecycle_events;
+    let lifecycle_duplicates = report.core.lifecycle_duplicates;
+    let lifecycle_stale = report.core.lifecycle_stale_dropped;
+    let lifecycle_unknown = report.core.lifecycle_unknown_symbols;
+    let lifecycle_vetoes = report.core.lifecycle_discovery_vetoes;
+    let lifecycle_counters_ok = lifecycle_applied == lifecycle_schedule.expected_applied()
+        && lifecycle_duplicates == lifecycle_schedule.expected_duplicates()
+        && lifecycle_stale == lifecycle_schedule.expected_stale();
 
     let capacity_connections = report
         .capacity
@@ -2641,6 +2881,12 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let mut reasons: Vec<String> = Vec::new();
     if set_mismatch {
         reasons.push("coverage_set_mismatch".to_owned());
+    }
+    if !lifecycle_barrier_completed {
+        reasons.push("lifecycle_delivery_incomplete".to_owned());
+    }
+    if !lifecycle_counters_ok {
+        reasons.push("lifecycle_application_mismatch".to_owned());
     }
     match &coverage_result {
         Ok(summary) if summary.valid => {}
@@ -2719,6 +2965,17 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         ws_connections: mock.state().ws_connections(),
         book_subscriptions: mock.state().book_subscribed_count(),
         mock: transmit,
+        lifecycle_schedule,
+        lifecycle_applied,
+        lifecycle_duplicates,
+        lifecycle_stale_dropped: lifecycle_stale,
+        lifecycle_unknown_symbols: lifecycle_unknown,
+        lifecycle_discovery_vetoes: lifecycle_vetoes,
+        lifecycle_sent_frames,
+        lifecycle_subscribed: mock.state().lifecycle_subscribed_count(),
+        lifecycle_barrier_completed,
+        lifecycle_barrier_detail,
+        anchored_extras_ok,
     };
 
     // Backpressure evidence is derived after the output exists, and its own
@@ -2756,6 +3013,24 @@ pub fn canonical_set_sha256(values: &BTreeSet<String>) -> String {
         text.push('\n');
     }
     sha256_hex(text.as_bytes())
+}
+
+/// Manifest view of one universe epoch. Both the expected and the required
+/// anchored sets are hashed with the same canonical function as `coverage`, so
+/// a reader can compare an epoch's requirement to the certified final set.
+fn epoch_json(epoch: &UniverseEpoch) -> Value {
+    json!({
+        "epoch": epoch.index,
+        "label": epoch.label,
+        "expected_count": epoch.expected.len(),
+        "expected_set_sha256": canonical_set_sha256(&epoch.expected),
+        "required_anchored_count": epoch.required_anchors.len(),
+        "required_anchored_set_sha256": canonical_set_sha256(&epoch.required_anchors),
+        "retired_count": epoch.retired.len(),
+        "retired_set_sha256": canonical_set_sha256(&epoch.retired),
+        "added_count": epoch.added.len(),
+        "added_set_sha256": canonical_set_sha256(&epoch.added),
+    })
 }
 
 fn harness_binary_sha256() -> Option<String> {
@@ -2956,6 +3231,21 @@ pub fn build_cell_manifest(
                 .unwrap_or_else(|| "unknown".to_owned())
         ),
     );
+    // The schedule is rebuilt from the seed for cells that failed before a
+    // report existed, so even a failed manifest records the exact workload
+    // that was intended.
+    let lifecycle_schedule = output
+        .map(|out| out.lifecycle_schedule.clone())
+        .unwrap_or_else(|| {
+            let universe =
+                SyntheticUniverse::generate(config.seed, config.symbols, config.decoy_fraction_ppm);
+            LifecycleSchedule::build(
+                config.lifecycle_scenario,
+                config.seed,
+                &universe.eligible_tickers_sorted(),
+                config.events,
+            )
+        });
     let mut scenario = json!({
         "seed": config.seed,
         "symbols": config.symbols,
@@ -2986,6 +3276,25 @@ pub fn build_cell_manifest(
         "uniform_spread": config.uniform_spread,
         "journal": config.journal,
         "failure_injection": config.fail_inject.map(|f| format!("{f:?}")),
+        "lifecycle_scenario": config.lifecycle_scenario.as_str(),
+        "lifecycle_scenario_id": config.lifecycle_scenario.scenario_id(),
+        "lifecycle_schedule_version": LIFECYCLE_SCHEDULE_VERSION,
+        "lifecycle_seed": config.seed,
+        "lifecycle_events": lifecycle_schedule.events.len(),
+        "lifecycle_expected_applied": lifecycle_schedule.expected_applied(),
+        "lifecycle_expected_duplicates": lifecycle_schedule.expected_duplicates(),
+        "lifecycle_expected_stale": lifecycle_schedule.expected_stale(),
+        "lifecycle_applied": output.map(|o| o.lifecycle_applied).unwrap_or(0),
+        "lifecycle_duplicates": output.map(|o| o.lifecycle_duplicates).unwrap_or(0),
+        "lifecycle_stale_dropped": output.map(|o| o.lifecycle_stale_dropped).unwrap_or(0),
+        "lifecycle_unknown_symbols": output.map(|o| o.lifecycle_unknown_symbols).unwrap_or(0),
+        "lifecycle_discovery_vetoes": output.map(|o| o.lifecycle_discovery_vetoes).unwrap_or(0),
+        "lifecycle_sent_frames": output.map(|o| o.lifecycle_sent_frames).unwrap_or(0),
+        "lifecycle_subscribed": output.map(|o| o.lifecycle_subscribed).unwrap_or(0),
+        "lifecycle_barrier_completed": output.map(|o| o.lifecycle_barrier_completed).unwrap_or(false),
+        "lifecycle_added_tickers": lifecycle_schedule.added_ticker.iter().cloned().collect::<Vec<_>>(),
+        "lifecycle_retired_tickers": lifecycle_schedule.retired_ticker.iter().cloned().collect::<Vec<_>>(),
+        "lifecycle_epochs": lifecycle_schedule.epochs.iter().map(epoch_json).collect::<Vec<_>>(),
     });
     let fault_schedule_json = config
         .fault_schedule
@@ -3198,7 +3507,12 @@ pub fn build_cell_manifest(
         "observed_set_sha256": observed_set_sha256,
         "decoys_absent": output.map(|o| o.decoy_absent),
         "coverage_valid": output.map(|o| o.coverage.as_ref().map(|c| c.valid).unwrap_or(false)),
-        "per_epoch": [],
+        "per_epoch": lifecycle_schedule.epochs.iter().map(epoch_json).collect::<Vec<_>>(),
+        "retired_not_expected": output.and_then(|o| o.coverage.as_ref()).map(|summary| json!({
+            "count": summary.anchored_not_expected.count,
+            "sample": summary.anchored_not_expected.sample,
+        })).unwrap_or(Value::Null),
+        "retired_obligations_rejected": output.map(|o| o.anchored_extras_ok),
     }));
 
     document.insert("verify".to_owned(), json!({
@@ -3234,6 +3548,11 @@ pub fn build_cell_manifest(
         "phases": phase_results.unwrap_or_default(),
         "ws_connections": output.map(|o| o.ws_connections),
         "book_subscriptions": output.map(|o| o.book_subscriptions),
+        "lifecycle_barrier_completed": output.map(|o| o.lifecycle_barrier_completed).unwrap_or(false),
+        "lifecycle_barrier_detail": output
+            .and_then(|o| o.lifecycle_barrier_detail.clone())
+            .map(Value::from)
+            .unwrap_or(Value::Null),
     }));
 
     // Recovery is measured as incident detection -> valid re-anchor. Every
