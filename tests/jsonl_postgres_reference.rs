@@ -14,11 +14,19 @@ use engineering_challenge::application::{
     run_jsonl_to_target, transform_observation,
 };
 
-const SOURCES: [(&str, &str); 2] = [
+const SOURCES: [(&str, &str); 4] = [
     ("src/application.rs", include_str!("../src/application.rs")),
     (
         "src/application/postgres.rs",
         include_str!("../src/application/postgres.rs"),
+    ),
+    (
+        "src/application/file_source.rs",
+        include_str!("../src/application/file_source.rs"),
+    ),
+    (
+        "src/application/durable.rs",
+        include_str!("../src/application/durable.rs"),
     ),
 ];
 
