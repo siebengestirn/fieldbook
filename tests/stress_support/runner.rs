@@ -54,8 +54,10 @@ const METRICS_POLL: Duration = Duration::from_millis(25);
 const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
 /// Scenario schema version. Bumped when workload semantics change so a
-/// corrected generator never silently replaces an earlier manifest.
-const SCENARIO_VERSION: u32 = 5;
+/// corrected generator never silently replaces an earlier manifest. v6 adds
+/// explicit phased burst schedules; v5 disposition-certified cell IDs remain
+/// immutable historical evidence.
+const SCENARIO_VERSION: u32 = 6;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -92,6 +94,204 @@ pub enum HotSelection {
     ExactQuota,
 }
 
+/// Deterministic burst-workload shape (M5.2).
+///
+/// A profile changes only how the fixed logical-event budget is partitioned
+/// across publish phases. It never introduces sleeps, wall-clock timing,
+/// throughput instrumentation or latency claims: the schedule is defined by
+/// exact event counts, and the rate fields are declared intensity labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BurstProfile {
+    /// One sustained step: baseline, a doubled-rate burst, then recovery.
+    Step,
+    /// One concentrated spike: small baseline, large impulse, quiet recovery.
+    Impulse,
+    /// Several decreasing impulses separated by quiet recovery phases.
+    RepeatedImpulses,
+    /// A rising sequence of declared rate multipliers across the burst window.
+    Ramp,
+}
+
+impl BurstProfile {
+    /// Stable manifest label. `None` in `CellConfig` maps to `"steady"`.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Step => "step",
+            Self::Impulse => "impulse",
+            Self::RepeatedImpulses => "repeated_impulses",
+            Self::Ramp => "ramp",
+        }
+    }
+}
+
+/// One declared phase of a workload schedule.
+///
+/// `events` is an exact logical-delta count and is the primary schedule
+/// definition. `target_rate_per_tick` and `rate_multiplier` are dimensionless,
+/// declared labels derived from the profile: they are never measured rates,
+/// latency figures or performance results. No timing instrumentation exists in
+/// this increment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadPhase {
+    pub name: &'static str,
+    pub events: usize,
+    pub target_rate_per_tick: u32,
+    pub rate_multiplier: u32,
+}
+
+/// How the hot instrument set is defined for one workload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotSetDefinition {
+    pub fraction_ppm: u32,
+    pub member_count: usize,
+    pub selection: &'static str,
+    pub event_share_pct: u32,
+    /// Canonical SHA-256 of the sorted hot ticker set; `None` when the cell
+    /// failed before the universe was generated.
+    pub sha256: Option<String>,
+}
+
+/// Explicit, deterministic workload schedule recorded in every manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkloadSchedule {
+    pub workload_id: String,
+    pub profile: &'static str,
+    pub seed: u64,
+    pub instrument_count: usize,
+    pub eligible_count: usize,
+    pub hot_set: HotSetDefinition,
+    pub phases: Vec<WorkloadPhase>,
+    pub expected_total_events: usize,
+    /// Fault IDs scheduled for this workload; empty for M5.2 burst profiles.
+    pub fault_schedule: Vec<String>,
+}
+
+/// Split `total` across integer `weights` so the parts sum to exactly `total`.
+/// Leftover units are assigned to the highest-weight phase (ties broken by
+/// index), which keeps the allocation deterministic for a given profile.
+fn partition_events(total: usize, weights: &[usize]) -> Vec<usize> {
+    let weight_sum: usize = weights.iter().sum();
+    debug_assert!(weight_sum > 0);
+    let mut parts: Vec<usize> = weights
+        .iter()
+        .map(|weight| ((total as u128 * *weight as u128) / weight_sum as u128) as usize)
+        .collect();
+    let mut order: Vec<usize> = (0..weights.len()).collect();
+    order.sort_by_key(|&index| (std::cmp::Reverse(weights[index]), index));
+    let mut leftover = total.saturating_sub(parts.iter().sum());
+    let mut cursor = 0usize;
+    while leftover > 0 && !order.is_empty() {
+        parts[order[cursor % order.len()]] += 1;
+        leftover -= 1;
+        cursor += 1;
+    }
+    parts
+}
+
+/// Deterministic phase decomposition for one burst profile.
+fn profile_phases(profile: BurstProfile, total: usize) -> Vec<WorkloadPhase> {
+    let (names, weights, rates, multipliers): (&[&str], &[usize], &[u32], &[u32]) = match profile {
+        BurstProfile::Step => (
+            &["baseline", "burst", "recovery"],
+            &[25, 50, 25],
+            &[1, 2, 1],
+            &[1, 2, 1],
+        ),
+        BurstProfile::Impulse => (
+            &["baseline", "impulse", "recovery"],
+            &[10, 70, 20],
+            &[1, 5, 1],
+            &[1, 5, 1],
+        ),
+        BurstProfile::RepeatedImpulses => (
+            &[
+                "baseline",
+                "impulse-1",
+                "impulse-2",
+                "impulse-3",
+                "recovery",
+            ],
+            &[20, 20, 20, 20, 20],
+            &[1, 3, 3, 3, 1],
+            &[1, 3, 3, 3, 1],
+        ),
+        BurstProfile::Ramp => (
+            &["baseline", "ramp-1", "ramp-2", "ramp-3", "recovery"],
+            &[10, 20, 20, 20, 30],
+            &[1, 1, 2, 3, 1],
+            &[1, 1, 2, 3, 1],
+        ),
+    };
+    let counts = partition_events(total, weights);
+    (0..names.len())
+        .map(|index| WorkloadPhase {
+            name: names[index],
+            events: counts[index],
+            target_rate_per_tick: rates[index],
+            rate_multiplier: multipliers[index],
+        })
+        .collect()
+}
+
+/// The single-phase schedule used when no burst profile is configured. It is
+/// deliberately identical to the pre-M5.2 workload: one `steady` phase with
+/// every logical delta.
+fn steady_phases(total: usize) -> Vec<WorkloadPhase> {
+    vec![WorkloadPhase {
+        name: "steady",
+        events: total,
+        target_rate_per_tick: 1,
+        rate_multiplier: 1,
+    }]
+}
+
+/// Build the explicit workload schedule from configuration. `hot_sha256` is
+/// supplied once the universe exists; failure cells before that point record
+/// `None` and do not claim a hot-set certificate.
+fn build_schedule(config: &CellConfig, hot_sha256: Option<String>) -> WorkloadSchedule {
+    let profile = config.burst.map(BurstProfile::label).unwrap_or("steady");
+    let phases = match config.burst {
+        Some(burst) => profile_phases(burst, config.events),
+        None => steady_phases(config.events),
+    };
+    let expected_total_events = phases.iter().map(|phase| phase.events).sum();
+    let workload_id = format!("{profile}-seed-{:04x}-{}", config.seed, config.symbols);
+    let hot_count = if config.hot_fraction_ppm == 0 {
+        0
+    } else {
+        config
+            .symbols
+            .saturating_mul(config.hot_fraction_ppm as usize)
+            .div_ceil(1_000_000)
+            .min(config.symbols)
+    };
+    let fault_schedule = config
+        .fail_inject
+        .map(|fault| vec![format!("{fault:?}")])
+        .unwrap_or_default();
+    WorkloadSchedule {
+        workload_id,
+        profile,
+        seed: config.seed,
+        instrument_count: config.symbols,
+        eligible_count: config.symbols,
+        hot_set: HotSetDefinition {
+            fraction_ppm: config.hot_fraction_ppm,
+            member_count: hot_count,
+            selection: match config.hot_selection {
+                HotSelection::Weighted => "weighted",
+                HotSelection::ExactQuota => "exact_quota",
+            },
+            event_share_pct: config.hot_event_share_pct,
+            sha256: hot_sha256,
+        },
+        phases,
+        expected_total_events,
+        fault_schedule,
+    }
+}
+
 /// One experiment cell.
 #[derive(Debug, Clone)]
 pub struct CellConfig {
@@ -115,6 +315,9 @@ pub struct CellConfig {
     pub hot_event_share_pct: u32,
     /// Weighted stochastic selection or exact deterministic quota.
     pub hot_selection: HotSelection,
+    /// Optional deterministic burst shape. `None` keeps the pre-M5.2 single
+    /// `steady` phase workload unchanged.
+    pub burst: Option<BurstProfile>,
     pub journal: bool,
     /// Overrides `ANCHOR_LIMIT`/`DRAIN_LIMIT` for fast failure tests.
     pub limits: Option<(u64, u64)>,
@@ -147,6 +350,7 @@ impl Default for CellConfig {
             hot_fraction_ppm: 0,
             hot_event_share_pct: 0,
             hot_selection: HotSelection::Weighted,
+            burst: None,
             journal: true,
             limits: None,
             force_capacity_reject: false,
@@ -509,6 +713,16 @@ pub fn ledger_acceptance_reasons(ledger: &EventLedger, queue_saturated: u64) -> 
     reasons
 }
 
+/// Publish and drain evidence for one schedule phase. The cumulative expected
+/// count is the drain barrier's target at the end of this phase.
+#[derive(Debug, Clone)]
+pub struct PhaseOutcome {
+    pub name: &'static str,
+    pub published: usize,
+    pub cumulative_expected: u64,
+    pub drain_completed: bool,
+}
+
 /// Full result of one cell run — raw verifier digests included for the manifest.
 pub struct CellOutput {
     pub report: RunReport,
@@ -556,6 +770,10 @@ pub struct CellOutput {
     /// Continuity incidents observed at the end of the run.
     pub incidents: IncidentCounters,
     pub ledger: EventLedger,
+    /// Explicit deterministic workload schedule used by this run.
+    pub schedule: WorkloadSchedule,
+    /// Per-phase publish + drain evidence (one entry for a steady workload).
+    pub phase_results: Vec<PhaseOutcome>,
 }
 
 /// One finished cell: output plus the runner's acceptance verdict plus the
@@ -966,11 +1184,15 @@ fn exact_event_targets(events: usize, hot_share_pct: u32, rng: &mut SplitMix64) 
     targets
 }
 
+/// Publish exactly `events` logical deltas and return the derived plan. The RNG
+/// is threaded through phases so the whole workload is one deterministic stream
+/// derived from the seed; phase boundaries do not reset it.
 fn publish_events(
     mock: &MockKalshi,
     tickers: &[String],
     hot: &BTreeSet<String>,
     config: &CellConfig,
+    events: usize,
     rng: &mut SplitMix64,
     skip_ticker: Option<&str>,
 ) -> PublishPlan {
@@ -991,7 +1213,7 @@ fn publish_events(
     let role_based =
         config.hot_fraction_ppm > 0 && !hot_indices.is_empty() && !cold_indices.is_empty();
     let exact_targets = (role_based && config.hot_selection == HotSelection::ExactQuota)
-        .then(|| exact_event_targets(config.events, config.hot_event_share_pct, rng));
+        .then(|| exact_event_targets(events, config.hot_event_share_pct, rng));
     let initial_generated = generated;
     let mut hot_events = 0usize;
     let mut cold_events: usize =
@@ -1002,7 +1224,7 @@ fn publish_events(
         } else {
             0
         };
-    while generated < config.events {
+    while generated < events {
         let draw = generated - initial_generated;
         let index = if role_based {
             let use_hot = exact_targets.as_ref().is_some_and(|targets| targets[draw])
@@ -1278,6 +1500,86 @@ async fn capture_baseline_until(
     }
 }
 
+/// Outcome of one drain barrier invocation. `completed` is false on a timeout,
+/// unavailable evidence or a counter reset; `detail` and `evidence_error`
+/// attribute the reason.
+struct DrainResult {
+    completed: bool,
+    detail: Option<String>,
+    evidence_error: Option<String>,
+    last_deltas: Option<f64>,
+}
+
+/// Wait until every production counter has caught up with `expected` new
+/// deltas since `base` and the mock's outbound queue is empty. `expected` is
+/// cumulative across phases: the baseline is captured once, before any phase,
+/// so each later barrier waits for a larger count. No fixed sleep is part of
+/// the schedule; `METRICS_POLL` is only the observation cadence.
+async fn await_drain(
+    addr: SocketAddr,
+    base: &DrainBaselines,
+    expected: u64,
+    // Absolute minimum decoded-frame total. The mock's send counter leads the
+    // sampled decode counter, so a logical-event barrier alone can pass while
+    // wire frames are still being decoded; requiring this closes that gap.
+    min_decoded_frames: u64,
+    in_flight: impl Fn() -> u64,
+    deadline: Instant,
+    mut last_deltas: Option<f64>,
+) -> DrainResult {
+    let mut unavailable: Option<String> = None;
+    loop {
+        if let Some(sample) = scrape_metrics(addr).await {
+            if let MetricRead::Present(deltas) = sample.read("collector_deltas_emitted_total") {
+                last_deltas = Some(deltas);
+            }
+            match evaluate_barrier(&sample, base, expected as f64, in_flight()) {
+                BarrierState::Satisfied => {
+                    let decoded = sample
+                        .count("collector_decoded_delta_events_total")
+                        .unwrap_or(u64::MAX);
+                    if decoded >= min_decoded_frames {
+                        return DrainResult {
+                            completed: true,
+                            detail: None,
+                            evidence_error: None,
+                            last_deltas,
+                        };
+                    }
+                    unavailable = None;
+                }
+                BarrierState::Waiting => unavailable = None,
+                BarrierState::Unavailable(error) => unavailable = Some(error),
+                BarrierState::CounterReset(metric) => {
+                    return DrainResult {
+                        completed: false,
+                        detail: Some(format!("counter `{metric}` moved backwards during the run")),
+                        evidence_error: Some("counter_reset".to_owned()),
+                        last_deltas,
+                    };
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        sleep(METRICS_POLL).await;
+    }
+    let (detail, evidence_error) = match unavailable {
+        Some(error) => (Some(error), Some("drain_metrics_unavailable".to_owned())),
+        None => (
+            Some("drain deadline exceeded before every frame was accounted for".to_owned()),
+            None,
+        ),
+    };
+    DrainResult {
+        completed: false,
+        detail,
+        evidence_error,
+        last_deltas,
+    }
+}
+
 pub async fn run_cell(
     directory: &Path,
     config: &CellConfig,
@@ -1291,12 +1593,16 @@ pub async fn run_cell(
 /// the body and in the index entry.
 fn cell_id_for(outcome: &CellOutcome, config: &CellConfig) -> String {
     if outcome.acceptance.valid {
-        let shape = if config.hot_fraction_ppm > 0 {
-            "hotquiet"
+        // Burst cells get a profile-specific ID so two profiles with the same
+        // seed and universe cannot overwrite one another in the index.
+        let shape = if let Some(burst) = config.burst {
+            burst.label().to_owned()
+        } else if config.hot_fraction_ppm > 0 {
+            "hotquiet".to_owned()
         } else if config.hot_pair {
-            "zipf"
+            "zipf".to_owned()
         } else {
-            "uniform"
+            "uniform".to_owned()
         };
         let suffix = if SCENARIO_VERSION > 2 {
             format!("{shape}-v{SCENARIO_VERSION}")
@@ -1528,24 +1834,34 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             }
         }
     };
+    // Wire-frame baseline for the decoded-catch-up condition below. The mock
+    // increments its send counter synchronously, while the collector's decoded
+    // total is refreshed from worker status; the latter can briefly lag even
+    // after every logical delta has been applied.
+    let baseline_transmitted_deltas = mock.state().ledger_snapshot().deltas_sent;
 
-    // Publish the synthetic workload and derive what *must* be applied.
+    // Build the explicit schedule before publishing. Phase event counts are
+    // the primary schedule definition: no sleeps or timing instrumentation.
+    let schedule = build_schedule(config, Some(canonical_set_sha256(&hot)));
     let skip_ticker = skip_target(config, &eligible);
-    let plan = publish_events(
-        &mock,
-        &eligible,
-        &hot,
-        config,
-        &mut SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E),
-        skip_ticker.as_deref(),
-    );
+    let mut publish_rng = SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E);
 
-    // Drain barrier: every frame must leave the mock's outbound queue, be
-    // socket-written, reach the collector and be accounted for by the core
-    // and the writer before shutdown is requested. A timeout classifies the
-    // run as incomplete; a missing or malformed metric classifies the
-    // evidence path as unavailable. No fixed sleep is involved.
-    let mut drain_completed = false;
+    // Aggregate plan over all phases. The ledger still reconciles the whole
+    // run once, at final, so every existing disposition check is preserved.
+    let mut plan = PublishPlan {
+        generated: 0,
+        hot_events: 0,
+        cold_events: 0,
+        expected_applied: 0,
+        drain_target: 0,
+    };
+    let mut phase_results: Vec<PhaseOutcome> = Vec::new();
+    let mut cumulative_expected = 0u64;
+    let mut cumulative_extra_frames = 0u64;
+
+    let skip_drain = matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain))
+        || baseline_error.is_some();
+    let mut drain_completed = !skip_drain;
     let mut drain_detail: Option<String> = None;
     let mut drain_evidence_error: Option<String> = None;
     let mut last_deltas = baseline.map(|base| base.deltas_emitted);
@@ -1554,57 +1870,73 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     } else if let Some(error) = &baseline_error {
         drain_detail = Some(format!("writer baseline unavailable: {error}"));
         drain_evidence_error = Some("drain_metrics_unavailable".to_owned());
-    } else if let (Some(addr), Some(base)) = (metrics_addr, baseline) {
-        let deadline = Instant::now() + drain_limit;
-        let mut unavailable: Option<String> = None;
-        loop {
-            if let Some(sample) = scrape_metrics(addr).await {
-                if let MetricRead::Present(deltas) = sample.read("collector_deltas_emitted_total") {
-                    last_deltas = Some(deltas);
-                }
-                match evaluate_barrier(
-                    &sample,
-                    &base,
-                    plan.drain_target as f64,
-                    mock.state().in_flight(),
-                ) {
-                    BarrierState::Satisfied => {
-                        drain_completed = true;
-                        break;
-                    }
-                    BarrierState::Waiting => {
-                        unavailable = None;
-                    }
-                    BarrierState::Unavailable(error) => {
-                        unavailable = Some(error);
-                    }
-                    BarrierState::CounterReset(metric) => {
-                        drain_detail =
-                            Some(format!("counter `{metric}` moved backwards during the run"));
-                        drain_evidence_error = Some("counter_reset".to_owned());
-                        break;
-                    }
-                }
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            sleep(METRICS_POLL).await;
-        }
-        if !drain_completed && drain_evidence_error.is_none() {
-            match unavailable {
-                Some(error) => {
-                    drain_detail = Some(error);
-                    drain_evidence_error = Some("drain_metrics_unavailable".to_owned());
-                }
-                None => {
-                    drain_detail = Some(
-                        "drain deadline exceeded before every frame was accounted for".to_owned(),
-                    );
-                }
-            }
-        }
     }
+
+    // Publish each phase, then drain with a cumulative expected count before
+    // the next phase begins. The baseline is captured once at the start, so a
+    // later barrier waits for every event from all preceding phases plus this
+    // one; a burst cannot leave a queue unreconciled into the next phase.
+    for phase in &schedule.phases {
+        let phase_plan = publish_events(
+            &mock,
+            &eligible,
+            &hot,
+            config,
+            phase.events,
+            &mut publish_rng,
+            skip_ticker.as_deref(),
+        );
+        plan.generated = plan.generated.saturating_add(phase_plan.generated);
+        plan.hot_events = plan.hot_events.saturating_add(phase_plan.hot_events);
+        plan.cold_events = plan.cold_events.saturating_add(phase_plan.cold_events);
+        plan.expected_applied = plan
+            .expected_applied
+            .saturating_add(phase_plan.expected_applied);
+        cumulative_expected = cumulative_expected.saturating_add(phase_plan.expected_applied);
+        cumulative_extra_frames = cumulative_extra_frames.saturating_add(
+            phase_plan
+                .drain_target
+                .saturating_sub(phase_plan.expected_applied),
+        );
+        let target = cumulative_expected.saturating_add(cumulative_extra_frames);
+
+        let completed = if !skip_drain && let (Some(addr), Some(base)) = (metrics_addr, baseline) {
+            let transmitted_now = mock.state().ledger_snapshot().deltas_sent;
+            let min_decoded = baseline
+                .map(|base| {
+                    base.delta_events_decoded
+                        .unwrap_or(0)
+                        .saturating_add(transmitted_now.saturating_sub(baseline_transmitted_deltas))
+                })
+                .unwrap_or(0);
+            let result = await_drain(
+                addr,
+                &base,
+                target,
+                min_decoded,
+                || mock.state().in_flight(),
+                Instant::now() + drain_limit,
+                last_deltas,
+            )
+            .await;
+            last_deltas = result.last_deltas;
+            if !result.completed && drain_detail.is_none() {
+                drain_detail = result.detail;
+                drain_evidence_error = result.evidence_error;
+            }
+            result.completed
+        } else {
+            false
+        };
+        drain_completed &= completed;
+        phase_results.push(PhaseOutcome {
+            name: phase.name,
+            published: phase_plan.generated,
+            cumulative_expected: target,
+            drain_completed: completed,
+        });
+    }
+    plan.drain_target = cumulative_expected.saturating_add(cumulative_extra_frames);
 
     // Final scrape before shutdown: applied counter and incident counters.
     let final_sample = match metrics_addr {
@@ -2043,6 +2375,8 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             sbe_messages,
             incidents,
             ledger,
+            schedule,
+            phase_results,
             mock: transmit,
         }),
     }
@@ -2147,6 +2481,35 @@ fn require_clean_flag_from_env_note() -> bool {
     std::env::var("STRESS_REQUIRE_CLEAN").is_ok_and(|v| v == "1")
 }
 
+/// Render the explicit workload schedule into its manifest form. Rate fields
+/// are declared schedule labels; the document states that explicitly so no
+/// reader can mistake them for measured throughput or latency.
+fn schedule_json(schedule: &WorkloadSchedule) -> Value {
+    json!({
+        "workload_id": schedule.workload_id,
+        "profile": schedule.profile,
+        "seed": schedule.seed,
+        "instrument_count": schedule.instrument_count,
+        "eligible_count": schedule.eligible_count,
+        "hot_set": {
+            "fraction_ppm": schedule.hot_set.fraction_ppm,
+            "member_count": schedule.hot_set.member_count,
+            "selection": schedule.hot_set.selection,
+            "event_share_pct": schedule.hot_set.event_share_pct,
+            "sha256": schedule.hot_set.sha256,
+        },
+        "phases": schedule.phases.iter().map(|phase| json!({
+            "name": phase.name,
+            "events": phase.events,
+            "target_rate_per_tick": phase.target_rate_per_tick,
+            "rate_multiplier": phase.rate_multiplier,
+        })).collect::<Vec<_>>(),
+        "expected_total_events": schedule.expected_total_events,
+        "fault_schedule": schedule.fault_schedule,
+        "rate_semantics": "declared schedule labels, not measured rates; no timing instrumentation",
+    })
+}
+
 /// Build one reference-matrix manifest document for a finished outcome.
 pub fn build_cell_manifest(
     outcome: &CellOutcome,
@@ -2197,6 +2560,10 @@ pub fn build_cell_manifest(
         json!(super::rng::PRNG_ALGORITHM_VERSION),
     );
     document.insert("scenario_version".to_owned(), json!(SCENARIO_VERSION));
+    let schedule = output
+        .map(|cell| cell.schedule.clone())
+        .unwrap_or_else(|| build_schedule(config, None));
+    document.insert("workload_schedule".to_owned(), schedule_json(&schedule));
     document.insert("build_profile".to_owned(), json!(build_profile()));
     document.insert("target_triple".to_owned(), json!(target_triple()));
     document.insert(
@@ -2230,6 +2597,7 @@ pub fn build_cell_manifest(
     let scenario = json!({
         "seed": config.seed,
         "symbols": config.symbols,
+        "burst_profile": schedule.profile,
         "eligible_count": output.map(|o| o.eligible_count).unwrap_or(0),
         "events_published": output.map(|o| o.events_published).unwrap_or(0),
         "shards_requested": config.shards.unwrap_or(0),
@@ -2469,12 +2837,26 @@ pub fn build_cell_manifest(
         "journal_record_count": output.and_then(|o| o.journaled_records).map(Value::from).unwrap_or(Value::Null),
     }));
 
+    let phase_results = output.map(|o| {
+        o.phase_results
+            .iter()
+            .map(|phase| {
+                json!({
+                    "name": phase.name,
+                    "published_events": phase.published,
+                    "cumulative_expected": phase.cumulative_expected,
+                    "drain_completed": phase.drain_completed,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
     document.insert("delivery".to_owned(), json!({
         "anchor_completed": !output.map(|o| o.anchor_wait_expired).unwrap_or(true),
         "anchor_ms": output.map(|o| o.anchored_time.as_millis() as u64),
         "drain_completed": output.map(|o| o.drain_completed).unwrap_or(false),
         "drain_detail": output.and_then(|o| o.drain_detail.clone()).map(Value::from).unwrap_or(Value::Null),
         "capacity_connections": output.map(|o| o.capacity_connections).unwrap_or(0),
+        "phases": phase_results.unwrap_or_default(),
     }));
 
     let incidents = output.map(|output| output.incidents);
@@ -2570,6 +2952,92 @@ mod tests {
             first,
             exact_event_targets(400, 80, &mut SplitMix64::new(24))
         );
+    }
+
+    #[test]
+    fn burst_profiles_partition_the_budget_exactly_and_deterministically() {
+        let profiles = [
+            BurstProfile::Step,
+            BurstProfile::Impulse,
+            BurstProfile::RepeatedImpulses,
+            BurstProfile::Ramp,
+        ];
+        for profile in profiles {
+            let phases = profile_phases(profile, 400);
+            let total: usize = phases.iter().map(|phase| phase.events).sum();
+            assert_eq!(total, 400, "{profile:?} must not lose or invent events");
+            assert_eq!(phases, profile_phases(profile, 400));
+            assert!(
+                phases.iter().all(|phase| phase.events > 0),
+                "{profile:?} has an empty phase"
+            );
+        }
+        // The four shapes are genuinely different, not relabeled copies.
+        let shapes: Vec<Vec<usize>> = profiles
+            .iter()
+            .map(|profile| {
+                profile_phases(*profile, 400)
+                    .into_iter()
+                    .map(|phase| phase.events)
+                    .collect()
+            })
+            .collect();
+        for (left, right) in shapes.iter().enumerate() {
+            for other in shapes.iter().skip(left + 1) {
+                assert_ne!(right, other, "distinct profiles must have distinct shapes");
+            }
+        }
+    }
+
+    #[test]
+    fn burst_profile_counts_are_pinned() {
+        let step: Vec<usize> = profile_phases(BurstProfile::Step, 400)
+            .into_iter()
+            .map(|phase| phase.events)
+            .collect();
+        assert_eq!(step, vec![100, 200, 100]);
+        let impulse: Vec<usize> = profile_phases(BurstProfile::Impulse, 400)
+            .into_iter()
+            .map(|phase| phase.events)
+            .collect();
+        assert_eq!(impulse, vec![40, 280, 80]);
+        // A non-divisible budget still sums exactly; the remainder is placed
+        // deterministically rather than dropped.
+        let ramp: Vec<usize> = profile_phases(BurstProfile::Ramp, 7)
+            .into_iter()
+            .map(|phase| phase.events)
+            .collect();
+        assert_eq!(ramp.iter().sum::<usize>(), 7);
+    }
+
+    #[test]
+    fn schedule_records_id_seed_hot_definition_and_empty_faults() {
+        let config = CellConfig {
+            seed: 23,
+            symbols: 4_000,
+            hot_fraction_ppm: 50_000,
+            hot_event_share_pct: 80,
+            hot_selection: HotSelection::ExactQuota,
+            burst: Some(BurstProfile::Step),
+            events: 400,
+            ..CellConfig::default()
+        };
+        let schedule = build_schedule(&config, Some("abc".to_owned()));
+        assert_eq!(schedule.workload_id, "step-seed-0017-4000");
+        assert_eq!(schedule.profile, "step");
+        assert_eq!(schedule.seed, 23);
+        assert_eq!(schedule.instrument_count, 4_000);
+        assert_eq!(schedule.expected_total_events, 400);
+        assert_eq!(schedule.hot_set.member_count, 200);
+        assert_eq!(schedule.hot_set.sha256.as_deref(), Some("abc"));
+        assert_eq!(schedule.hot_set.selection, "exact_quota");
+        assert!(schedule.fault_schedule.is_empty());
+
+        let steady = build_schedule(&CellConfig::default(), None);
+        assert_eq!(steady.profile, "steady");
+        assert_eq!(steady.phases.len(), 1);
+        assert_eq!(steady.phases[0].events, CellConfig::default().events);
+        assert!(steady.hot_set.sha256.is_none());
     }
 
     fn base() -> DrainBaselines {
