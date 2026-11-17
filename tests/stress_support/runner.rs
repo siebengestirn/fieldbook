@@ -37,6 +37,7 @@ use engineering_challenge::{
 };
 
 use super::{
+    faults::{FaultSchedule, FaultStep, SweepProfile},
     host::HostInfo,
     mock::{MockKalshi, MockLedger},
     rng::SplitMix64,
@@ -56,9 +57,13 @@ const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 /// Scenario schema version. Bumped when workload semantics change so a
 /// corrected generator never silently replaces an earlier manifest. v6 added
 /// explicit phased burst schedules; v7-v8 carried later stress increments;
-/// v9 adds the M5.5 backpressure boundary profiles and their manifest evidence.
-/// Earlier version-certified cell IDs remain immutable historical evidence.
-const SCENARIO_VERSION: u32 = 9;
+/// v9 added the M5.5 backpressure boundary profiles and their manifest evidence;
+/// v10 and v11 carried the M5.6 and M5.7 increments. v12 is the combined
+/// integrated schema: it folds in the deterministic disconnect fault schedule
+/// and recovery evidence alongside the burst, backpressure and capacity
+/// profiles. Earlier version-certified cell IDs remain immutable historical
+/// evidence.
+const SCENARIO_VERSION: u32 = 12;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -346,6 +351,9 @@ pub struct CellConfig {
     /// `Some(true)` enforces the clean-worktree gate regardless of the
     /// `STRESS_REQUIRE_CLEAN` environment variable.
     pub require_clean_worktree: Option<bool>,
+    /// Deterministic disconnect/recovery fault schedule. `None` for ordinary
+    /// cells; derived explicitly from the seed by the disconnect profiles.
+    pub fault_schedule: Option<FaultSchedule>,
 }
 
 impl Default for CellConfig {
@@ -371,6 +379,18 @@ impl Default for CellConfig {
             writer_queue: None,
             worktree_dir: None,
             require_clean_worktree: None,
+            fault_schedule: None,
+        }
+    }
+}
+
+impl CellConfig {
+    /// Build a cell configured for one deterministic disconnect sweep profile.
+    #[must_use]
+    pub fn for_sweep(base: CellConfig, profile: SweepProfile) -> Self {
+        Self {
+            fault_schedule: Some(super::faults::derive_schedule(profile, base.seed)),
+            ..base
         }
     }
 }
@@ -422,6 +442,36 @@ impl CellAcceptance {
             "failed"
         }
     }
+}
+
+/// Recovery measurement for one injected disconnect fault. Recovery is
+/// measured as *incident detection -> valid re-anchor*, not as a socket
+/// reconnect: a reconnect that never produces an accepted snapshot is not a
+/// recovery. Durations are sampled at the 25 ms metrics poll, so a zero value
+/// means "within one poll", not "instantaneous".
+#[derive(Debug, Clone, Default)]
+pub struct RecoveryEvidence {
+    pub fault_id: String,
+    /// Observed epoch of the first replacement connection after the fault.
+    pub observed_epoch: Option<usize>,
+    pub incidents_before: Option<u64>,
+    pub incidents_after: Option<u64>,
+    pub failover_snapshots_before: Option<u64>,
+    pub failover_snapshots_after: Option<u64>,
+    /// Mock websocket connection count observed when the step finished. A
+    /// strictly increasing count across storm rounds proves each round opened
+    /// fresh sockets rather than reusing a stale generation.
+    pub connections_after: Option<usize>,
+    /// Milliseconds from anchor completion at which the incident was first
+    /// observed (a discontinuity counter increase or a resyncing symbol).
+    pub detected_at_ms: Option<u64>,
+    /// Milliseconds from anchor completion at which a valid re-anchor was
+    /// observed (failover snapshot accepted and no resyncing symbols).
+    pub reanchored_at_ms: Option<u64>,
+    /// `reanchored_at_ms - detected_at_ms`, when both observations exist.
+    pub duration_ms: Option<u64>,
+    /// Why a duration could not be measured. `None` when it was measured.
+    pub duration_unavailable_reason: Option<String>,
 }
 
 /// Incident counters scraped from the collector's `/metrics` endpoint at the
@@ -787,6 +837,12 @@ pub struct CellOutput {
     pub schedule: WorkloadSchedule,
     /// Per-phase publish + drain evidence (one entry for a steady workload).
     pub phase_results: Vec<PhaseOutcome>,
+    /// Incident-detection -> valid-re-anchor evidence per injected fault.
+    pub recovery: Vec<RecoveryEvidence>,
+    /// Total websocket connections accepted by the mock (including reconnects).
+    pub ws_connections: usize,
+    /// Book subscription entries accepted by the mock (including resubscribes).
+    pub book_subscriptions: usize,
 }
 
 /// One finished cell: output plus the runner's acceptance verdict plus the
@@ -928,7 +984,14 @@ fn settings_for(mock: &MockKalshi, directory: &Path, config: &CellConfig) -> Set
     settings.collector.connection_idle_timeout_secs = 45;
     settings.collector.stale_probe_after_secs = 120;
     settings.collector.probe_interval_secs = 30;
-    settings.collector.max_probes = 3;
+    // Disconnect sweeps exercise transport loss, not stale-probe escalation.
+    // Disabling probe escalation keeps the recovery signal attributable to the
+    // injected disconnect instead of to a later symbol-scoped probe budget.
+    settings.collector.max_probes = if config.fault_schedule.is_some() {
+        1
+    } else {
+        3
+    };
     settings.collector.max_markets = 0;
     settings.collector.duration_secs = 0;
     settings.collector.writer_queue = config.writer_queue.unwrap_or(4_096);
@@ -1793,6 +1856,138 @@ fn abort_reasons(reasons: Vec<String>, config: &CellConfig) -> Vec<String> {
     classified
 }
 
+/// Scrape one plain counter. Missing or malformed evidence stays `None`.
+async fn scrape_count(address: Option<SocketAddr>, name: &str) -> Option<u64> {
+    scrape_metrics(address?).await?.count(name)
+}
+
+/// Apply one driven fault step to the loopback mock. Every mock action is a
+/// deterministic consequence of the explicit step type; nothing is chosen at
+/// random during the run.
+fn apply_fault_step(mock: &MockKalshi, step: &FaultStep) -> Option<usize> {
+    use super::faults::FaultType;
+
+    // A step that is not the deliberate outage always re-enables replacements
+    // first, so a recovery storm can progress past an earlier timeout step.
+    if step.fault_type != FaultType::RejectReconnect {
+        mock.state().set_reject_connections(false);
+    }
+    match step.fault_type {
+        FaultType::ReplicaLoss => {
+            let ids = mock.state().book_connection_ids();
+            let chosen = match step.connection_ordinal {
+                Some(super::faults::ConnectionOrdinal::First) => ids.first().copied(),
+                Some(super::faults::ConnectionOrdinal::Last) => ids.last().copied(),
+                None => None,
+            };
+            chosen.and_then(|id| mock.state().close_book_connection(id).then_some(id))
+        }
+        FaultType::BothReplicasLost => {
+            mock.state().close_book_connections();
+            None
+        }
+        FaultType::AllConnectionsLost => {
+            mock.state().close_all_connections();
+            None
+        }
+        FaultType::RejectReconnect => {
+            mock.state().close_book_connections();
+            mock.state().set_reject_connections(true);
+            None
+        }
+        FaultType::ReferenceOnly => None,
+    }
+}
+
+/// Execute the deterministic fault schedule between anchoring and workload
+/// publication. Each step is timed from anchor completion and measured as
+/// incident detection -> valid re-anchor using the existing production
+/// counters; a socket reconnect alone never counts as recovery.
+async fn execute_fault_schedule(
+    mock: &MockKalshi,
+    schedule: &FaultSchedule,
+    metrics_addr: Option<SocketAddr>,
+    eligible_count: usize,
+    anchor_start: Instant,
+) -> Vec<RecoveryEvidence> {
+    let mut evidence = Vec::new();
+    for step in schedule.driven_steps() {
+        let planned = Duration::from_millis(step.failure_time_ms);
+        if let Some(wait) = planned.checked_sub(anchor_start.elapsed()) {
+            sleep(wait).await;
+        }
+        let closed_connection = apply_fault_step(mock, step);
+        let mut outcome = RecoveryEvidence {
+            fault_id: step.fault_id.as_str().to_owned(),
+            observed_epoch: closed_connection,
+            incidents_before: scrape_count(metrics_addr, "collector_discontinuity_incidents_total")
+                .await,
+            failover_snapshots_before: scrape_count(
+                metrics_addr,
+                "collector_failover_snapshots_total",
+            )
+            .await,
+            ..RecoveryEvidence::default()
+        };
+        let deadline = Instant::now() + Duration::from_millis(step.deadline_ms.unwrap_or(0));
+        let mut detected: Option<u64> = None;
+        let mut reanchored: Option<u64> = None;
+        loop {
+            if let Some(addr) = metrics_addr
+                && let Some(sample) = scrape_metrics(addr).await
+            {
+                let now_ms = anchor_start.elapsed().as_millis() as u64;
+                let incidents = sample.count("collector_discontinuity_incidents_total");
+                let failover = sample.count("collector_failover_snapshots_total");
+                let resyncing = sample.count("collector_symbols_resyncing").unwrap_or(0);
+                let anchored = sample.count("collector_symbols_anchored").unwrap_or(0);
+                let incident_grew = match (outcome.incidents_before, incidents) {
+                    (Some(before), Some(now)) => now > before,
+                    _ => false,
+                };
+                let failover_grew = match (outcome.failover_snapshots_before, failover) {
+                    (Some(before), Some(now)) => now > before,
+                    _ => false,
+                };
+                if detected.is_none() && (incident_grew || resyncing > 0) {
+                    detected = Some(now_ms);
+                }
+                if detected.is_some()
+                    && reanchored.is_none()
+                    && failover_grew
+                    && resyncing == 0
+                    && anchored >= eligible_count as u64
+                {
+                    reanchored = Some(now_ms);
+                }
+                outcome.incidents_after = incidents;
+                outcome.failover_snapshots_after = failover;
+            }
+            if reanchored.is_some() || Instant::now() >= deadline {
+                break;
+            }
+            sleep(METRICS_POLL).await;
+        }
+        outcome.connections_after = Some(mock.state().ws_connections());
+        outcome.detected_at_ms = detected;
+        outcome.reanchored_at_ms = reanchored;
+        outcome.duration_ms = detected
+            .zip(reanchored)
+            .map(|(start, end)| end.saturating_sub(start));
+        if outcome.duration_ms.is_none() {
+            outcome.duration_unavailable_reason = Some(
+                "valid re-anchor (failover snapshot + zero resyncing) not observed within the \
+                 step deadline at the 25 ms metrics poll"
+                    .to_owned(),
+            );
+        }
+        evidence.push(outcome);
+    }
+    // The mock is per-cell, so a deliberately latched outage (D8) is left set
+    // for the rest of this run. Every non-reject step clears it before acting.
+    evidence
+}
+
 async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     // Worktree provenance is captured before anything else runs so it
     // describes the state the cell actually executed in.
@@ -1810,6 +2005,13 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let eligible = universe.eligible_tickers_sorted();
     let hot = universe.hot_tickers(config.hot_fraction_ppm);
     let mock = MockKalshi::start(universe).await;
+    // A reconnect legitimately re-sends one snapshot per instrument on every
+    // socket. Give the disconnect sweeps a larger per-connection bound so a
+    // recovery burst is absorbed instead of being misclassified as a throughput
+    // fault; the saturation fixture still uses the production default.
+    if config.fault_schedule.is_some() {
+        mock.state().set_outbound_capacity(65_536);
+    }
     let mut seed_rng = SplitMix64::new(config.seed ^ 0x51E5_ED5E_ED5E_0001);
     for market in mock.state().universe().markets.iter() {
         mock.state().seed_book(&market.ticker, &mut seed_rng);
@@ -1914,6 +2116,53 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     // Build the explicit schedule before publishing. Phase event counts are
     // the primary schedule definition: no sleeps or timing instrumentation.
     let schedule = build_schedule(config, Some(canonical_set_sha256(&hot)));
+
+    // Deterministic disconnect sweep: faults happen after anchoring and before
+    // the workload so every delta is offered to a fully re-anchored collector.
+    // A fault that cannot re-anchor leaves resyncing symbols and the drain
+    // barrier below refuses to certify the run.
+    let recovery = if let Some(schedule) = &config.fault_schedule {
+        let evidence =
+            execute_fault_schedule(&mock, schedule, metrics_addr, eligible.len(), anchor_start)
+                .await;
+        // Let the collector settle before publishing: all replacement sockets
+        // must be subscribed, all books anchored and the writer quiescent. The
+        // drain barrier then attributes every later delta to the workload.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let expected_books = config.replicas;
+        let mut last_book_ids: Vec<usize> = Vec::new();
+        let mut stable_since: Option<Instant> = None;
+        loop {
+            let book_ids = mock.state().book_connection_ids();
+            let topology_stable = book_ids.len() == expected_books && book_ids == last_book_ids;
+            stable_since = if topology_stable {
+                Some(stable_since.unwrap_or_else(Instant::now))
+            } else {
+                None
+            };
+            last_book_ids = book_ids;
+            let mut settled = !mock.state().is_rejecting_connections()
+                && mock.state().in_flight() == 0
+                && stable_since.is_some_and(|since| since.elapsed() >= Duration::from_millis(500));
+            if let Some(addr) = metrics_addr
+                && let Some(sample) = scrape_metrics(addr).await
+            {
+                let resyncing = sample.count("collector_symbols_resyncing").unwrap_or(0);
+                let anchored = sample.count("collector_symbols_anchored").unwrap_or(0);
+                let depth = sample.count("collector_writer_queue_depth").unwrap_or(1);
+                settled &= resyncing == 0 && anchored >= eligible.len() as u64 && depth == 0;
+            }
+            if settled || Instant::now() >= deadline {
+                break;
+            }
+            sleep(METRICS_POLL).await;
+        }
+        evidence
+    } else {
+        Vec::new()
+    };
+
+    // Publish the synthetic workload and derive what *must* be applied.
     let skip_ticker = skip_target(config, &eligible);
     let mut publish_rng = SplitMix64::new(config.seed ^ 0xBEE7_6F00_0D15_EA5E);
 
@@ -1936,6 +2185,11 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let mut drain_detail: Option<String> = None;
     let mut drain_evidence_error: Option<String> = None;
     let mut last_deltas = baseline.map(|base| base.deltas_emitted);
+    // Transport/decoder aggregates are high-water marks over per-source status
+    // values that reset on reconnect. Sampling only the final scrape can miss
+    // the peak when a source reconnects late, so keep the runner-observed max.
+    let mut max_decoded = baseline.and_then(|base| base.delta_events_decoded);
+    let mut max_received = baseline.and_then(|base| base.data_frames_received);
     if matches!(config.fail_inject, Some(FailInject::ShutdownBeforeDrain)) {
         drain_detail = Some("shutdown requested before the drain barrier".to_owned());
     } else if let Some(error) = &baseline_error {
@@ -1996,6 +2250,18 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             )
             .await;
             last_deltas = result.last_deltas;
+            // M5.4 high-water evidence: transport/decoder aggregates are
+            // high-water marks over per-source status values that reset on
+            // reconnect. Sample during the active run so a late reconnect
+            // cannot hide the peak from the final evidence scrape.
+            if let Some(sample) = scrape_metrics(addr).await {
+                if let Some(value) = sample.count_sum("collector_decoded_delta_events_total") {
+                    max_decoded = Some(max_decoded.map_or(value, |peak| peak.max(value)));
+                }
+                if let Some(value) = sample.count_sum("collector_transport_frames_received_total") {
+                    max_received = Some(max_received.map_or(value, |peak| peak.max(value)));
+                }
+            }
             if !result.completed && drain_detail.is_none() {
                 drain_detail = result.detail;
                 drain_evidence_error = result.evidence_error;
@@ -2026,6 +2292,14 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         }
     }) {
         last_deltas = Some(deltas);
+    }
+    if let Some(sample) = &final_sample {
+        if let Some(value) = sample.count_sum("collector_decoded_delta_events_total") {
+            max_decoded = Some(max_decoded.map_or(value, |peak| peak.max(value)));
+        }
+        if let Some(value) = sample.count_sum("collector_transport_frames_received_total") {
+            max_received = Some(max_received.map_or(value, |peak| peak.max(value)));
+        }
     }
     let incidents = IncidentCounters {
         discontinuity_incidents: final_sample
@@ -2169,18 +2443,12 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             .as_ref()
             .and_then(|sample| sample.count_sum(name))
     };
-    let received_frames = match &baseline {
-        Some(base) => metric_window_delta(
-            base.data_frames_received,
-            final_count("collector_transport_frames_received_total"),
-        ),
+    let received_frames = match baseline {
+        Some(base) => metric_window_delta(base.data_frames_received, max_received),
         None => None,
     };
-    let delta_events_decoded = match &baseline {
-        Some(base) => metric_window_delta(
-            base.delta_events_decoded,
-            final_count("collector_decoded_delta_events_total"),
-        ),
+    let delta_events_decoded = match baseline {
+        Some(base) => metric_window_delta(base.delta_events_decoded, max_decoded),
         None => None,
     };
     let decode_errors = match &baseline {
@@ -2447,6 +2715,9 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         ledger,
         schedule,
         phase_results,
+        recovery,
+        ws_connections: mock.state().ws_connections(),
+        book_subscriptions: mock.state().book_subscribed_count(),
         mock: transmit,
     };
 
@@ -2685,7 +2956,7 @@ pub fn build_cell_manifest(
                 .unwrap_or_else(|| "unknown".to_owned())
         ),
     );
-    let scenario = json!({
+    let mut scenario = json!({
         "seed": config.seed,
         "symbols": config.symbols,
         "burst_profile": schedule.profile,
@@ -2716,11 +2987,23 @@ pub fn build_cell_manifest(
         "journal": config.journal,
         "failure_injection": config.fail_inject.map(|f| format!("{f:?}")),
     });
+    let fault_schedule_json = config
+        .fault_schedule
+        .as_ref()
+        .and_then(|schedule| serde_json::to_value(schedule).ok())
+        .unwrap_or_else(|| json!({ "steps": [] }));
+    if let Value::Object(scenario) = &mut scenario {
+        scenario.insert("fault_schedule".to_owned(), fault_schedule_json.clone());
+    }
     document.insert(
         "configuration_sha256".to_owned(),
         Value::from(sha256_hex(scenario.to_string().as_bytes())),
     );
     document.insert("scenario".to_owned(), scenario);
+    // Top-level copy for evidence consumers: the explicit fault matrix with
+    // fault id, affected source/instruments, start epoch, failure time, type,
+    // expected action/outcome, and deadline for every step.
+    document.insert("fault_schedule".to_owned(), fault_schedule_json);
 
     let desired_topology = json!({
         "shards": config.shards.unwrap_or(0),
@@ -2949,7 +3232,37 @@ pub fn build_cell_manifest(
         "drain_detail": output.and_then(|o| o.drain_detail.clone()).map(Value::from).unwrap_or(Value::Null),
         "capacity_connections": output.map(|o| o.capacity_connections).unwrap_or(0),
         "phases": phase_results.unwrap_or_default(),
+        "ws_connections": output.map(|o| o.ws_connections),
+        "book_subscriptions": output.map(|o| o.book_subscriptions),
     }));
+
+    // Recovery is measured as incident detection -> valid re-anchor. Every
+    // injected fault exports its observed counters and, when both endpoints
+    // were observed, the duration; otherwise an explicit unavailability reason.
+    let recovery: Vec<Value> = output
+        .map(|output| {
+            output
+                .recovery
+                .iter()
+                .map(|evidence| {
+                    json!({
+                        "fault_id": evidence.fault_id,
+                        "observed_epoch": evidence.observed_epoch,
+                        "incidents_before": evidence.incidents_before,
+                        "incidents_after": evidence.incidents_after,
+                        "failover_snapshots_before": evidence.failover_snapshots_before,
+                        "failover_snapshots_after": evidence.failover_snapshots_after,
+                        "connections_after": evidence.connections_after,
+                        "detected_at_ms": evidence.detected_at_ms,
+                        "reanchored_at_ms": evidence.reanchored_at_ms,
+                        "duration_ms": evidence.duration_ms,
+                        "duration_unavailable_reason": evidence.duration_unavailable_reason,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    document.insert("recovery".to_owned(), json!(recovery));
 
     let incidents = output.map(|output| output.incidents);
     let disk_free = HostInfo::probe().disk_free_bytes;

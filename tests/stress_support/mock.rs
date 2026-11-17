@@ -155,6 +155,15 @@ pub struct MockState {
     forwarder_delay_ms: AtomicU64,
     lifecycle_tx: broadcast::Sender<LifecycleMsg>,
     close: Mutex<HashMap<usize, oneshot::Sender<()>>>,
+    /// Fault knob: when set, the WS listener drops new TCP connections before
+    /// the handshake, so the collector's workers cannot re-anchor. Used by the
+    /// recovery-timeout sweep; it is an explicit, reversible harness state.
+    reject_connections: std::sync::atomic::AtomicBool,
+    /// Exchange clock is monotonic across connection epochs. Per-socket `seq`
+    /// resets on reconnect (protocol-correct), but the venue's clock does not;
+    /// reusing `seq` as the clock made every reconnect look like a maintenance
+    /// regression and triggered a reconnect storm in the collector.
+    clock_counter: AtomicU64,
     start_send_ts_ms: i64,
 }
 
@@ -206,6 +215,8 @@ impl MockState {
             forwarder_delay_ms: AtomicU64::new(0),
             lifecycle_tx,
             close: Mutex::new(HashMap::new()),
+            reject_connections: std::sync::atomic::AtomicBool::new(false),
+            clock_counter: AtomicU64::new(1),
             start_send_ts_ms: 1_800_000_000_000,
         }
     }
@@ -225,18 +236,10 @@ impl MockState {
     }
 
     /// Total websocket connections accepted since start (including reconnects).
-    #[expect(
-        dead_code,
-        reason = "read by the connection-topology cells, which this increment does not wire yet"
-    )]
     pub fn ws_connections(&self) -> usize {
         self.ws_connections.load(Ordering::SeqCst)
     }
 
-    #[expect(
-        dead_code,
-        reason = "read by the subscription-topology cells, which this increment does not wire yet"
-    )]
     pub fn book_subscribed_count(&self) -> usize {
         self.book_subscribed_count.load(Ordering::SeqCst)
     }
@@ -403,7 +406,7 @@ impl MockState {
             "sending_ts_ms": self.next_ts(),
             "msg": {
                 "market_ticker": market,
-                "clock": seq,
+                "clock": self.next_clock(),
                 "yes_dollars_fp": yes,
                 "no_dollars_fp": no,
             }
@@ -413,6 +416,10 @@ impl MockState {
     fn next_ts(&self) -> i64 {
         // Deterministic but monotonic: offset from a fixed base by frames sent.
         self.start_send_ts_ms + self.sent_count.load(Ordering::SeqCst) as i64
+    }
+
+    fn next_clock(&self) -> u64 {
+        self.clock_counter.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Publish one seeded price-level change for `market` to every connection
@@ -484,7 +491,7 @@ impl MockState {
                     "sending_ts_ms": self.next_ts(),
                     "msg": {
                         "market_ticker": market,
-                        "clock": seq,
+                        "clock": self.next_clock(),
                         "price_dollars": format_micros(price_micros),
                         "delta_fp": format_micros(delta_micros),
                         "side": side_label(side),
@@ -518,20 +525,53 @@ impl MockState {
 
     /// Close all book connections (or only a subset) to inject a connection
     /// loss. Book sockets only; lifecycle sockets stay up.
-    #[expect(
-        dead_code,
-        reason = "read by the recovery-sweep cells, which this increment does not wire yet"
-    )]
     pub fn close_book_connections(&self) {
         self.close_connections_by(|entry| entry.sid_orderbook.is_some());
     }
 
-    #[expect(
-        dead_code,
-        reason = "read by the recovery-sweep cells, which this increment does not wire yet"
-    )]
     pub fn close_all_connections(&self) {
         self.close_connections_by(|_| true);
+    }
+
+    /// Ids of all live book connections, in ascending (connection order).
+    /// The collector's active replica is normally the first to deliver a
+    /// snapshot, so the sweep uses this ordering to target a single replica.
+    #[must_use]
+    pub fn book_connection_ids(&self) -> Vec<usize> {
+        let mut ids: Vec<usize> = self
+            .connections
+            .lock()
+            .map(|connections| {
+                connections
+                    .iter()
+                    .filter(|(_, entry)| entry.sid_orderbook.is_some())
+                    .map(|(id, _)| *id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Close exactly one book connection by id. Returns whether a live socket
+    /// was actually signalled. Used to distinguish standby- versus active-role
+    /// replica loss from the harness (the mock itself does not assign roles).
+    pub fn close_book_connection(&self, id: usize) -> bool {
+        let mut close = self.close.lock().unwrap();
+        close
+            .remove(&id)
+            .is_some_and(|sender| sender.send(()).is_ok())
+    }
+
+    /// Fault knob for the recovery-timeout sweep. Rejecting new connections
+    /// keeps the workers in backoff so no fresh snapshot can re-anchor a book.
+    pub fn set_reject_connections(&self, reject: bool) {
+        self.reject_connections.store(reject, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn is_rejecting_connections(&self) -> bool {
+        self.reject_connections.load(Ordering::SeqCst)
     }
 
     fn close_connections_by(&self, predicate: fn(&Connection) -> bool) {
@@ -698,6 +738,13 @@ async fn run_ws(listener: TcpListener, state: Arc<MockState>) {
         let Ok((socket, _)) = listener.accept().await else {
             continue;
         };
+        if state.reject_connections.load(Ordering::SeqCst) {
+            // Drop the TCP connection before the websocket handshake. The
+            // collector worker records a connect failure and re-enters backoff;
+            // no recovery snapshot can arrive while the knob is set.
+            drop(socket);
+            continue;
+        }
         let id = state.next_connection_id();
         let state = Arc::clone(&state);
         tokio::spawn(async move { handle_ws_connection(id, socket, state).await });
@@ -813,6 +860,12 @@ async fn handle_ws_connection(id: usize, socket: TcpStream, state: Arc<MockState
                                 }
                                 state.book_subscribed_count.fetch_add(tickers.len(), Ordering::SeqCst);
                                 send_subscribe_ack(&state, id, id_num, "orderbook_delta", sid);
+                                // Deterministic role assignment: the earlier
+                                // (lower-id) socket always delivers its initial
+                                // snapshots first, so it wins the collector's
+                                // active-source race. This makes the disconnect
+                                // sweep's active/standby targets reproducible.
+                                tokio::time::sleep(Duration::from_millis(id as u64 * 25)).await;
                                 // Initial snapshot per requested ticker.
                                 let skipped = state
                                     .fail_skip_snapshots
