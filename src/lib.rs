@@ -18,6 +18,7 @@ pub mod model;
 pub mod orderbook;
 pub mod persistence;
 pub mod probe;
+pub mod products;
 pub mod protocol;
 pub mod recovery;
 pub mod replay;
