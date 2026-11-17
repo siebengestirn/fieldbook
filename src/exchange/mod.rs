@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     capacity::count_selected_markets, config::ExchangeKind, model::MarketInfo,
-    session::SessionFactory, time::now_us,
+    products::SourceCapabilities, session::SessionFactory, time::now_us,
 };
 
 /// Venue features that the exchange adapter reports to the collector core.
@@ -66,6 +66,25 @@ pub fn capabilities_for(kind: ExchangeKind) -> ExchangeCapabilities {
     }
 }
 
+/// Typed capability declaration for a configured venue.
+///
+/// Every adapter declares its own products and delivery model; this mapping is
+/// the composition-root/replay equivalent of the adapter's
+/// [`Exchange::source_capabilities`]. The legacy [`capabilities_for`] above is
+/// unchanged and continues to report only the sequence-clock flag.
+#[must_use]
+pub fn source_capabilities_for(kind: ExchangeKind) -> SourceCapabilities {
+    match kind {
+        ExchangeKind::Kalshi => kalshi::typed_capabilities(),
+        ExchangeKind::Polymarket => polymarket::typed_capabilities(),
+        ExchangeKind::Hyperliquid => hyperliquid::typed_capabilities(),
+        ExchangeKind::Coinbase => coinbase::typed_capabilities(),
+        ExchangeKind::Kraken => kraken::typed_capabilities(),
+        ExchangeKind::Okx => okx::typed_capabilities(),
+        ExchangeKind::Binance => binance::typed_capabilities(),
+    }
+}
+
 /// Telemetry for one complete discovery round.
 ///
 /// `selected_markets` counts venue records; `outcome_symbols` counts the
@@ -101,6 +120,13 @@ pub trait Exchange: Send + Sync + 'static {
 
     /// Features the collector core may rely on for this venue.
     fn capabilities(&self) -> ExchangeCapabilities;
+
+    /// Typed products and delivery contract for this venue. The default is a
+    /// conservative projection of the legacy flag so adapters without a
+    /// declaration keep compiling; adapters with typed products override it.
+    fn source_capabilities(&self) -> SourceCapabilities {
+        SourceCapabilities::from_legacy(self.capabilities().has_sequence_clock)
+    }
 
     /// Persistent identity assertions for the markets this adapter discovers.
     ///
@@ -180,5 +206,140 @@ mod tests {
         assert!(!capabilities_for(ExchangeKind::Kraken).has_sequence_clock);
         assert!(!capabilities_for(ExchangeKind::Okx).has_sequence_clock);
         assert!(!capabilities_for(ExchangeKind::Binance).has_sequence_clock);
+    }
+
+    #[test]
+    fn typed_capabilities_are_declared_for_every_venue() {
+        use std::collections::BTreeSet;
+
+        use crate::products::{
+            BackpressureBehavior, HeartbeatMechanism, OrderingScope, PrecisionModel, ProductKind,
+            SubscriptionTopology, UpdateModel,
+        };
+
+        let kalshi = source_capabilities_for(ExchangeKind::Kalshi);
+        assert_eq!(
+            kalshi.products,
+            BTreeSet::from([ProductKind::OrderBookL2, ProductKind::VenueLifecycle])
+        );
+        assert_eq!(
+            kalshi.subscription_topology,
+            SubscriptionTopology::PerInstrument
+        );
+        assert_eq!(kalshi.heartbeat, HeartbeatMechanism::NativePingPong);
+        assert_eq!(kalshi.update_model, UpdateModel::SnapshotAndDelta);
+        assert!(kalshi.provides_reference_data);
+        assert_eq!(kalshi.ordering_scope, OrderingScope::ReceiveFence);
+
+        let polymarket = source_capabilities_for(ExchangeKind::Polymarket);
+        assert_eq!(
+            polymarket.products,
+            BTreeSet::from([ProductKind::OrderBookL2])
+        );
+        assert_eq!(
+            polymarket.subscription_topology,
+            SubscriptionTopology::PerInstrument
+        );
+        assert_eq!(polymarket.heartbeat, HeartbeatMechanism::ApplicationText);
+        assert!(!polymarket.supports(ProductKind::VenueLifecycle));
+
+        let hyperliquid = source_capabilities_for(ExchangeKind::Hyperliquid);
+        assert_eq!(
+            hyperliquid.products,
+            BTreeSet::from([
+                ProductKind::OrderBookL2,
+                ProductKind::Trades,
+                ProductKind::AssetContext,
+                ProductKind::GlobalStatistics,
+            ])
+        );
+        assert_eq!(
+            hyperliquid.subscription_topology,
+            SubscriptionTopology::PerInstrument
+        );
+        assert_eq!(hyperliquid.telemetry_topology, SubscriptionTopology::Global);
+        assert_eq!(hyperliquid.update_model, UpdateModel::SnapshotOnly);
+        assert_eq!(hyperliquid.precision, PrecisionModel::ExactDecimal);
+
+        for kind in [
+            ExchangeKind::Coinbase,
+            ExchangeKind::Kraken,
+            ExchangeKind::Okx,
+            ExchangeKind::Binance,
+        ] {
+            let h0 = source_capabilities_for(kind);
+            assert!(h0.products.is_empty(), "{kind} declares no live products");
+            assert!(h0.provides_reference_data, "{kind} declares reference data");
+            assert_eq!(h0.update_model, UpdateModel::ReferenceData);
+            assert_eq!(
+                h0.subscription_topology,
+                SubscriptionTopology::NotApplicable
+            );
+            assert_eq!(h0.telemetry_topology, SubscriptionTopology::NotApplicable);
+            assert_eq!(h0.heartbeat, HeartbeatMechanism::Disabled);
+            assert_eq!(h0.backpressure, BackpressureBehavior::NotApplicable);
+        }
+
+        for kind in [
+            ExchangeKind::Kalshi,
+            ExchangeKind::Polymarket,
+            ExchangeKind::Hyperliquid,
+            ExchangeKind::Coinbase,
+            ExchangeKind::Kraken,
+            ExchangeKind::Okx,
+            ExchangeKind::Binance,
+        ] {
+            assert_eq!(
+                source_capabilities_for(kind).has_sequence_clock,
+                capabilities_for(kind).has_sequence_clock,
+                "{kind} capability flag changed"
+            );
+        }
+    }
+
+    struct LegacyOnlyExchange;
+
+    #[async_trait]
+    impl Exchange for LegacyOnlyExchange {
+        fn name(&self) -> &'static str {
+            "legacy"
+        }
+
+        fn environment(&self) -> &'static str {
+            "test"
+        }
+
+        fn capabilities(&self) -> ExchangeCapabilities {
+            ExchangeCapabilities::new(true)
+        }
+
+        async fn discover_markets(&self, _max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
+            Ok(Vec::new())
+        }
+
+        fn session_factory(self: Arc<Self>) -> Arc<dyn SessionFactory> {
+            Arc::new(NoopSessionFactory)
+        }
+    }
+
+    struct NoopSessionFactory;
+
+    #[async_trait]
+    impl SessionFactory for NoopSessionFactory {
+        async fn create_session(
+            &self,
+            _source: crate::model::SourceId,
+        ) -> anyhow::Result<Box<dyn crate::session::MarketDataSession>> {
+            anyhow::bail!("no session in the capability default test")
+        }
+    }
+
+    #[test]
+    fn exchange_trait_default_capabilities_are_legacy_equivalent() {
+        let adapter = LegacyOnlyExchange;
+        let declared = adapter.source_capabilities();
+        assert_eq!(declared, SourceCapabilities::from_legacy(true));
+        assert!(declared.has_sequence_clock);
+        assert!(declared.products.is_empty());
     }
 }

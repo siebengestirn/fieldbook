@@ -12,7 +12,7 @@ pub mod codec;
 pub mod discovery;
 pub mod session;
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -20,6 +20,10 @@ use crate::{
     config::{ExchangeKind, OkxSettings},
     exchange::{DiscoveryResult, Exchange, ExchangeCapabilities},
     model::MarketInfo,
+    products::{
+        BackpressureBehavior, HeartbeatMechanism, OrderingScope, PrecisionModel, RecoveryMode,
+        SourceCapabilities, SubscriptionTopology, UpdateModel,
+    },
     session::SessionFactory,
 };
 
@@ -56,6 +60,10 @@ impl Exchange for OkxExchange {
         ExchangeCapabilities::new(false)
     }
 
+    fn source_capabilities(&self) -> SourceCapabilities {
+        typed_capabilities()
+    }
+
     async fn discover_markets(&self, max_markets: usize) -> anyhow::Result<Vec<MarketInfo>> {
         discovery::discover(&self.settings, max_markets).await
     }
@@ -80,6 +88,25 @@ impl Exchange for OkxExchange {
 #[must_use]
 pub fn capabilities() -> ExchangeCapabilities {
     ExchangeCapabilities::new(false)
+}
+
+/// H0 is reference-data-only: no socket, no live products and no heartbeat.
+/// Ordering comes from the supervisor's receive fence, never a venue field.
+#[must_use]
+pub fn typed_capabilities() -> SourceCapabilities {
+    SourceCapabilities {
+        products: BTreeSet::new(),
+        provides_reference_data: true,
+        update_model: UpdateModel::ReferenceData,
+        ordering_scope: OrderingScope::NotApplicable,
+        recovery_mode: RecoveryMode::NotApplicable,
+        heartbeat: HeartbeatMechanism::Disabled,
+        subscription_topology: SubscriptionTopology::NotApplicable,
+        telemetry_topology: SubscriptionTopology::NotApplicable,
+        precision: PrecisionModel::ExactDecimal,
+        backpressure: BackpressureBehavior::NotApplicable,
+        has_sequence_clock: false,
+    }
 }
 
 #[must_use]
