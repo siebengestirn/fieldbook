@@ -10,12 +10,13 @@ authoritative design for the stress laboratory remains
 [`stress-lab-design.md`](stress-lab-design.md); the canonical starting point is
 [`baseline-post-m4.md`](baseline-post-m4.md).
 
-The current scenario schema is **v13** (M5.2 = 6, M5.3 = 7, M5.4 = 8,
-M5.5 = 9, M5.6 = 10, M5.7 = 11, M5.8 = 12; v13 is the combined integrated
-schema that folds the lifecycle scenarios and universe-epoch coverage together
-with the disconnect, burst, backpressure and capacity profiles).
-Earlier v3-v5 evidence files are retained byte-for-byte and are never
-overwritten by a v13 run; cell ids carry the scenario version suffix.
+The current combined scenario schema is **v14** (M5.2 burst = 6, M5.3 = 7,
+M5.4 = 8, M5.5 backpressure = 9, M5.6 stage timing = 10, M5.7 = 11, M5.8 = 12;
+v13 was the combined integrated schema that folded the lifecycle scenarios and
+universe-epoch coverage together with the disconnect, burst, backpressure and
+capacity profiles; v14 additionally carries the M5.6 stage-timing performance
+block). Earlier v3-v5 evidence files are retained byte-for-byte and are never
+overwritten by a v14 run; cell ids carry the scenario version suffix.
 
 ## Invariants
 
@@ -30,9 +31,12 @@ overwritten by a v13 run; cell ids carry the scenario version suffix.
 - Acceptance is fail-closed. A cell may only publish `success` when anchoring,
   drain, exact coverage, SBE verification, completeness, journal finalization,
   decoy exclusion and the two-sided event ledger all pass inside the runner.
-- Latency, CPU, and per-stage timing fields stay `unavailable` with an explicit
-  reason until real instrumentation exists. Synthetic mock send timestamps are
-  not used as measured latency.
+- Stage timing is measured only at boundaries that exist in the current code,
+  with `Instant`, one shared fixed-bucket histogram per boundary, and explicit
+  sample counts. Unexercised boundaries stay `unavailable` with a reason, never
+  zero. CPU, throughput, RSS and disk fields remain `unavailable`. Synthetic
+  mock send timestamps are not used as measured latency. See
+  [`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md).
 - Backpressure admission is boundary-specific. A cell declares its boundary
   before the run; the manifest records capacity, admission rule, timeout,
   drop/reject policy, recovery path and five distinct terminal-state counters.
@@ -56,7 +60,7 @@ overwritten by a v13 run; cell ids carry the scenario version suffix.
 | `burst` | **Implemented in M5.2** | Four deterministic profiles (`step`, `impulse`, `repeated_impulses`, `ramp`) that partition the same 400 logical deltas into publish phases. No sleeps, timing instrumentation or performance claims. |
 | `lifecycle` | **Implemented in M5.3** | Typed L1-L10 churn driven by a seed + explicit event sequence over the mock's `market_lifecycle_v2` channel; retired instruments are epoch-scoped, not permanent coverage obligations. |
 | `disconnect` | **Implemented in M5.4** | Seed-derived explicit fault schedule (D1-D10) that closes replicas/sockets through the mock's `close_book_connections()` / `close_all_connections()`, measures incident-detection → valid re-anchor, and records the schedule in the manifest. |
-| `backpressure` | **Implemented in M5.5** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
+| `backpressure` | **Implemented in M5.5; carried into combined `scenario_version = 14`** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
 | `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell (M5.5 adds only the single-injection hot/quiet + writer-queue cell, not the full mixed profile). |
 
 ## M5.2 burst profiles
@@ -108,7 +112,7 @@ The manifest records the explicit schedule under `workload_schedule`:
   `cumulative_expected` and `drain_completed`.
 
 Scenario `scenario_version` was bumped to **6** for the burst increment
-(superseded by the combined integrated schema at **13**); burst cell IDs carry
+(superseded by the combined integrated schema at **14**); burst cell IDs carry
 the profile label so two profiles never overwrite one another in the index. The
 v5 disposition-certified manifests remain immutable historical evidence.
 
@@ -120,7 +124,7 @@ v5 disposition-certified manifests remain immutable historical evidence.
 | Eligible instruments | 4,000 (`decoy_fraction_ppm = 20_000`) |
 | Hot instruments | 200 (5% of eligible, `hot_fraction_ppm = 50_000`) |
 | Hot event share | 80% (`hot_event_share_pct = 80`); exact mode pins 320/400 |
-| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 13`) |
+| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 14`, the combined schema: 6=burst schedules (M5.2), 7=lifecycle (M5.3), 8=disconnect (M5.4), 9=backpressure (M5.5), 10=stage-timing evidence (M5.6), 11-12=increments, 13=integrated schema, 14=integrated schema plus stage timing) |
 | Logical deltas | 400 |
 | Topology | 2 shards × 2 replicas + 1 lifecycle connection |
 | Journal | enabled |
@@ -132,7 +136,7 @@ decoys, and reproducible by
 Bumping the generator or scenario schema version is required before changing the
 semantics of this table.
 
-## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 13`)
+## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 14`)
 
 Each profile is one boundary, one injection and one terminal disposition. The
 runner derives the profile from `CellConfig` before the run, reconciles the five
@@ -237,8 +241,13 @@ that reset across reconnects. The artifact is retained unchanged as superseded
 evidence; a diagnostic regression test pins it. Current certification uses
 core-accumulated monotonic counters.
 
-Latency, CPU, peak RSS and queue-wait instrumentation remain unavailable and
-block **performance** certification; they are never substituted with zero.
+Stage-latency instrumentation now exists for the five boundaries defined in
+[`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md): core processing,
+writer queue wait, SBE write, flush and journal append. Each publishes raw
+bucket counts, explicit sample counts and nearest-rank percentiles, with build
+and clock provenance. CPU, peak RSS, throughput and disk latency remain
+unavailable and still block **performance** certification; they are never
+substituted with zero.
 
 ## Terminal delta disposition (v5)
 
@@ -258,7 +267,7 @@ frames; core-ingress counters are sampled separately under distinct metric
 names. The full contract is in
 [`EVENT_ACCOUNTING_CONTRACT.md`](EVENT_ACCOUNTING_CONTRACT.md).
 
-## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 13`)
+## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 14`)
 
 The disconnect sweep is an **explicit, seed-derived schedule**, not random
 chaos. `tests/stress_support/faults.rs` derives a `Vec<FaultStep>` from the cell
@@ -370,7 +379,8 @@ harness's declared plan, checked against the final certified set.
 | Disconnect recovery | `disconnect_standby_replica_loss_recovers_and_reconciles`, `disconnect_active_replica_loss_recovers_and_reconciles`, `disconnect_both_replicas_lost_reanchors_all_instruments`, `disconnect_many_instruments_reanchor_certifies_coverage`, `disconnect_recovery_timeout_surfaces_as_incomplete`, `disconnect_recovery_storm_preserves_generations_and_accounting`, `disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence` pass offline |
 | Lifecycle semantics | `core.lifecycle_events`, `lifecycle_duplicates` and `lifecycle_stale_dropped` equal the explicit schedule's applied/duplicate/stale counts; added markets are anchored, retired markets are not expected |
 | Lifecycle epochs | `coverage.per_epoch` records expected/anchored/retired set hashes per epoch; the final certificate is unchanged and extra anchors are permitted only for scheduled retirements |
-| Lifecycle evidence | add/activate, retire, duplicate, out-of-order and churn-under-load cells pass offline (exact coverage, reconciled ledger, SBE verification, journal finalization); `reference_lifecycle_churn_manifest_is_versioned` emits a v13 manifest when run explicitly with `STRESS_MANIFEST_OUT` |
+| Lifecycle evidence | add/activate, retire, duplicate, out-of-order and churn-under-load cells pass offline (exact coverage, reconciled ledger, SBE verification, journal finalization); `reference_lifecycle_churn_manifest_is_versioned` emits a v14 manifest when run explicitly with `STRESS_MANIFEST_OUT` |
+| Stage instrumentation | `stage_timing_cell_records_real_writer_write_latency` records non-zero SBE write, queue-wait and journal-append samples in a real cell; histogram unit tests pin percentile correctness, sample counts and merge-by-raw-counts |
 
 The earlier `seed-0017-4000-hotquiet.json` manifest was generated by the
 pre-correction sampler (residual draws could include hot instruments, giving
@@ -383,13 +393,30 @@ artifacts are `seed-0007-4000-uniform-v4.json`,
 `seed-0007-4000-uniform-v5.json`, `seed-0017-4000-hotquiet-v5.json`,
 `seed-001d-4000-hotquiet-v5.json` and
 `failed-v5-seed-000b-200-coverage_set_mismatch.json` are tied to `5bb54e6`. Do not use the v2 manifest for comparative
-workload claims. The integrated v13 manifests are generated only into a
-caller-supplied `STRESS_MANIFEST_OUT` directory and are not copied over the
-v3-v5 artifacts.
+workload claims. The M5.5 v9 manifests are generated only into a caller-supplied
+`STRESS_MANIFEST_OUT` directory and are not copied over the v3-v5 artifacts;
+the combined v14 manifests extend the same publication protocol.
 
-Performance gates (p50/p95/p99/p99.9, CPU, RSS, disk, queue wait) are **not**
-claimed by this increment. They require the instrumentation work identified in
-the stress-lab audit before any number can be called evidence.
+### Stage timing contract (introduced at v10; carried into combined v14)
+
+`performance.stage_timing` carries one `StageHistogram` per measured boundary,
+with `sample_count`, `min_ns`, `max_ns`, p50/p90/p95/p99/p99.9, an optional
+p99.99 at 10,000+ samples, and raw bucket counts. Percentiles are nearest-rank
+estimates from merged bucket counts, never averages of worker percentiles. The
+host clock step (`clock_resolution_ns`), build profile, target triple and
+scenario version are published alongside the counts. Nanoseconds are the
+storage unit, not an accuracy claim. `lifecycle`, `disconnect` and combined
+`mixed` profile remains **Planned**; `lifecycle` (M5.3), `disconnect` (M5.4),
+`burst` (M5.2) and `backpressure` (M5.5) are implemented workload profiles
+carried into the combined v14 schema. No
+capacity, Hyperliquid, or live performance result is claimed.
+
+`stage_timing_cell_records_real_writer_write_latency` proves the writer SBE
+write and journal append boundaries record non-zero samples in a real cell;
+the histogram unit tests in `src/histogram.rs` pin percentile correctness,
+merge-by-raw-counts and sample-count rules. Previously published v3/v4/v5 manifests remain unchanged as
+historical evidence; v14 manifests use a new cell-id suffix and never overwrite
+them.
 
 ## Reproduce
 
@@ -415,21 +442,21 @@ STRESS_MANIFEST_OUT=/tmp/stress-v3 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_exact_hot_quiet_manifest_is_reproducible --test-threads=1 --nocapture
 
-STRESS_MANIFEST_OUT=/tmp/stress-v13 \
+STRESS_MANIFEST_OUT=/tmp/stress-v14 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_backpressure_profiles_manifest_is_reproducible --test-threads=1 --nocapture
 
 # M5.4 disconnect sweeps (non-ignored)
 cargo test --test full_universe_stress disconnect_ -- --test-threads=1
 
-STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v13 \
+STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v14 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_disconnect_sweep_manifest --test-threads=1 --nocapture
 
 # M5.3 lifecycle churn (non-ignored)
 cargo test --test lifecycle_churn
 
-STRESS_MANIFEST_OUT=/tmp/stress-lifecycle-v13 \
+STRESS_MANIFEST_OUT=/tmp/stress-lifecycle-v14 \
   cargo test --release --locked --test lifecycle_churn -- \
   --ignored reference_lifecycle_churn_manifest_is_versioned --test-threads=1 --nocapture
 ```
@@ -442,5 +469,5 @@ queue-wait distribution. None of these profiles produces performance claims.
 All lifecycle evidence above is synthetic loopback evidence. No live Kalshi
 lifecycle notification has been observed or claimed in this increment; the
 dedicated control-plane tests exercise a loopback mock of `market_lifecycle_v2`.
-The v13 cell ids (`*-lifecycle-<scenario>-v13`) are distinct from the retained
+The v14 cell ids (`*-lifecycle-<scenario>-v14`) are distinct from the retained
 v3-v5 manifests, so no existing artifact is overwritten.
