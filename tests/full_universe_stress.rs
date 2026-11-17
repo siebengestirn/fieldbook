@@ -33,6 +33,8 @@ use std::collections::BTreeSet;
 
 use stress_support::{
     faults::SweepProfile,
+    lifecycle::LifecycleScenario,
+    mock::MockKalshi,
     rng::SplitMix64,
     runner::{
         BurstProfile, CellConfig, CellOutcome, FailInject, HotSelection, canonical_set_sha256,
@@ -80,6 +82,7 @@ fn headless_cell_config(seed: u64, symbols: usize) -> CellConfig {
         shards: Some(1),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 40,
         hot_pair: false,
         uniform_spread: true,
@@ -112,6 +115,7 @@ async fn smoke_cell_anchors_applies_and_certifies() {
         shards: Some(1),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 200,
         hot_pair: false,
         uniform_spread: true,
@@ -441,6 +445,7 @@ async fn malformed_index_fixture_fails_closed() {
         shards: Some(1),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 5,
         hot_pair: false,
         uniform_spread: true,
@@ -688,6 +693,7 @@ async fn reference_success_manifest_is_reproducible() {
         shards: Some(1),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 200,
         hot_pair: false,
         uniform_spread: true,
@@ -1133,6 +1139,7 @@ async fn mixed_hot_quiet_4000_cell_reconciles_and_certifies() {
         shards: Some(2),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 400,
         hot_pair: false,
         uniform_spread: false,
@@ -1197,6 +1204,7 @@ async fn reference_mixed_hot_quiet_manifest_is_reproducible() {
         shards: Some(2),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 400,
         hot_pair: false,
         uniform_spread: false,
@@ -1239,6 +1247,7 @@ async fn mixed_hot_quiet_exact_4000_cell_assigns_320_hot_events() {
         shards: Some(2),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 400,
         hot_pair: false,
         uniform_spread: false,
@@ -1295,6 +1304,7 @@ async fn reference_exact_hot_quiet_manifest_is_reproducible() {
         shards: Some(2),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 400,
         hot_pair: false,
         uniform_spread: false,
@@ -1333,6 +1343,7 @@ fn burst_cell_config(profile: BurstProfile, seed: u64, selection: HotSelection) 
         shards: Some(2),
         replicas: 2,
         lifecycle_replicas: 1,
+        lifecycle_scenario: LifecycleScenario::None,
         events: 400,
         hot_pair: false,
         uniform_spread: false,
@@ -1488,7 +1499,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(12));
+    assert_eq!(document["scenario_version"].as_u64(), Some(13));
     outcome
 }
 
@@ -1578,7 +1589,7 @@ fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
 }
 
 fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
-    assert_eq!(document["scenario_version"], 12);
+    assert_eq!(document["scenario_version"], 13);
     assert_eq!(document["backpressure"]["profile"], profile);
     let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
     assert!(!boundary.is_empty(), "boundary must be named");
@@ -2009,7 +2020,7 @@ async fn reference_backpressure_profiles_manifest_is_reproducible() {
         let outcome =
             stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
         let document = build_cell_manifest_for_reference(&out, seed);
-        assert_eq!(document["scenario_version"], 12);
+        assert_eq!(document["scenario_version"], 13);
         assert_eq!(document["backpressure"]["profile"], expected);
         assert!(
             !outcome.acceptance.valid || expected == "writer_queue_saturation",
@@ -2032,7 +2043,7 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
 }
 
 // ---------------------------------------------------------------------------
-// M5.4 deterministic disconnect and recovery sweeps (scenario_version 12).
+// M5.4 deterministic disconnect and recovery sweeps (scenario_version 13).
 // ---------------------------------------------------------------------------
 
 fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {
@@ -2548,4 +2559,59 @@ async fn reference_disconnect_sweep_manifest() {
             .iter()
             .any(|recovery| recovery.fault_id == "D10")
     );
+}
+
+/// The typed selector covers L1-L10 and derives a complete explicit schedule
+/// from the seed. This is a contract test for the selector itself, not a live
+/// validation: it never opens a connection or publishes an event.
+#[test]
+fn lifecycle_scenario_variants_are_typed_and_deterministic() {
+    use stress_support::lifecycle::{LifecycleScenario, LifecycleSchedule};
+
+    let eligible: Vec<String> = (0..16).map(|index| format!("S-{index:03}")).collect();
+    let all = [
+        LifecycleScenario::None,
+        LifecycleScenario::AddActivate,
+        LifecycleScenario::Subscribe,
+        LifecycleScenario::SnapshotAnchor,
+        LifecycleScenario::MetadataChange,
+        LifecycleScenario::RetireSettle,
+        LifecycleScenario::Duplicate,
+        LifecycleScenario::OutOfOrder,
+        LifecycleScenario::ConflictingReplica,
+        LifecycleScenario::Reappearance,
+        LifecycleScenario::ChurnUnderLoad,
+    ];
+    let mut ids = std::collections::BTreeSet::new();
+    for scenario in all {
+        let schedule = LifecycleSchedule::build(scenario, 41, &eligible, 200);
+        assert_eq!(schedule.scenario, scenario);
+        assert_eq!(schedule.seed, 41);
+        assert!(schedule.base_ts_ms >= 1_700_000_000_000);
+        assert_eq!(
+            schedule.final_expected(),
+            &schedule.epochs.last().expect("initial epoch").expected
+        );
+        if let Some(record) = schedule.added_record() {
+            assert_eq!(record["status"], "active");
+        }
+        if let Some(id) = scenario.scenario_id() {
+            assert!(ids.insert(id), "scenario id {id} must be unique");
+        }
+        assert!(!scenario.as_str().is_empty());
+    }
+    assert_eq!(ids.len(), 10);
+}
+
+/// The default-timestamp wrapper remains callable for ad-hoc probes. Scheduled
+/// cells use `publish_lifecycle_at` so dedup and ordering are pinned by the
+/// schedule rather than by wire arrival order.
+#[tokio::test]
+async fn mock_publish_lifecycle_wrapper_is_callable_without_subscribers() {
+    let universe = SyntheticUniverse::generate(3, 8, 100_000);
+    let ticker = universe.eligible_tickers_sorted()[0].clone();
+    let mock = MockKalshi::start(universe).await;
+    mock.state()
+        .publish_lifecycle("created", &ticker, serde_json::json!({}));
+    assert_eq!(mock.state().ledger_snapshot().lifecycle_sent, 0);
 }

@@ -48,6 +48,8 @@ pub const REQUIRED_FIELDS: &[&str] = &[
     "generator_version",
     "prng_algorithm_version",
     "scenario_version",
+    "scenario.lifecycle_scenario",
+    "coverage.per_epoch",
     "workload_schedule",
     "workload_schedule.workload_id",
     "workload_schedule.profile",

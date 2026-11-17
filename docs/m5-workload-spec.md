@@ -10,11 +10,12 @@ authoritative design for the stress laboratory remains
 [`stress-lab-design.md`](stress-lab-design.md); the canonical starting point is
 [`baseline-post-m4.md`](baseline-post-m4.md).
 
-The current scenario schema is **v12** (M5.2 = 6, M5.3 = 7, M5.4 = 8,
-M5.5 = 9, M5.6 = 10, M5.7 = 11; v12 is the combined integrated schema that
-folds the disconnect, burst, backpressure and capacity profiles together).
+The current scenario schema is **v13** (M5.2 = 6, M5.3 = 7, M5.4 = 8,
+M5.5 = 9, M5.6 = 10, M5.7 = 11, M5.8 = 12; v13 is the combined integrated
+schema that folds the lifecycle scenarios and universe-epoch coverage together
+with the disconnect, burst, backpressure and capacity profiles).
 Earlier v3-v5 evidence files are retained byte-for-byte and are never
-overwritten by a v12 run; cell ids carry the scenario version suffix.
+overwritten by a v13 run; cell ids carry the scenario version suffix.
 
 ## Invariants
 
@@ -53,7 +54,7 @@ overwritten by a v12 run; cell ids carry the scenario version suffix.
 | `hot_quiet` weighted | **Implemented, corrected in M5.1** | Exactly 5% of eligible instruments are designated hot by a derived PRNG stream. Hot and cold indices are disjoint and exhaustive; 80% of draws select from the hot set and 20% from the cold set, so no hot instrument can be chosen through the cold branch. The realized share varies within a finite run. |
 | `hot_quiet` exact | **Implemented in M5.1** | Same roles, but event assignment is an exact shuffled quota: 320 of 400 deltas are hot and 80 are cold, reproducible under the seed. Used as the frozen reference profile. |
 | `burst` | **Implemented in M5.2** | Four deterministic profiles (`step`, `impulse`, `repeated_impulses`, `ramp`) that partition the same 400 logical deltas into publish phases. No sleeps, timing instrumentation or performance claims. |
-| `lifecycle` | Planned | Add/remove/settle universe churn through the mock's lifecycle channel. |
+| `lifecycle` | **Implemented in M5.3** | Typed L1-L10 churn driven by a seed + explicit event sequence over the mock's `market_lifecycle_v2` channel; retired instruments are epoch-scoped, not permanent coverage obligations. |
 | `disconnect` | **Implemented in M5.4** | Seed-derived explicit fault schedule (D1-D10) that closes replicas/sockets through the mock's `close_book_connections()` / `close_all_connections()`, measures incident-detection → valid re-anchor, and records the schedule in the manifest. |
 | `backpressure` | **Implemented in M5.5** | Five independent boundary profiles: mock outbound queue, writer queue, slow downstream, journal/storage admission and shutdown-before-drain. |
 | `mixed` | Planned | Combined hot/quiet, lifecycle, disconnect and backpressure in one cell (M5.5 adds only the single-injection hot/quiet + writer-queue cell, not the full mixed profile). |
@@ -106,8 +107,9 @@ The manifest records the explicit schedule under `workload_schedule`:
 - `delivery.phases` — actual per-phase `published_events`,
   `cumulative_expected` and `drain_completed`.
 
-Scenario `scenario_version` is bumped to **6**; burst cell IDs carry the
-profile label so two profiles never overwrite one another in the index. The
+Scenario `scenario_version` was bumped to **6** for the burst increment
+(superseded by the combined integrated schema at **13**); burst cell IDs carry
+the profile label so two profiles never overwrite one another in the index. The
 v5 disposition-certified manifests remain immutable historical evidence.
 
 ## Frozen first workload
@@ -118,7 +120,7 @@ v5 disposition-certified manifests remain immutable historical evidence.
 | Eligible instruments | 4,000 (`decoy_fraction_ppm = 20_000`) |
 | Hot instruments | 200 (5% of eligible, `hot_fraction_ppm = 50_000`) |
 | Hot event share | 80% (`hot_event_share_pct = 80`); exact mode pins 320/400 |
-| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 12`) |
+| Selection mode | `hot_selection = weighted` or `exact_quota` (frozen workload; current manifests are emitted at `scenario_version = 13`) |
 | Logical deltas | 400 |
 | Topology | 2 shards × 2 replicas + 1 lifecycle connection |
 | Journal | enabled |
@@ -130,7 +132,7 @@ decoys, and reproducible by
 Bumping the generator or scenario schema version is required before changing the
 semantics of this table.
 
-## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 12`)
+## Backpressure profiles (M5.5; manifests now emitted at `scenario_version = 13`)
 
 Each profile is one boundary, one injection and one terminal disposition. The
 runner derives the profile from `CellConfig` before the run, reconciles the five
@@ -256,7 +258,7 @@ frames; core-ingress counters are sampled separately under distinct metric
 names. The full contract is in
 [`EVENT_ACCOUNTING_CONTRACT.md`](EVENT_ACCOUNTING_CONTRACT.md).
 
-## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 12`)
+## Disconnect fault matrix (M5.4; manifests now emitted at `scenario_version = 13`)
 
 The disconnect sweep is an **explicit, seed-derived schedule**, not random
 chaos. `tests/stress_support/faults.rs` derives a `Vec<FaultStep>` from the cell
@@ -303,6 +305,52 @@ budget. They are recorded as `reference_only` steps and certified by named
 regression tests against the production recovery/fence machinery. No
 performance, latency or throughput claim is made by this matrix.
 
+## Lifecycle scenarios (M5.3, integrated at `scenario_version = 13`)
+
+`CellConfig::lifecycle_scenario` is a typed selector. A scenario is a seed plus
+an explicit event sequence (`tests/stress_support/lifecycle.rs`): every entry
+pins its venue timestamp, target instrument, catalog effect and required
+counter effect. The mock publishes it with `publish_lifecycle_at` to all
+lifecycle replicas; the runner reconciles the observed `core` counters against
+the schedule before it can certify a cell.
+
+| ID | Scenario | Current contract / evidence |
+|---|---|---|
+| L1 | Add/activate | A REST-backed market becomes subscribed and snapshot-anchored; an `activated` event is applied. `tests/lifecycle_churn.rs::lifecycle_add_activate_proves_exact_coverage` |
+| L2 | Subscribe | Exactly `lifecycle_replicas` sockets subscribe to `market_lifecycle_v2`; book sockets never do. `tests/kalshi_lifecycle_plane.rs::book_sockets_carry_no_lifecycle_subscription_and_the_plane_is_accounted` |
+| L3 | Snapshot anchor | The lifecycle-added market is in the expected, acknowledged and anchored sets. `tests/lifecycle_churn.rs::lifecycle_add_activate_proves_exact_coverage` |
+| L4 | Metadata change | `metadata_updated` and `price_level_structure_updated` mutate tracked metadata; a stale REST round cannot overwrite newer lifecycle state. `src/collector/state/tests.rs::reconciliation_older_round_keeps_lifecycle_metadata` |
+| L5 | Retire/settle | A terminal `settled` removes the market once and emits the final empty snapshot. `tests/lifecycle_churn.rs::lifecycle_retire_is_not_a_permanent_coverage_obligation`, `tests/kalshi_lifecycle_plane.rs::terminal_settled_retires_the_market_exactly_once` |
+| L6 | Duplicate lifecycle event | The (market, kind, exchange timestamp, payload fingerprint) key suppresses an identical redelivery. `tests/lifecycle_churn.rs::lifecycle_duplicate_event_is_deduped`, `src/collector/state/tests.rs::lifecycle_terminal_is_applied_once_across_connections` |
+| L7 | Out-of-order lifecycle event | A nonterminal notification older than the per-market high-water mark is dropped; terminal notifications still apply. `tests/lifecycle_churn.rs::lifecycle_out_of_order_event_is_dropped`, `src/collector/state/tests.rs::out_of_order_nonterminal_lifecycle_is_dropped_not_applied`, `src/collector/state/tests.rs::stale_terminal_lifecycle_is_still_applied` |
+| L8 | Conflicting replica updates | Two different payloads with the same kind and timestamp are distinct updates; the later one wins. `tests/lifecycle_churn.rs::lifecycle_conflicting_replica_updates_keep_newer_payload`, `src/collector/state/tests.rs::two_different_payloads_with_same_kind_and_timestamp_are_both_applied` |
+| L9 | Reappearance after retirement | A discovery round started before the terminal notification is vetoed; a later round re-adds. Proven as a focused contract test because a full cell that retires and re-adds the same market exposes an existing pending-recovery limitation. `src/collector/state/tests.rs::l9_reappearance_after_retirement_needs_a_later_discovery_round` |
+| L10 | Churn under load | Add, metadata, duplicate, stale and retire events interleaved with the 4k/400 delta workload; all coverage, ledger, SBE and journal gates still pass. `tests/lifecycle_churn.rs::lifecycle_churn_under_load_reconciles_and_certifies` |
+
+Terminal retirement is published after the delta drain barrier: the
+coordinator's shutdown drain applies it, and the empty snapshot becomes a
+`coverage.anchored_not_expected` entry rather than a failed expected symbol.
+Retiring an instrument also prunes it from pending recovery batches
+(`src/collector/state/tests.rs::retirement_prunes_the_instrument_from_pending_recovery`),
+so a retired market is never a permanent snapshot-request obligation.
+
+## Universe epochs and retired coverage obligations
+
+Each schedule carries `UniverseEpoch` records: epoch 0 is the startup eligible
+set; an `Add` or `Retire` catalog effect creates a new epoch with an explicit
+expected set, a required-anchored set and a retired set. The manifest publishes
+these under `coverage.per_epoch` with the same canonical set hash as the
+coverage certificate, and the scenario block records the seed, event count and
+expected applied/duplicate/stale counts.
+
+The final certificate remains authoritative: expected, acknowledged and
+snapshot-anchored sets must be identical for the *final* epoch. Extra anchored
+symbols are accepted only when the schedule retired them — their final empty
+snapshot is a retirement boundary, not an obligation to keep covering. The
+`coverage.retired_not_expected` field carries the certified diagnostic. No
+separate coverage oracle is invented for intermediate epochs; they are the
+harness's declared plan, checked against the final certified set.
+
 ## Acceptance gates for this increment
 
 | Gate | Proof |
@@ -320,6 +368,9 @@ performance, latency or throughput claim is made by this matrix.
 | Disposition reconciliation | the five manifest state counters are distinct and the dominant state matches the declared disposition; ledger gaps and disposition gaps still block certification |
 | Journal / SBE | every profile manifest records journal state and SBE verdicts; a journal rejection preserves the collector error rather than reporting a generic failure |
 | Disconnect recovery | `disconnect_standby_replica_loss_recovers_and_reconciles`, `disconnect_active_replica_loss_recovers_and_reconciles`, `disconnect_both_replicas_lost_reanchors_all_instruments`, `disconnect_many_instruments_reanchor_certifies_coverage`, `disconnect_recovery_timeout_surfaces_as_incomplete`, `disconnect_recovery_storm_preserves_generations_and_accounting`, `disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence` pass offline |
+| Lifecycle semantics | `core.lifecycle_events`, `lifecycle_duplicates` and `lifecycle_stale_dropped` equal the explicit schedule's applied/duplicate/stale counts; added markets are anchored, retired markets are not expected |
+| Lifecycle epochs | `coverage.per_epoch` records expected/anchored/retired set hashes per epoch; the final certificate is unchanged and extra anchors are permitted only for scheduled retirements |
+| Lifecycle evidence | add/activate, retire, duplicate, out-of-order and churn-under-load cells pass offline (exact coverage, reconciled ledger, SBE verification, journal finalization); `reference_lifecycle_churn_manifest_is_versioned` emits a v13 manifest when run explicitly with `STRESS_MANIFEST_OUT` |
 
 The earlier `seed-0017-4000-hotquiet.json` manifest was generated by the
 pre-correction sampler (residual draws could include hot instruments, giving
@@ -332,8 +383,9 @@ artifacts are `seed-0007-4000-uniform-v4.json`,
 `seed-0007-4000-uniform-v5.json`, `seed-0017-4000-hotquiet-v5.json`,
 `seed-001d-4000-hotquiet-v5.json` and
 `failed-v5-seed-000b-200-coverage_set_mismatch.json` are tied to `5bb54e6`. Do not use the v2 manifest for comparative
-workload claims. The M5.5 v12 manifests are generated only into a caller-supplied
-`STRESS_MANIFEST_OUT` directory and are not copied over the v3-v5 artifacts.
+workload claims. The integrated v13 manifests are generated only into a
+caller-supplied `STRESS_MANIFEST_OUT` directory and are not copied over the
+v3-v5 artifacts.
 
 Performance gates (p50/p95/p99/p99.9, CPU, RSS, disk, queue wait) are **not**
 claimed by this increment. They require the instrumentation work identified in
@@ -363,19 +415,32 @@ STRESS_MANIFEST_OUT=/tmp/stress-v3 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_exact_hot_quiet_manifest_is_reproducible --test-threads=1 --nocapture
 
-STRESS_MANIFEST_OUT=/tmp/stress-v12 \
+STRESS_MANIFEST_OUT=/tmp/stress-v13 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_backpressure_profiles_manifest_is_reproducible --test-threads=1 --nocapture
 
 # M5.4 disconnect sweeps (non-ignored)
 cargo test --test full_universe_stress disconnect_ -- --test-threads=1
 
-STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v12 \
+STRESS_MANIFEST_OUT=/tmp/stress-disconnect-v13 \
   cargo test --release --locked --test full_universe_stress -- \
   --ignored reference_disconnect_sweep_manifest --test-threads=1 --nocapture
+
+# M5.3 lifecycle churn (non-ignored)
+cargo test --test lifecycle_churn
+
+STRESS_MANIFEST_OUT=/tmp/stress-lifecycle-v13 \
+  cargo test --release --locked --test lifecycle_churn -- \
+  --ignored reference_lifecycle_churn_manifest_is_versioned --test-threads=1 --nocapture
 ```
 
 Limitations: the slow-downstream delay is fixed per delta frame and is not a
 bandwidth or latency model; the journal profile does not inject ENOSPC; the
 writer profile uses the production 10 s send timeout rather than measuring a
 queue-wait distribution. None of these profiles produces performance claims.
+
+All lifecycle evidence above is synthetic loopback evidence. No live Kalshi
+lifecycle notification has been observed or claimed in this increment; the
+dedicated control-plane tests exercise a loopback mock of `market_lifecycle_v2`.
+The v13 cell ids (`*-lifecycle-<scenario>-v13`) are distinct from the retained
+v3-v5 manifests, so no existing artifact is overwritten.

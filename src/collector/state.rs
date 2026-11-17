@@ -738,6 +738,16 @@ impl CollectorCore {
         };
         self.shards[state.shard].symbols.remove(native);
         self.dirty_shards.insert(state.shard);
+        // A retired instrument is not a recovery obligation. Leaving it in a
+        // pending batch means the worker keeps asking for its snapshot while
+        // `handle_recovery_ready` cannot fence a market the core no longer
+        // tracks: the whole batch would never be acknowledged and would be
+        // reissued on every control drain.
+        for pending in self.pending_recovery.values_mut() {
+            pending.symbols.remove(native);
+        }
+        self.pending_recovery
+            .retain(|_, pending| pending.reconnect || !pending.symbols.is_empty());
         self.stats.removed_symbols = self.stats.removed_symbols.saturating_add(1);
         self.stats.current_symbols = self.markets.len() as u64;
 
