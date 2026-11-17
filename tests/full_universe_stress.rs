@@ -1478,7 +1478,7 @@ async fn assert_burst_cell(
         document["delivery"]["phases"].as_array().unwrap().len(),
         phase_count
     );
-    assert_eq!(document["scenario_version"].as_u64(), Some(9));
+    assert_eq!(document["scenario_version"].as_u64(), Some(12));
     outcome
 }
 
@@ -1568,7 +1568,7 @@ fn read_single_manifest(out: &std::path::Path) -> serde_json::Value {
 }
 
 fn assert_profile_manifest_shape(document: &serde_json::Value, profile: &str) {
-    assert_eq!(document["scenario_version"], 9);
+    assert_eq!(document["scenario_version"], 12);
     assert_eq!(document["backpressure"]["profile"], profile);
     let boundary = document["backpressure"]["boundary"].as_str().unwrap_or("");
     assert!(!boundary.is_empty(), "boundary must be named");
@@ -1951,7 +1951,7 @@ async fn backpressure_combined_hot_quiet_writer_queue_4000_certifies() {
 }
 
 /// Ignored reference generator for the M5.5 boundary profiles. Uses the same
-/// `STRESS_MANIFEST_OUT` publication protocol and v9 cell ids as the other
+/// `STRESS_MANIFEST_OUT` publication protocol and v12 cell ids as the other
 /// reference generators; prior evidence is never overwritten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "reference artifact generator; run explicitly"]
@@ -1999,7 +1999,7 @@ async fn reference_backpressure_profiles_manifest_is_reproducible() {
         let outcome =
             stress_support::runner::run_cell(directory.path(), &config, Some(out.as_path())).await;
         let document = build_cell_manifest_for_reference(&out, seed);
-        assert_eq!(document["scenario_version"], 9);
+        assert_eq!(document["scenario_version"], 12);
         assert_eq!(document["backpressure"]["profile"], expected);
         assert!(
             !outcome.acceptance.valid || expected == "writer_queue_saturation",
@@ -2019,4 +2019,523 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
         .unwrap_or_else(|| panic!("no published cell for seed {seed}"));
     let body = out.join(entry["path"].as_str().expect("path"));
     serde_json::from_slice(&std::fs::read(body).expect("manifest body")).expect("manifest JSON")
+}
+
+// ---------------------------------------------------------------------------
+// M5.4 deterministic disconnect and recovery sweeps (scenario_version 12).
+// ---------------------------------------------------------------------------
+
+fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {
+    let base = CellConfig {
+        events,
+        limits: Some((45, 10)),
+        ..headless_cell_config(seed, symbols)
+    };
+    CellConfig::for_sweep(base, profile)
+}
+
+/// Decode the capture and prove per-symbol SBE receive timestamps never regress.
+/// Snapshots and deltas both carry a receive time; a recovered book must have
+/// monotonic receive order even across a failover snapshot.
+fn assert_sbe_receive_times_monotonic(capture: &std::path::Path) {
+    use engineering_challenge::util::{
+        AlignedSbeReader, OrderbookSchema,
+        dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
+    };
+    let mut reader = AlignedSbeReader::<OrderbookSchema>::open_auto(capture).unwrap();
+    let mut last: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    while let Some(message) = reader.read_msg().unwrap() {
+        let (symbol, received_at_us) = match message {
+            AnyMessage::Snapshot(decoder) => {
+                let snapshot = SnapshotDomain::try_from_decoder(decoder).unwrap();
+                (snapshot.symbol, snapshot.received_at.timestamp_micros())
+            }
+            AnyMessage::PriceLevelUpdate(decoder) => {
+                let update = PriceLevelUpdateDomain::try_from_decoder(decoder).unwrap();
+                (update.symbol, update.backtest_timestamp.timestamp_micros())
+            }
+            _ => continue,
+        };
+        let previous = last.entry(symbol.clone()).or_insert(i64::MIN);
+        assert!(
+            *previous <= received_at_us,
+            "SBE receive time regressed for {symbol}: {previous} -> {received_at_us}"
+        );
+        *previous = received_at_us;
+    }
+    assert!(
+        !last.is_empty(),
+        "capture must carry at least one anchored symbol"
+    );
+}
+
+fn assert_disconnect_success(output: &stress_support::runner::CellOutput, events: usize) {
+    assert!(
+        output.ledger.reconciled(),
+        "disconnect sweep must reconcile accounting: {:?}",
+        output.ledger
+    );
+    assert_eq!(output.ledger.unexplained_drops, Some(0));
+    assert_eq!(output.ledger.persistence_gap, Some(0));
+    assert_eq!(output.ledger.disposition_shortfall, Some(0));
+    assert_eq!(output.ledger.disposition_excess, Some(0));
+    assert_eq!(output.sbe_deltas, events as u64);
+    assert!(output.verify_valid, "SBE verify failed after disconnect");
+    assert!(
+        output.completeness_valid,
+        "completeness failed after disconnect"
+    );
+    assert!(
+        output.journal_complete,
+        "journal incomplete after disconnect"
+    );
+    assert!(output.decoy_absent);
+    let coverage = output.coverage.as_ref().expect("coverage must be present");
+    assert!(
+        coverage.valid,
+        "coverage invalid after disconnect: {coverage:?}"
+    );
+    assert_eq!(coverage.expected, coverage.anchored);
+    assert!(
+        output.writer_queue_high_water <= 4_097,
+        "writer queue bound must hold (high-water {})",
+        output.writer_queue_high_water
+    );
+    assert_eq!(output.mock.queue_saturated, 0);
+    assert_sbe_receive_times_monotonic(&std::path::PathBuf::from(&output.report.output_path));
+}
+
+/// D1: losing the newest (standby-role) replica must open a replacement socket
+/// and keep the surviving active book anchored without losing a workload delta.
+/// No continuity incident is expected when a standby is the target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_standby_replica_loss_recovers_and_reconciles() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(31, 200, 60, SweepProfile::StandbyReplicaLoss);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "single standby replica loss failed: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    assert_eq!(output.recovery.len(), 1);
+    let recovery = &output.recovery[0];
+    assert_eq!(recovery.fault_id, "D1");
+    // A standby replica is not the active source, so no continuity incident is
+    // expected: the surviving active book keeps the symbol anchored. The
+    // honest contract here is a replacement socket plus uninterrupted service.
+    assert!(
+        recovery.connections_after.unwrap_or(0) >= 4,
+        "the lost book socket must reconnect: {recovery:?}"
+    );
+    if recovery.incidents_after.unwrap_or(0) > recovery.incidents_before.unwrap_or(0) {
+        assert!(
+            recovery.duration_ms.is_some(),
+            "when an incident did open, its re-anchor must be measured: {recovery:?}"
+        );
+    } else {
+        assert!(
+            recovery.duration_unavailable_reason.is_some(),
+            "standby loss without an incident must explain the missing duration: {recovery:?}"
+        );
+    }
+    assert!(
+        output.ws_connections >= 4,
+        "the lost book socket must reconnect (got {} connections)",
+        output.ws_connections
+    );
+    assert_disconnect_success(&output, 60);
+}
+
+/// D2: losing the oldest (active-role) replica must promote the shadow book and
+/// keep the entire event ledger reconciled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_active_replica_loss_recovers_and_reconciles() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(32, 200, 60, SweepProfile::ActiveReplicaLoss);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "active replica loss failed: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    let recovery = &output.recovery[0];
+    assert_eq!(recovery.fault_id, "D2");
+    assert!(
+        recovery.incidents_after.unwrap_or(0) > recovery.incidents_before.unwrap_or(0),
+        "active loss must open a continuity incident: {recovery:?}"
+    );
+    assert!(
+        recovery.failover_snapshots_after.unwrap_or(0)
+            > recovery.failover_snapshots_before.unwrap_or(0),
+        "shadow must be promoted by a failover snapshot: {recovery:?}"
+    );
+    assert!(recovery.duration_ms.is_some(), "{recovery:?}");
+    assert!(
+        output.report.core.failover_snapshots >= 1,
+        "the run report must record the failover snapshot"
+    );
+    assert!(
+        output.report.core.source_switches >= 1,
+        "the run report must record the active-source switch"
+    );
+    assert_disconnect_success(&output, 60);
+}
+
+/// D3 + D4: losing both book sockets re-anchors every previously active symbol
+/// from fresh snapshots on new connection epochs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_both_replicas_lost_reanchors_all_instruments() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(33, 400, 80, SweepProfile::BothReplicasLost);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "both replicas lost failed: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    assert_eq!(output.recovery.len(), 2);
+    assert_eq!(output.recovery[0].fault_id, "D3");
+    assert_eq!(output.recovery[1].fault_id, "D4");
+    let full_loss = &output.recovery[0];
+    assert!(
+        full_loss.incidents_after.unwrap_or(0) > full_loss.incidents_before.unwrap_or(0),
+        "a complete book loss must open incidents: {full_loss:?}"
+    );
+    assert!(
+        full_loss.failover_snapshots_after.unwrap_or(0)
+            > full_loss.failover_snapshots_before.unwrap_or(0),
+        "fresh snapshots must re-anchor the lost books: {full_loss:?}"
+    );
+    assert!(full_loss.duration_ms.is_some(), "{full_loss:?}");
+    // D4 closes one replica after recovery; a standby-role loss need not open
+    // an incident, but it must still create a fresh connection generation.
+    let single_loss = &output.recovery[1];
+    assert!(
+        single_loss.connections_after.unwrap_or(0) > full_loss.connections_after.unwrap_or(0),
+        "D4 must open a new socket generation: {single_loss:?}"
+    );
+    assert!(
+        output.ws_connections >= 6,
+        "both replicas must reconnect twice: {} connections",
+        output.ws_connections
+    );
+    assert_eq!(
+        output.coverage.as_ref().unwrap().anchored,
+        400,
+        "all 400 instruments must be re-anchored"
+    );
+    assert_disconnect_success(&output, 80);
+}
+
+/// D7: a full-universe book loss must re-anchor every eligible instrument and
+/// certify exact coverage without any delta being silently dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_many_instruments_reanchor_certifies_coverage() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(37, 500, 100, SweepProfile::ManyInstruments);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "many-instrument recovery failed: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    let coverage = output.coverage.as_ref().expect("coverage must be present");
+    assert_eq!(coverage.expected, 500);
+    assert_eq!(coverage.anchored, 500);
+    assert!(
+        output.recovery.iter().any(|r| r.fault_id == "D7"),
+        "the many-instrument profile must include D7"
+    );
+    assert_disconnect_success(&output, 100);
+}
+
+/// D5 + D6: the strongest honest regression for delayed old-epoch frames uses
+/// the production core directly. The delayed snapshot is rejected before any
+/// book or incident mutation; a frame strictly after the recovery fence repairs
+/// the gap. This is the contract the stress mock cannot synthesize on the wire.
+#[test]
+fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
+    use engineering_challenge::{
+        collector::{CollectorCore, CoreConfig},
+        config::ExchangeKind,
+        exchange::ExchangeCapabilities,
+        model::{EventMeta, ExchangeEvent, Level, MarketInfo, SourceId},
+    };
+
+    const NOW: i64 = 1_700_000_000_000_000;
+    const SOURCE_A: SourceId = SourceId::new(0, 0);
+    const SOURCE_B: SourceId = SourceId::new(0, 1);
+
+    let mut settings =
+        engineering_challenge::config::Settings::for_exchange(ExchangeKind::Polymarket);
+    settings.collector.shards = 1;
+    settings.collector.replicas = 2;
+    let mut core = CollectorCore::new(
+        CoreConfig::from_settings(&settings, 1, ExchangeCapabilities::new(false)).unwrap(),
+    )
+    .unwrap();
+
+    let market = MarketInfo {
+        exchange: "test".to_owned(),
+        native_symbol: "A".to_owned(),
+        symbol: "A".to_owned(),
+        title: None,
+        outcome: None,
+        exchange_market_id: None,
+        close_time_us: None,
+        tick_size_us: Some(10_000),
+        price_ranges: Vec::new(),
+        price_level_structure: None,
+        numeric_spec: engineering_challenge::model::NumericSpec::default(),
+    };
+    core.apply_discovery(NOW, vec![market]).unwrap();
+    core.drain_controls();
+    for source in [SOURCE_A, SOURCE_B] {
+        core.handle_status(
+            engineering_challenge::model::SourceStatus {
+                source,
+                connected: true,
+                ..engineering_challenge::model::SourceStatus::new(source)
+            },
+            NOW,
+        );
+    }
+    let snapshot =
+        |bid: i64, ask: i64, received: i64, epoch: u64, seq: u64| ExchangeEvent::Snapshot {
+            native_symbol: "A".to_owned(),
+            book: engineering_challenge::model::BookSnapshot {
+                bids: vec![Level::new(bid, 10_000_000).unwrap()],
+                asks: vec![Level::new(ask, 5_000_000).unwrap()],
+            },
+            meta: EventMeta {
+                received_at_us: received,
+                exchange_ts_us: Some(received - 1_000),
+                seq: Some(1),
+                clock: None,
+                connection_epoch: epoch,
+                receive_seq: seq,
+            },
+        };
+    core.handle_event(SOURCE_A, snapshot(400_000, 600_000, NOW, 1, 1));
+    core.handle_event(SOURCE_B, snapshot(405_000, 595_000, NOW + 50, 1, 2));
+    core.handle_status(
+        engineering_challenge::model::SourceStatus {
+            source: SOURCE_A,
+            connected: false,
+            ..engineering_challenge::model::SourceStatus::new(SOURCE_A)
+        },
+        NOW + 1,
+    );
+    let generation = core
+        .drain_controls()
+        .into_iter()
+        .find_map(|(source, control)| match control {
+            engineering_challenge::model::Control::Recover { generation, .. }
+                if source == SOURCE_B =>
+            {
+                Some(generation)
+            }
+            _ => None,
+        })
+        .expect("a recovery control must be emitted for the surviving replica");
+    core.handle_recovery_ready(SOURCE_B, &["A".to_owned()], generation, 1, 5);
+
+    // Old epoch (1) and old sequence (3) both precede the (2, 5) fence.
+    let rejected = core.handle_event(SOURCE_B, snapshot(430_000, 570_000, NOW, 1, 3));
+    assert!(
+        rejected.is_empty(),
+        "a delayed old-epoch frame must not emit"
+    );
+    assert_eq!(
+        core.stats().rejected_recovery_snapshots,
+        1,
+        "rejection must be counted as evidence"
+    );
+
+    // A frame read strictly after the fence repairs the gap.
+    let accepted = core.handle_event(SOURCE_B, snapshot(430_000, 570_000, NOW + 10, 1, 6));
+    assert_eq!(accepted.len(), 1, "a fresh fenced frame must re-anchor");
+}
+
+/// D8: with reconnects refused, recovery cannot complete and the cell must be
+/// classified as incomplete rather than silently certified.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_recovery_timeout_surfaces_as_incomplete() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(34, 200, 60, SweepProfile::RecoveryTimeout);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        !outcome.acceptance.valid,
+        "an unrecoverable outage must not certify: {:?}",
+        outcome.acceptance
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "drain_incomplete"),
+        "unexpected reasons: {:?}",
+        outcome.acceptance.reasons
+    );
+    assert!(
+        outcome
+            .acceptance
+            .reasons
+            .iter()
+            .any(|reason| reason == "unexplained_drops"),
+        "an outage with no applied deltas must be reported as unexplained drops: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome
+        .output
+        .expect("the runner must still export evidence");
+    assert_eq!(output.recovery.len(), 1);
+    let recovery = &output.recovery[0];
+    assert_eq!(recovery.fault_id, "D8");
+    assert!(
+        recovery.incidents_after.unwrap_or(0) > recovery.incidents_before.unwrap_or(0),
+        "the outage must still be detected: {recovery:?}"
+    );
+    assert!(
+        recovery.duration_ms.is_none() && recovery.duration_unavailable_reason.is_some(),
+        "no valid re-anchor means recovery duration is unavailable: {recovery:?}"
+    );
+}
+
+/// D10: a reconnect storm must keep recovery generations independent, queues
+/// bounded, healthy instruments anchored, SBE receive times monotonic, and the
+/// full disposition/accounting chain reconciled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnect_recovery_storm_preserves_generations_and_accounting() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(35, 300, 100, SweepProfile::RepeatedReconnects);
+    let outcome = stress_support::runner::run_cell(directory.path(), &config, None).await;
+    assert!(
+        outcome.acceptance.valid,
+        "reconnect storm failed: {:?}",
+        outcome.acceptance.reasons
+    );
+    let output = outcome.output.expect("valid cell must carry output");
+    assert_eq!(output.recovery.len(), 3);
+    assert!(
+        output
+            .recovery
+            .iter()
+            .all(|recovery| recovery.fault_id == "D10"),
+        "all storm steps must be D10"
+    );
+    assert!(
+        output
+            .recovery
+            .iter()
+            .all(|recovery| recovery.duration_ms.is_some()),
+        "every storm round must have an incident->re-anchor duration: {:?}",
+        output.recovery
+    );
+    // Independent generations: each round observes a strictly larger mock
+    // connection count, proving fresh sockets rather than a reused generation.
+    let connection_counts: Vec<usize> = output
+        .recovery
+        .iter()
+        .map(|recovery| recovery.connections_after.unwrap_or(0))
+        .collect();
+    assert!(
+        connection_counts.windows(2).all(|pair| pair[0] < pair[1]),
+        "storm rounds must open fresh sockets; counts={connection_counts:?}"
+    );
+    assert!(
+        output.ws_connections >= 7,
+        "three storm rounds must create independent connections: {}",
+        output.ws_connections
+    );
+    assert!(
+        output.book_subscriptions >= 300 * 2,
+        "reconnected replicas must resubscribe the full universe"
+    );
+    assert_disconnect_success(&output, 100);
+    assert_eq!(output.coverage.as_ref().unwrap().anchored, 300);
+}
+
+/// Ignored reference generator for the timeout-plus-storm profile. Proves the
+/// recovery evidence exports both an unavailable duration (D8) and successful
+/// re-anchors (D10) in one manifest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "reference artifact generator; run explicitly"]
+async fn reference_disconnect_storm_manifest() {
+    assert!(
+        std::env::var("STRESS_MANIFEST_OUT").is_ok(),
+        "set STRESS_MANIFEST_OUT to produce the artifact"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(38, 400, 80, SweepProfile::RecoveryStorm);
+    let outcome =
+        stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
+            .await;
+    let output = outcome
+        .output
+        .expect("the reference cell must export evidence");
+    assert_eq!(output.recovery.len(), 4);
+    assert_eq!(output.recovery[0].fault_id, "D8");
+    assert!(output.recovery[0].duration_ms.is_none());
+    assert!(
+        output.recovery[1..]
+            .iter()
+            .all(|recovery| recovery.fault_id == "D10")
+    );
+}
+
+/// The schedule itself is a seed-derived artifact; this test pins that every
+/// declared step carries the manifest's fault-matrix fields.
+#[test]
+fn disconnect_fault_steps_carry_full_matrix_evidence() {
+    use stress_support::faults::{AffectedInstruments, FaultType};
+
+    let schedule = stress_support::faults::derive_schedule(SweepProfile::FullMatrix, 42);
+    assert_eq!(schedule.steps.len(), 10);
+    for step in &schedule.steps {
+        assert!(!step.expected_action.is_empty());
+        assert!(!step.expected_outcome.is_empty());
+        assert!(step.start_epoch >= 1);
+        assert!(step.failure_time_ms <= 160);
+        match step.fault_type {
+            FaultType::ReplicaLoss | FaultType::ReferenceOnly => {}
+            _ => assert!(step.deadline_ms.is_some()),
+        }
+        if step.reference_only {
+            assert_eq!(step.affected_instruments, AffectedInstruments::One);
+        }
+    }
+}
+
+/// Ignored reference generator for the disconnect sweep manifest. Run with
+/// `STRESS_MANIFEST_OUT` set to a fresh directory; prior evidence is never
+/// overwritten because v12 cell ids are content-addressed by seed and verdict.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "reference artifact generator; run explicitly"]
+async fn reference_disconnect_sweep_manifest() {
+    assert!(
+        std::env::var("STRESS_MANIFEST_OUT").is_ok(),
+        "set STRESS_MANIFEST_OUT to produce the artifact"
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let config = sweep_config(36, 2_000, 200, SweepProfile::FullMatrix);
+    let outcome =
+        stress_support::runner::run_cell(directory.path(), &config, Some(manifest_out().as_path()))
+            .await;
+    let output = outcome
+        .output
+        .expect("the reference cell must export evidence");
+    assert_eq!(output.recovery.len(), 7);
+    assert!(
+        output
+            .recovery
+            .iter()
+            .any(|recovery| recovery.fault_id == "D10")
+    );
 }
