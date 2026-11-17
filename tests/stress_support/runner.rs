@@ -55,7 +55,7 @@ const ANCHOR_PLATEAU: Duration = Duration::from_secs(3);
 
 /// Scenario schema version. Bumped when workload semantics change so a
 /// corrected generator never silently replaces an earlier manifest.
-const SCENARIO_VERSION: u32 = 4;
+const SCENARIO_VERSION: u32 = 5;
 
 /// Failure-injection knobs for harness self-tests. Each variant maps to one
 /// named failure mode with a distinct `failure_class` in the manifest.
@@ -242,6 +242,21 @@ pub struct EventLedger {
     pub delta_events_decoded: Option<u64>,
     /// Decode failures reported by production source metrics.
     pub decode_errors: Option<u64>,
+    /// Core-ingress boundary, distinct from the transport boundary.
+    pub core_ingress_events: Option<u64>,
+    pub core_delta_events: Option<u64>,
+    /// Terminal delta dispositions not covered by emitted / suppressed.
+    pub no_active_source: Option<u64>,
+    pub unknown_symbol: Option<u64>,
+    pub non_live: Option<u64>,
+    pub unassigned_source: Option<u64>,
+    pub invalid_book: Option<u64>,
+    pub shadow_clock_regression: Option<u64>,
+    pub zero_noop: Option<u64>,
+    pub sbe_conversion_failed: Option<u64>,
+    /// Sum of all terminal dispositions versus decoded deltas.
+    pub disposition_shortfall: Option<u64>,
+    pub disposition_excess: Option<u64>,
     /// Order-book deltas admitted to the writer queue.
     pub writer_delta_admissions: Option<u64>,
     /// Order-book deltas successfully written to SBE.
@@ -273,9 +288,9 @@ pub struct EventLedger {
     /// `transmitted - enqueued`; nonzero means an over-count or reset.
     pub enqueue_transmit_excess: Option<u64>,
     /// `decoded_deltas - applied`; nonzero means decoded data never applied.
-    pub decode_transmit_shortfall: Option<u64>,
+    pub transmit_decode_shortfall: Option<u64>,
     /// `applied - decoded_deltas`; nonzero means application without decoding.
-    pub decode_transmit_excess: Option<u64>,
+    pub transmit_decode_excess: Option<u64>,
     /// `applied - writer_delta_admissions`; nonzero means writer rejection.
     pub writer_admission_shortfall: Option<u64>,
     /// `writer_delta_admissions - applied`; nonzero means extra admissions.
@@ -298,6 +313,16 @@ pub fn two_sided(expected: Option<u64>, observed: Option<u64>) -> (Option<u64>, 
         ),
         _ => (None, None),
     }
+}
+
+/// Ledger-construction helper for the transmit -> decode boundary. The wire
+/// frame is the expected count and the decoded event is the observed count,
+/// so a dropped decode is a shortfall and an extra decode is an excess.
+pub fn transmit_decode_gaps(
+    transmitted: Option<u64>,
+    decoded: Option<u64>,
+) -> (Option<u64>, Option<u64>) {
+    two_sided(transmitted, decoded)
 }
 
 /// Difference of one metric between two scrapes. Missing evidence stays
@@ -324,13 +349,23 @@ impl EventLedger {
             && self.persistence_excess == Some(0)
             && self.enqueue_transmit_shortfall == Some(0)
             && self.enqueue_transmit_excess == Some(0)
-            && self.decode_transmit_shortfall == Some(0)
-            && self.decode_transmit_excess == Some(0)
+            && self.transmit_decode_shortfall == Some(0)
+            && self.transmit_decode_excess == Some(0)
             && self.writer_admission_shortfall == Some(0)
             && self.writer_admission_excess == Some(0)
             && self.writer_write_shortfall == Some(0)
             && self.writer_write_excess == Some(0)
             && self.decode_failure_count == Some(0)
+            && self.disposition_shortfall == Some(0)
+            && self.disposition_excess == Some(0)
+            && self.no_active_source.is_some()
+            && self.unknown_symbol.is_some()
+            && self.non_live.is_some()
+            && self.unassigned_source.is_some()
+            && self.invalid_book.is_some()
+            && self.shadow_clock_regression.is_some()
+            && self.zero_noop.is_some()
+            && self.sbe_conversion_failed.is_some()
             && self.received_frames.is_some_and(|count| count > 0)
             && self.delta_events_decoded.is_some_and(|count| count > 0)
             && self.writer_delta_admissions.is_some()
@@ -390,6 +425,33 @@ pub fn ledger_acceptance_reasons(ledger: &EventLedger, queue_saturated: u64) -> 
     if ledger.decode_errors.is_none() {
         reasons.push("decode_error_evidence_missing".to_owned());
     }
+    for (value, reason) in [
+        (ledger.no_active_source, "disposition_evidence_missing"),
+        (ledger.unknown_symbol, "disposition_evidence_missing"),
+        (ledger.non_live, "disposition_evidence_missing"),
+        (ledger.unassigned_source, "disposition_evidence_missing"),
+        (ledger.invalid_book, "disposition_evidence_missing"),
+        (
+            ledger.shadow_clock_regression,
+            "disposition_evidence_missing",
+        ),
+        (ledger.zero_noop, "disposition_evidence_missing"),
+        (ledger.sbe_conversion_failed, "disposition_evidence_missing"),
+    ] {
+        if value.is_none() {
+            reasons.push(reason.to_owned());
+        }
+    }
+    if let Some(value) = ledger.disposition_shortfall
+        && value > 0
+    {
+        reasons.push("disposition_shortfall".to_owned());
+    }
+    if let Some(value) = ledger.disposition_excess
+        && value > 0
+    {
+        reasons.push("disposition_excess".to_owned());
+    }
     if let Some(value) = ledger.decode_failure_count
         && value > 0
     {
@@ -404,11 +466,11 @@ pub fn ledger_acceptance_reasons(ledger: &EventLedger, queue_saturated: u64) -> 
             "enqueue_transmit_evidence_missing",
         ),
         (
-            ledger.decode_transmit_shortfall,
-            ledger.decode_transmit_excess,
-            "decode_transmit_shortfall",
-            "decode_transmit_excess",
-            "decode_transmit_evidence_missing",
+            ledger.transmit_decode_shortfall,
+            ledger.transmit_decode_excess,
+            "transmit_decode_shortfall",
+            "transmit_decode_excess",
+            "transmit_decode_evidence_missing",
         ),
         (
             ledger.writer_admission_shortfall,
@@ -1022,6 +1084,16 @@ struct DrainBaselines {
     source_decode_errors: Option<u64>,
     data_frames_received: Option<u64>,
     delta_events_decoded: Option<u64>,
+    core_ingress_events: Option<u64>,
+    core_delta_events: Option<u64>,
+    no_active_source: Option<u64>,
+    unknown_symbol: Option<u64>,
+    non_live: Option<u64>,
+    unassigned_source: Option<u64>,
+    invalid_book: Option<u64>,
+    shadow_clock_regression: Option<u64>,
+    zero_noop: Option<u64>,
+    sbe_conversion_failed: Option<u64>,
     writer_delta_admissions: Option<u64>,
     writer_delta_writes: Option<u64>,
 }
@@ -1031,6 +1103,7 @@ struct DrainBaselines {
 #[derive(Debug, Clone, Copy)]
 struct DrainSample {
     deltas_emitted: f64,
+    decoded_delta_events: f64,
     writer_messages: f64,
     writer_queue_depth: f64,
     writer_errors: f64,
@@ -1039,6 +1112,7 @@ struct DrainSample {
 fn required_drain_sample(sample: &MetricSample) -> Result<DrainSample, String> {
     Ok(DrainSample {
         deltas_emitted: sample.required("collector_deltas_emitted_total")?,
+        decoded_delta_events: sample.required("collector_decoded_delta_events_total")?,
         writer_messages: sample.required("collector_writer_messages_total")?,
         writer_queue_depth: sample.required("collector_writer_queue_depth")?,
         writer_errors: sample.required("collector_writer_errors_total")?,
@@ -1071,6 +1145,9 @@ fn evaluate_barrier(
     if required.deltas_emitted < base.deltas_emitted {
         return BarrierState::CounterReset("collector_deltas_emitted_total");
     }
+    if required.decoded_delta_events < base.delta_events_decoded.unwrap_or(0) as f64 {
+        return BarrierState::CounterReset("collector_decoded_delta_events_total");
+    }
     if required.writer_messages < base.writer_messages {
         return BarrierState::CounterReset("collector_writer_messages_total");
     }
@@ -1079,6 +1156,7 @@ fn evaluate_barrier(
     }
     if in_flight == 0
         && required.deltas_emitted >= base.deltas_emitted + expected
+        && required.decoded_delta_events >= base.delta_events_decoded.unwrap_or(0) as f64 + expected
         && required.writer_messages >= base.writer_messages + expected
         && required.writer_queue_depth == 0.0
         && required.writer_errors == base.writer_errors
@@ -1115,9 +1193,26 @@ async fn capture_baseline_until(
                             source_decode_errors: sample
                                 .count_sum("collector_source_decode_errors"),
                             data_frames_received: sample
-                                .count_sum("collector_data_frames_received_total"),
+                                .count_sum("collector_transport_frames_received_total"),
                             delta_events_decoded: sample
-                                .count_sum("collector_delta_events_decoded_total"),
+                                .count_sum("collector_decoded_delta_events_total"),
+                            core_ingress_events: sample
+                                .count_sum("collector_core_ingress_events_total"),
+                            core_delta_events: sample
+                                .count_sum("collector_core_delta_events_total"),
+                            no_active_source: sample
+                                .count_sum("collector_delta_no_active_source_total"),
+                            unknown_symbol: sample
+                                .count_sum("collector_delta_unknown_symbol_total"),
+                            non_live: sample.count_sum("collector_delta_non_live_total"),
+                            unassigned_source: sample
+                                .count_sum("collector_delta_unassigned_source_total"),
+                            invalid_book: sample.count_sum("collector_delta_invalid_book_total"),
+                            shadow_clock_regression: sample
+                                .count_sum("collector_delta_shadow_clock_regression_total"),
+                            zero_noop: sample.count_sum("collector_delta_zero_noop_total"),
+                            sbe_conversion_failed: sample
+                                .count_sum("collector_delta_sbe_conversion_failed_total"),
                             writer_delta_admissions: sample
                                 .count_sum("collector_writer_delta_admissions_total"),
                             writer_delta_writes: sample
@@ -1626,14 +1721,14 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let received_frames = match &baseline {
         Some(base) => metric_window_delta(
             base.data_frames_received,
-            final_count("collector_data_frames_received_total"),
+            final_count("collector_transport_frames_received_total"),
         ),
         None => None,
     };
     let delta_events_decoded = match &baseline {
         Some(base) => metric_window_delta(
             base.delta_events_decoded,
-            final_count("collector_delta_events_decoded_total"),
+            final_count("collector_decoded_delta_events_total"),
         ),
         None => None,
     };
@@ -1641,6 +1736,77 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         Some(base) => metric_window_delta(
             base.source_decode_errors,
             final_count("collector_source_decode_errors"),
+        ),
+        None => None,
+    };
+    // Core-ingress counters are sampled separately and are never presented as
+    // transport or decoder evidence.
+    let core_ingress_events = match &baseline {
+        Some(base) => metric_window_delta(
+            base.core_ingress_events,
+            final_count("collector_core_ingress_events_total"),
+        ),
+        None => None,
+    };
+    let core_delta_events = match &baseline {
+        Some(base) => metric_window_delta(
+            base.core_delta_events,
+            final_count("collector_core_delta_events_total"),
+        ),
+        None => None,
+    };
+    let no_active_source = match &baseline {
+        Some(base) => metric_window_delta(
+            base.no_active_source,
+            final_count("collector_delta_no_active_source_total"),
+        ),
+        None => None,
+    };
+    let unknown_symbol = match &baseline {
+        Some(base) => metric_window_delta(
+            base.unknown_symbol,
+            final_count("collector_delta_unknown_symbol_total"),
+        ),
+        None => None,
+    };
+    let non_live = match &baseline {
+        Some(base) => {
+            metric_window_delta(base.non_live, final_count("collector_delta_non_live_total"))
+        }
+        None => None,
+    };
+    let unassigned_source = match &baseline {
+        Some(base) => metric_window_delta(
+            base.unassigned_source,
+            final_count("collector_delta_unassigned_source_total"),
+        ),
+        None => None,
+    };
+    let invalid_book = match &baseline {
+        Some(base) => metric_window_delta(
+            base.invalid_book,
+            final_count("collector_delta_invalid_book_total"),
+        ),
+        None => None,
+    };
+    let shadow_clock_regression = match &baseline {
+        Some(base) => metric_window_delta(
+            base.shadow_clock_regression,
+            final_count("collector_delta_shadow_clock_regression_total"),
+        ),
+        None => None,
+    };
+    let zero_noop = match &baseline {
+        Some(base) => metric_window_delta(
+            base.zero_noop,
+            final_count("collector_delta_zero_noop_total"),
+        ),
+        None => None,
+    };
+    let sbe_conversion_failed = match &baseline {
+        Some(base) => metric_window_delta(
+            base.sbe_conversion_failed,
+            final_count("collector_delta_sbe_conversion_failed_total"),
         ),
         None => None,
     };
@@ -1662,15 +1828,30 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let transmitted_deltas = Some(transmit.deltas_sent);
     let (enqueue_transmit_shortfall, enqueue_transmit_excess) =
         two_sided(enqueued_deltas, transmitted_deltas);
-    // One delta on the wire yields one decoded LevelChange event. Replica
-    // fan-out is present on both sides, so this comparison needs no dedup
-    // arithmetic; duplicate suppression is accounted downstream instead.
-    let (decode_transmit_shortfall, decode_transmit_excess) =
-        two_sided(delta_events_decoded, transmitted_deltas);
+    let (transmit_decode_shortfall, transmit_decode_excess) =
+        transmit_decode_gaps(transmitted_deltas, delta_events_decoded);
     let (writer_admission_shortfall, writer_admission_excess) =
         two_sided(applied_events, writer_delta_admissions);
     let (writer_write_shortfall, writer_write_excess) =
         two_sided(writer_delta_admissions, writer_delta_writes);
+    // Every decoded delta must have exactly one terminal disposition.
+    let disposition_total = [
+        applied_events,
+        incidents.suppressed_replica_duplicates,
+        no_active_source,
+        unknown_symbol,
+        non_live,
+        unassigned_source,
+        invalid_book,
+        shadow_clock_regression,
+        zero_noop,
+        sbe_conversion_failed,
+    ]
+    .into_iter()
+    .collect::<Option<Vec<u64>>>()
+    .map(|values| values.into_iter().sum());
+    let (disposition_shortfall, disposition_excess) =
+        two_sided(delta_events_decoded, disposition_total);
     let ledger = EventLedger {
         generated_events: plan.generated as u64,
         expected_applied: plan.expected_applied,
@@ -1680,6 +1861,18 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         received_frames,
         delta_events_decoded,
         decode_errors,
+        core_ingress_events,
+        core_delta_events,
+        no_active_source,
+        unknown_symbol,
+        non_live,
+        unassigned_source,
+        invalid_book,
+        shadow_clock_regression,
+        zero_noop,
+        sbe_conversion_failed,
+        disposition_shortfall,
+        disposition_excess,
         writer_delta_admissions,
         writer_delta_writes,
         sbe_deltas: sbe_deltas_observed,
@@ -1701,8 +1894,8 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
         },
         enqueue_transmit_shortfall,
         enqueue_transmit_excess,
-        decode_transmit_shortfall,
-        decode_transmit_excess,
+        transmit_decode_shortfall,
+        transmit_decode_excess,
         writer_admission_shortfall,
         writer_admission_excess,
         writer_write_shortfall,
@@ -2139,6 +2332,28 @@ pub fn build_cell_manifest(
             .unwrap_or_else(|| super::manifest::unavailable("ingress frame metric unavailable")),
         "delta_events_decoded": output.and_then(|o| o.ledger.delta_events_decoded).map(Value::from)
             .unwrap_or_else(|| super::manifest::unavailable("decode metric unavailable")),
+        "core_ingress_events": output.and_then(|o| o.ledger.core_ingress_events).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("core ingress metric unavailable")),
+        "core_delta_events": output.and_then(|o| o.ledger.core_delta_events).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("core delta metric unavailable")),
+        "no_active_source": output.and_then(|o| o.ledger.no_active_source).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "unknown_symbol": output.and_then(|o| o.ledger.unknown_symbol).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "non_live": output.and_then(|o| o.ledger.non_live).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "unassigned_source": output.and_then(|o| o.ledger.unassigned_source).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "invalid_book": output.and_then(|o| o.ledger.invalid_book).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "shadow_clock_regression": output.and_then(|o| o.ledger.shadow_clock_regression).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "zero_noop": output.and_then(|o| o.ledger.zero_noop).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "sbe_conversion_failed": output.and_then(|o| o.ledger.sbe_conversion_failed).map(Value::from)
+            .unwrap_or_else(|| super::manifest::unavailable("disposition metric unavailable")),
+        "disposition_shortfall": output.and_then(|o| o.ledger.disposition_shortfall),
+        "disposition_excess": output.and_then(|o| o.ledger.disposition_excess),
         "writer_delta_admissions": output.and_then(|o| o.ledger.writer_delta_admissions).map(Value::from)
             .unwrap_or_else(|| super::manifest::unavailable("writer admission metric unavailable")),
         "writer_delta_writes": output.and_then(|o| o.ledger.writer_delta_writes).map(Value::from)
@@ -2160,8 +2375,8 @@ pub fn build_cell_manifest(
         "persistence_excess": output.and_then(|o| o.ledger.persistence_excess),
         "enqueue_transmit_shortfall": output.and_then(|o| o.ledger.enqueue_transmit_shortfall),
         "enqueue_transmit_excess": output.and_then(|o| o.ledger.enqueue_transmit_excess),
-        "decode_transmit_shortfall": output.and_then(|o| o.ledger.decode_transmit_shortfall),
-        "decode_transmit_excess": output.and_then(|o| o.ledger.decode_transmit_excess),
+        "transmit_decode_shortfall": output.and_then(|o| o.ledger.transmit_decode_shortfall),
+        "transmit_decode_excess": output.and_then(|o| o.ledger.transmit_decode_excess),
         "writer_admission_shortfall": output.and_then(|o| o.ledger.writer_admission_shortfall),
         "writer_admission_excess": output.and_then(|o| o.ledger.writer_admission_excess),
         "writer_write_shortfall": output.and_then(|o| o.ledger.writer_write_shortfall),
@@ -2325,6 +2540,16 @@ mod tests {
             source_decode_errors: Some(0),
             data_frames_received: Some(0),
             delta_events_decoded: Some(0),
+            core_ingress_events: Some(0),
+            core_delta_events: Some(0),
+            no_active_source: Some(0),
+            unknown_symbol: Some(0),
+            non_live: Some(0),
+            unassigned_source: Some(0),
+            invalid_book: Some(0),
+            shadow_clock_regression: Some(0),
+            zero_noop: Some(0),
+            sbe_conversion_failed: Some(0),
             writer_delta_admissions: Some(0),
             writer_delta_writes: Some(0),
         }
@@ -2332,7 +2557,10 @@ mod tests {
 
     #[test]
     fn absent_metric_is_not_zero() {
-        let sample = parse_metrics("collector_deltas_emitted_total 5\n");
+        let sample = parse_metrics(
+            "collector_deltas_emitted_total 5\n\
+             collector_decoded_delta_events_total 0\n",
+        );
         assert_eq!(
             sample.read("collector_writer_messages_total"),
             MetricRead::Absent
@@ -2358,7 +2586,9 @@ mod tests {
 
     #[test]
     fn labeled_families_fold_to_the_family_name() {
-        let sample = parse_metrics("collector_deltas_emitted_total{shard=\"0\"} 7\n");
+        let sample = parse_metrics(
+            "collector_deltas_emitted_total{shard=\"0\"} 7\ncollector_decoded_delta_events_total 0\n",
+        );
         assert_eq!(
             sample.read("collector_deltas_emitted_total"),
             MetricRead::Present(7.0)
@@ -2369,6 +2599,7 @@ mod tests {
     fn barrier_rejects_a_missing_mandatory_metric() {
         let sample = parse_metrics(
             "collector_deltas_emitted_total 10\n\
+             collector_decoded_delta_events_total 0\n\
              collector_writer_queue_depth 0\n\
              collector_writer_errors_total 0\n",
         );
@@ -2387,6 +2618,7 @@ mod tests {
     fn barrier_rejects_a_malformed_mandatory_metric() {
         let sample = parse_metrics(
             "collector_deltas_emitted_total 10\n\
+             collector_decoded_delta_events_total 0\n\
              collector_writer_messages_total nope\n\
              collector_writer_queue_depth 0\n\
              collector_writer_errors_total 0\n",
@@ -2406,11 +2638,22 @@ mod tests {
             source_decode_errors: Some(0),
             data_frames_received: Some(0),
             delta_events_decoded: Some(0),
+            core_ingress_events: Some(0),
+            core_delta_events: Some(0),
+            no_active_source: Some(0),
+            unknown_symbol: Some(0),
+            non_live: Some(0),
+            unassigned_source: Some(0),
+            invalid_book: Some(0),
+            shadow_clock_regression: Some(0),
+            zero_noop: Some(0),
+            sbe_conversion_failed: Some(0),
             writer_delta_admissions: Some(0),
             writer_delta_writes: Some(0),
         };
         let sample = parse_metrics(
             "collector_deltas_emitted_total 5\n\
+             collector_decoded_delta_events_total 0\n\
              collector_writer_messages_total 5\n\
              collector_writer_queue_depth 0\n\
              collector_writer_errors_total 0\n",
@@ -2425,6 +2668,7 @@ mod tests {
     fn barrier_satisfies_only_when_every_metric_agrees() {
         let sample = parse_metrics(
             "collector_deltas_emitted_total 10\n\
+             collector_decoded_delta_events_total 10\n\
              collector_writer_messages_total 10\n\
              collector_writer_queue_depth 0\n\
              collector_writer_errors_total 0\n",
@@ -2472,13 +2716,16 @@ mod tests {
     }
 
     const DELAYED_BODY: &str = "collector_deltas_emitted_total 10\n\
+             collector_decoded_delta_events_total 0\n\
         collector_writer_queue_depth 0\n\
         collector_writer_errors_total 0\n";
     const COMPLETE_BODY: &str = "collector_deltas_emitted_total 10\n\
+             collector_decoded_delta_events_total 0\n\
         collector_writer_messages_total 20\n\
         collector_writer_queue_depth 0\n\
         collector_writer_errors_total 0\n";
     const MALFORMED_BODY: &str = "collector_deltas_emitted_total 10\n\
+             collector_decoded_delta_events_total 0\n\
         collector_writer_messages_total nope\n\
         collector_writer_queue_depth 0\n\
         collector_writer_errors_total 0\n";
