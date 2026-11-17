@@ -197,6 +197,9 @@ fn default_target(settings: &Settings) -> String {
         ExchangeKind::Kraken => settings.kraken.asset_pairs_url.clone(),
         // H0 opens no socket; the planned H1 REST endpoint is the probe target.
         ExchangeKind::Okx => settings.okx.rest_url.clone(),
+        // H0 is offline-only; the spot exchangeInfo URL is the documented
+        // endpoint reserved for a later stage, not a claim of live access.
+        ExchangeKind::Binance => settings.binance.spot_info_url.clone(),
     }
 }
 
