@@ -83,11 +83,42 @@ independent verification are distinct operations. A successful in-memory write
 is not a durability acknowledgement. The current collector does not claim
 replicated durability; that remains future work.
 
+## Platform P6 receipt accounting
+
+The non-market-data reference application has its own disjoint accounting in
+`ImportReport`. Every physical input line read in a run lands in exactly one
+bucket (`accounted() == total_read`):
+
+```
+total_read = delivered + duplicates + rejected + outstanding + uncertain
+           + accepted + skipped + target_delivered + simulated
+```
+
+`durable_committed` and `quarantined` are informational projections of
+`delivered` and `rejected` respectively; they are not separate buckets.
+
+Receipts are reported in six categories: `Delivered`, `DurableCommitted`,
+`Simulated`, `Outstanding`, `Uncertain`, `Rejected`. Only a terminal durable
+commit or a quarantined rejection advances the checkpoint. `Outstanding`,
+`Uncertain`, `Accepted`/`Delivered` and `Simulated` do not. A simulated receipt
+from `DryRun` or `Replay` is never counted as `DurableCommitted`, does not call
+an external target and does not move the durable checkpoint.
+
+Every durable commit record carries the committed event ids, the disposition
+and quarantine evidence, and the new checkpoint in one checksummed fsynced
+file. A retry with the same target-specific idempotency key
+`(event_id, target_id, output_contract_version)` is a no-op at the target, which
+is how an uncertain acknowledgement is resolved without a second row. Targets
+are independent: a failure for target A neither suppresses nor counts as a
+failure for target B.
+
 ## Status
 
 Implemented for the synthetic reference workload through scenario schema v16.
 Five stage-specific histograms are implemented and documented in
 [`PERFORMANCE_METHODOLOGY.md`](PERFORMANCE_METHODOLOGY.md); they are synthetic
-measurements, not a performance certificate. Replication and generalized
-destination obligations remain future contracts. See
+measurements, not a performance certificate. Destination obligations are
+implemented for the non-market-data reference application (Platform P6) but are
+not wired into the market collector. Replication, live database delivery and
+production exactly-once remain future contracts. See
 [`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md) for authoritative status.

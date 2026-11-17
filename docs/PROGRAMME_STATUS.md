@@ -48,6 +48,8 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `a9a6b23` | PR #69 — Platform M4 canonical events |
 | `127e926` | PR #70 — P5 JSONL-to-target reference application |
 | `339b4ad` | PR #71 — final status reconciliation (current integrated head) |
+| `a1b302a` | P6 durable file-to-target pipeline (local branch `feat/p6-durable-pipeline`; **not merged/pushed**) |
+| `60ac021` | P6 architecture/matrix gate extensions (local branch; **not merged/pushed**) |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -77,6 +79,7 @@ twice.
 | Platform M3 products (Phase 1) | Yes | Yes | N/A | Product/capability/state-machine tests | No | N/A |
 | Platform M4 canonical events (Phase 1) | Yes | Yes | N/A | Canonical conversion/schema tests | No | N/A |
 | P5 JSONL-to-target | Yes (simulator + SQL contract) | Yes | N/A | 24 application tests | No | No |
+| P6 durable file-to-target | Yes (real local durable store + streaming source + SQL executor contract) | Local gate commands pass; no remote CI run for this unmerged branch | N/A | 549 unit + 8 P6 integration tests, all offline/deterministic | No (no live DB/driver) | No |
 
 ## Contract foundation vs live integration
 
@@ -89,7 +92,10 @@ capability.
 | Persistent identity | Implemented (`src/identity.rs`) | Partial/not migrated into collector ownership | No |
 | Typed products | Implemented (`src/products.rs`) | Not consumed by legacy session `apply_subscriptions` | No |
 | Canonical events | Implemented (`src/canonical.rs`) | Not authoritative live pipeline | No |
-| JSONL-to-target | Simulator + SQL contract | No real database driver | No |
+| JSONL-to-target | Simulator + SQL contract (P5) | No real database driver | No |
+| Local reference commit store | Implemented (`src/application/durable.rs`): append-only checksummed fsync records, reopen verification, fault injection | Single-writer local filesystem only; no replication or live DB | No |
+| Streaming file source | Implemented (`src/application/file_source.rs`): bounded `BufRead`, exact bytes/offsets, fingerprint-bound resume | No network source; no live file ingestion run | No |
+| PostgreSQL execution | `SqlExecutor` trait + parameterized `CommitTranscript` (`src/application/postgres.rs`) | No `tokio-postgres` driver, no server, no migrations executed | No |
 | Hyperliquid | H0-H3 implemented | Synthetic loopback evidence only | No |
 | Additional H0 venues | Reference data only | No live product integration | No |
 
@@ -127,4 +133,7 @@ live PostgreSQL driver/live DB, distributed runtime, nanosecond clock accuracy,
 or any live venue certification. Platform M2/M3/M4 are additive contract
 foundations (Phases 1-3 / Phase 1): they do not yet rewire collector ownership,
 subscription consumption or the SBE writer. P5 is a deterministic simulator
-plus SQL contract, not a live database integration.
+plus SQL contract, not a live database integration. P6 adds a **real local
+durable store** and a **PostgreSQL contract plus `SqlExecutor` trait**, but it
+still has no driver and no live database. It is not wired into the market-data
+collector, makes no performance claim and is not merged into `main`.
