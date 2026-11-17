@@ -56,11 +56,38 @@ pub struct CollectorStats {
     pub empty_snapshots: u64,
     pub deltas_emitted: u64,
     pub deltas_rejected: u64,
-    /// Monotonic ingress counters accumulated across source reconnects.
+    /// Core-ingress boundary: normalized events that entered the core.
     #[serde(default)]
-    pub data_frames_received: u64,
+    pub core_ingress_events: u64,
+    /// Core-ingress boundary: LevelChange events admitted to the core.
     #[serde(default)]
-    pub delta_events_decoded: u64,
+    pub core_delta_events: u64,
+    /// Transport boundary: raw data frames read by the session workers.
+    /// Derived from per-source worker status at metrics refresh time.
+    #[serde(default)]
+    pub transport_frames_received: u64,
+    /// Adapter decode boundary: LevelChange events decoded by adapters.
+    #[serde(default)]
+    pub decoded_delta_events: u64,
+    /// Terminal dispositions of decoded deltas that are not already covered
+    /// by `deltas_emitted`, `deltas_rejected` or
+    /// `suppressed_replica_duplicates`.
+    #[serde(default)]
+    pub deltas_no_active_source: u64,
+    #[serde(default)]
+    pub deltas_unknown_symbol: u64,
+    #[serde(default)]
+    pub deltas_non_live: u64,
+    #[serde(default)]
+    pub deltas_unassigned_source: u64,
+    #[serde(default)]
+    pub deltas_invalid_book: u64,
+    #[serde(default)]
+    pub deltas_shadow_clock_regression: u64,
+    #[serde(default)]
+    pub deltas_zero_noop: u64,
+    #[serde(default)]
+    pub deltas_sbe_conversion_failed: u64,
     /// Clockless recovery snapshots rejected because they preceded the
     /// acknowledged recovery fence or arrived without an active generation.
     #[serde(default)]
@@ -373,6 +400,18 @@ impl MetricsRegistry {
         };
         state.updated_at_us = now_us().unwrap_or(state.updated_at_us);
         state.core = core;
+        // Transport and decoder boundaries are owned by the session workers.
+        // Derive aggregate counters from the current per-source status values
+        // at refresh time so they never lag a single status event and survive
+        // reconnects (worker statuses are cumulative within their lifetime).
+        state.core.transport_frames_received = sources
+            .values()
+            .map(|source| source.data_frames_received)
+            .sum();
+        state.core.decoded_delta_events = sources
+            .values()
+            .map(|source| source.delta_events_decoded)
+            .sum();
         state.writer = writer;
         state.sources = sources.values().cloned().collect();
         state.coverage = status.coverage;
@@ -745,14 +784,64 @@ impl MetricsRegistry {
             core.deltas_emitted
         );
         counter!(
-            "collector_data_frames_received_total",
-            "Data frames received at source ingress across reconnects",
-            core.data_frames_received
+            "collector_core_ingress_events_total",
+            "Normalized events admitted to the collector core",
+            core.core_ingress_events
         );
         counter!(
-            "collector_delta_events_decoded_total",
-            "Order-book delta events decoded across reconnects",
-            core.delta_events_decoded
+            "collector_core_delta_events_total",
+            "LevelChange events admitted to the collector core",
+            core.core_delta_events
+        );
+        counter!(
+            "collector_transport_frames_received_total",
+            "Raw data frames observed at the transport receive boundary",
+            core.transport_frames_received
+        );
+        counter!(
+            "collector_decoded_delta_events_total",
+            "Order-book delta events decoded at the adapter boundary",
+            core.decoded_delta_events
+        );
+        counter!(
+            "collector_delta_no_active_source_total",
+            "Decoded deltas applied while no active source exists",
+            core.deltas_no_active_source
+        );
+        counter!(
+            "collector_delta_unknown_symbol_total",
+            "Decoded deltas for an untracked instrument",
+            core.deltas_unknown_symbol
+        );
+        counter!(
+            "collector_delta_non_live_total",
+            "Decoded deltas rejected because continuity is not Live",
+            core.deltas_non_live
+        );
+        counter!(
+            "collector_delta_unassigned_source_total",
+            "Decoded deltas from a source not assigned to the market",
+            core.deltas_unassigned_source
+        );
+        counter!(
+            "collector_delta_invalid_book_total",
+            "Decoded deltas rejected because the source book is invalid",
+            core.deltas_invalid_book
+        );
+        counter!(
+            "collector_delta_shadow_clock_regression_total",
+            "Decoded deltas rejected by a shadow clock regression",
+            core.deltas_shadow_clock_regression
+        );
+        counter!(
+            "collector_delta_zero_noop_total",
+            "Decoded zero-size deltas with no state change",
+            core.deltas_zero_noop
+        );
+        counter!(
+            "collector_delta_sbe_conversion_failed_total",
+            "Decoded deltas not exactly representable in SBE",
+            core.deltas_sbe_conversion_failed
         );
         counter!(
             "collector_discontinuity_incidents_total",
