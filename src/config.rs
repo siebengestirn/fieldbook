@@ -23,6 +23,9 @@ pub enum ExchangeKind {
     Hyperliquid,
     Coinbase,
     Kraken,
+    /// OKX reference-data connector (H0). The connector is a selector, not a
+    /// venue registry: product-type scope is part of instrument identity.
+    Okx,
 }
 
 impl std::fmt::Display for ExchangeKind {
@@ -33,6 +36,7 @@ impl std::fmt::Display for ExchangeKind {
             Self::Hyperliquid => f.write_str("hyperliquid"),
             Self::Coinbase => f.write_str("coinbase"),
             Self::Kraken => f.write_str("kraken"),
+            Self::Okx => f.write_str("okx"),
         }
     }
 }
@@ -296,6 +300,42 @@ impl Default for KrakenSettings {
             asset_pairs_url: "https://api.kraken.com/0/public/AssetPairs".to_owned(),
             reference_fixture: None,
             pairs: Vec::new(),
+            request_timeout_secs: 20,
+        }
+    }
+}
+
+/// H0 reference-data settings for OKX.
+///
+/// H0 opens no socket: discovery reads an explicitly configured offline
+/// `instruments`-style document. `inst_types` scopes which OKX product types
+/// enter the universe (currently SPOT and SWAP); an instrument outside that
+/// list is out of universe, never silently added. `rest_url` is recorded as the
+/// planned H1 REST endpoint and is the probe's default target; H0 never dials
+/// it. Unknown fields are denied so a misspelled key fails at load time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OkxSettings {
+    /// OKX `instType` values in scope. Only SPOT and SWAP decode in H0; other
+    /// values are filtered out by the codec rather than admitted by default.
+    pub inst_types: Vec<String>,
+    /// Offline `instruments` document used by H0 discovery. When absent, H0
+    /// discovery fails closed: live REST discovery is a planned H1 stage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_fixture: Option<PathBuf>,
+    /// Planned public REST base for H1 instrument discovery. H0 does not use
+    /// it to open a connection.
+    pub rest_url: String,
+    /// Request timeout for the planned H1 REST client.
+    pub request_timeout_secs: u64,
+}
+
+impl Default for OkxSettings {
+    fn default() -> Self {
+        Self {
+            inst_types: vec!["SPOT".to_owned(), "SWAP".to_owned()],
+            reference_fixture: None,
+            rest_url: "https://www.okx.com/api/v5/public/instruments".to_owned(),
             request_timeout_secs: 20,
         }
     }
@@ -645,6 +685,7 @@ pub struct FileConfig {
     pub hyperliquid: HyperliquidSettings,
     pub coinbase: CoinbaseSettings,
     pub kraken: KrakenSettings,
+    pub okx: OkxSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -660,6 +701,7 @@ pub struct Settings {
     pub hyperliquid: HyperliquidSettings,
     pub coinbase: CoinbaseSettings,
     pub kraken: KrakenSettings,
+    pub okx: OkxSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -684,6 +726,7 @@ impl Settings {
             hyperliquid: file.hyperliquid,
             coinbase: file.coinbase,
             kraken: file.kraken,
+            okx: file.okx,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -709,6 +752,7 @@ impl Settings {
             hyperliquid: file.hyperliquid,
             coinbase: file.coinbase,
             kraken: file.kraken,
+            okx: file.okx,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -728,6 +772,7 @@ impl Settings {
                 "hyperliquid" => ExchangeKind::Hyperliquid,
                 "coinbase" => ExchangeKind::Coinbase,
                 "kraken" => ExchangeKind::Kraken,
+                "okx" => ExchangeKind::Okx,
                 other => bail!("unknown COLLECTOR_EXCHANGE `{other}`"),
             };
         }
@@ -1320,6 +1365,24 @@ mod tests {
             first,
             settings.capture_config_sha256().expect("fingerprint")
         );
+    }
+
+    #[test]
+    fn okx_exchange_kind_is_lowercase_serialized_and_displayed() {
+        assert_eq!(ExchangeKind::Okx.to_string(), "okx");
+        assert_eq!(
+            serde_json::to_string(&ExchangeKind::Okx).unwrap(),
+            "\"okx\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ExchangeKind>("\"okx\"").unwrap(),
+            ExchangeKind::Okx
+        );
+        let settings = Settings::for_exchange(ExchangeKind::Okx);
+        assert_eq!(settings.exchange, ExchangeKind::Okx);
+        assert_eq!(settings.okx.inst_types, vec!["SPOT", "SWAP"]);
+        assert!(settings.okx.reference_fixture.is_none());
+        assert!(settings.okx.rest_url.starts_with("https://"));
     }
 
     #[test]

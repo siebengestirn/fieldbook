@@ -27,7 +27,7 @@ use crate::{
     config::{CatalogMode, ExchangeKind, JournalSyncMode, Settings},
     exchange::{
         CoinbaseExchange, DiscoveryResult, DiscoveryStats, Exchange, HyperliquidExchange,
-        KalshiExchange, KrakenExchange, PolymarketExchange,
+        KalshiExchange, KrakenExchange, OkxExchange, PolymarketExchange,
     },
     histogram::{Histogram, StageTimings},
     journal::{JournalConfig, JournalHandle, JournalMeta, SyncMode},
@@ -138,6 +138,9 @@ pub fn build_exchange(
         )?)),
         ExchangeKind::Coinbase => Ok(Arc::new(CoinbaseExchange::new(settings.coinbase.clone())?)),
         ExchangeKind::Kraken => Ok(Arc::new(KrakenExchange::new(settings.kraken.clone())?)),
+        // OKX H0 is reference-data only: no socket is opened and `require_auth`
+        // is therefore irrelevant. The offline fixture is selected in settings.
+        ExchangeKind::Okx => Ok(Arc::new(OkxExchange::new(settings.okx.clone()))),
     }
 }
 

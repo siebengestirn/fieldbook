@@ -195,6 +195,8 @@ fn default_target(settings: &Settings) -> String {
         ExchangeKind::Hyperliquid => settings.hyperliquid.info_url.clone(),
         ExchangeKind::Coinbase => settings.coinbase.rest_url.clone(),
         ExchangeKind::Kraken => settings.kraken.asset_pairs_url.clone(),
+        // H0 opens no socket; the planned H1 REST endpoint is the probe target.
+        ExchangeKind::Okx => settings.okx.rest_url.clone(),
     }
 }
 
