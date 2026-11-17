@@ -13,12 +13,13 @@ contracts have been demonstrated by more than one workload.
 - M5.1/M5.1-CERT/M5.1-CERT.1: deterministic mixed workload, bidirectionally
   reconciled accounting and complete terminal delta dispositions.
 
-## In integration
+## Completed workload and venue milestones
 
 M5.2 burst, M5.3 lifecycle, M5.4 disconnect, M5.5 backpressure, M5.6 stage
-instrumentation and M5.7 capacity characterization are being integrated as
-focused increments from `main`. Each must pass the full assurance gate and
-retain versioned evidence before its merge is considered complete.
+instrumentation and M5.7 capacity characterization are merged into `main`.
+Hyperliquid H0-H3 and H0 reference-data adapters for Coinbase, Kraken, OKX and
+Binance are also merged. Exact per-milestone implementation/CI/evidence status
+is in [`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md).
 
 ## Future sequence
 

@@ -1,6 +1,9 @@
 # M5 workload programme: capacity characterization
 
-This document defines the M5.7 capacity characterization scaffold. It describes
+This document defines the M5 capacity and workload programme. It was introduced
+with the M5.7 capacity scaffold; the workload implementations described here are
+now integrated into `main`. See [`PROGRAMME_STATUS.md`](PROGRAMME_STATUS.md)
+for exact per-milestone status and evidence. It describes
 what the harness is arranged to measure, not what has been measured. The
 authoritative stress-lab design remains
 [`stress-lab-design.md`](stress-lab-design.md); the frozen hot/quiet workload

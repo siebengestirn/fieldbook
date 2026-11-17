@@ -23,15 +23,17 @@ and normalized persistence) is complete.
 | Recovery M3.2 — independent instrument/source queues | Complete (`6975ae3`) |
 | Recovery M3.3 — per-instrument acknowledgement fences | Complete (`b6ffd80`) |
 | Recovery M4 — blast-radius evidence | Complete (`34befa4`); 3,000-instrument, independent-shard, and backup-freshness tests assert emitted output |
-| M5.1 — deterministic mixed workload and initial evidence | Implemented; ledger-certification corrective work in progress (`fix/m5-event-ledger-certification`) |
-| M5.2 — burst characterization | Next |
-| M5.3 — lifecycle churn | Planned |
-| M5.4 — disconnect and recovery sweeps | Planned |
-| M5.5 — backpressure, combined workloads and performance | Planned |
+| M5.1 — deterministic mixed workload and initial evidence | Complete; CERT.1 disposition closure merged (`aa52203`) |
+| M5.2 — burst characterization | Complete (`27f8506`) |
+| M5.3 — lifecycle churn | Complete (`83c7251`) |
+| M5.4 — disconnect and recovery sweeps | Complete (`fdac36d`) |
+| M5.5 — backpressure and boundedness | Complete (`14b8a94`) |
+| M5.6 — stage timing histograms | Complete (`0137b95`); synthetic measurements only |
+| M5.7 — capacity stages | Test stages complete (`0efc74e`); 25k/50k opt-in, no capacity claim |
 | Platform M2 — persistent instrument identity | Unresolved; ADR 0001 is design-only |
 | Platform M3 — subscription and feed capability contracts | Unresolved |
 | Platform M4 — canonical events and normalized persistence | Unresolved |
-| Venue M6 — Hyperliquid adapter and venue certification | Planned after M5 evidence gates |
+| Hyperliquid H0-H3 | Implemented (`8538cab` through `372da5b`); synthetic loopback evidence only |
 | Research M7 — immutable datasets and experiment registry | Design only |
 | Execution M8 | Deferred |
 
