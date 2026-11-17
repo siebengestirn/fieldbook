@@ -22,6 +22,7 @@ pub enum ExchangeKind {
     Polymarket,
     Hyperliquid,
     Coinbase,
+    Kraken,
 }
 
 impl std::fmt::Display for ExchangeKind {
@@ -31,6 +32,7 @@ impl std::fmt::Display for ExchangeKind {
             Self::Polymarket => f.write_str("polymarket"),
             Self::Hyperliquid => f.write_str("hyperliquid"),
             Self::Coinbase => f.write_str("coinbase"),
+            Self::Kraken => f.write_str("kraken"),
         }
     }
 }
@@ -265,6 +267,36 @@ impl Default for CoinbaseSettings {
             reference_fixture: None,
             request_timeout_secs: 20,
             require_online: true,
+        }
+    }
+}
+
+/// Reference-data settings for Kraken (H0).
+///
+/// `reference_fixture` is an explicitly configured offline `AssetPairs`-style
+/// document used for deterministic discovery. When absent, discovery performs
+/// a read-only GET against `asset_pairs_url`. No websocket is opened during H0
+/// discovery. `pairs` is an optional explicit selection of venue pair keys or
+/// canonical `BASE/QUOTE` identities; an empty list selects every active pair.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KrakenSettings {
+    /// Public REST endpoint serving the `AssetPairs` document.
+    pub asset_pairs_url: String,
+    /// Optional offline `AssetPairs`-style fixture for deterministic discovery.
+    pub reference_fixture: Option<PathBuf>,
+    /// Explicit pair selection. Empty means all active pairs.
+    pub pairs: Vec<String>,
+    pub request_timeout_secs: u64,
+}
+
+impl Default for KrakenSettings {
+    fn default() -> Self {
+        Self {
+            asset_pairs_url: "https://api.kraken.com/0/public/AssetPairs".to_owned(),
+            reference_fixture: None,
+            pairs: Vec::new(),
+            request_timeout_secs: 20,
         }
     }
 }
@@ -612,6 +644,7 @@ pub struct FileConfig {
     pub polymarket: PolymarketSettings,
     pub hyperliquid: HyperliquidSettings,
     pub coinbase: CoinbaseSettings,
+    pub kraken: KrakenSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -626,6 +659,7 @@ pub struct Settings {
     pub polymarket: PolymarketSettings,
     pub hyperliquid: HyperliquidSettings,
     pub coinbase: CoinbaseSettings,
+    pub kraken: KrakenSettings,
     pub collector: CollectorSettings,
     pub network: NetworkSettings,
     pub output: OutputSettings,
@@ -649,6 +683,7 @@ impl Settings {
             polymarket: file.polymarket,
             hyperliquid: file.hyperliquid,
             coinbase: file.coinbase,
+            kraken: file.kraken,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -673,6 +708,7 @@ impl Settings {
             polymarket: file.polymarket,
             hyperliquid: file.hyperliquid,
             coinbase: file.coinbase,
+            kraken: file.kraken,
             collector: file.collector,
             network: file.network,
             output: file.output,
@@ -691,6 +727,7 @@ impl Settings {
                 "polymarket" => ExchangeKind::Polymarket,
                 "hyperliquid" => ExchangeKind::Hyperliquid,
                 "coinbase" => ExchangeKind::Coinbase,
+                "kraken" => ExchangeKind::Kraken,
                 other => bail!("unknown COLLECTOR_EXCHANGE `{other}`"),
             };
         }
