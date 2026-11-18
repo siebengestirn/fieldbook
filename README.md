@@ -137,7 +137,7 @@ definitions and writes a machine-readable report to `target/xtask/last-run.json`
 CI installs the same pinned tools and runs the same commands.
 
 ```bash
-cargo xtask style     # Python, shell, Makefile, JSON and Markdown
+cargo xtask style     # language, added-line Rust and isolation gates
 cargo xtask style-fix # apply safe Pyink and Markdown fixes
 cargo xtask fmt       # rustfmt check
 cargo xtask lint      # clippy -D warnings
