@@ -1,6 +1,7 @@
 # Stress laboratory design
 
-**Status:** design approved in principle; **this revision incorporates every review amendment**.
+**Status:** design approved in principle; **this revision incorporates every
+review amendment**.
 **Branch:** `feat/full-universe-stress-lab` · **Base:** `b66fdbd`
 **Author date:** 2026-11-14 · **Evidence class:** synthetic/loopback only
 
@@ -10,7 +11,7 @@ Benchmark the collector that ships. Every synthetic frame enters through the
 real venue adapter (Kalshi first, Polymarket second), the real coordinator,
 books, bounded writer, SBE output, journal, and the real verifier:
 
-```
+```text
 Synthetic venue frames
         │
         v
@@ -42,13 +43,13 @@ accounted for. A throughput claim without that is noise.
 
 Two disjoint sets, both generated deterministically:
 
-1. **Eligible markets** — regular challenge-in-scope markets that the
-   production MVE filter accepts. These are discovered, subscribed and
-   snapshot-anchored; they are the expected universe.
+1. **Eligible markets** — regular challenge-in-scope markets that the production
+   MVE filter accepts. These are discovered, subscribed and snapshot-anchored;
+   they are the expected universe.
 2. **Ineligible decoys** — MVE markets plus other excluded classes
    (inactive/non-orderbook/invalid records), generated as negative controls.
-   They MUST be excluded by discovery and MUST NOT appear in the expected
-   sets or hashes.
+   They MUST be excluded by discovery and MUST NOT appear in the expected sets
+   or hashes.
 
 The synthetic identity format stays `STRESS-{seed:04}-{i:06}` for both sets;
 eligibility, not appearance, distinguishes them. Reports record three exact
@@ -72,13 +73,13 @@ size — capacities and replicas are the only fully crossed axes. All other
 workload runs use one declared representative topology per universe size
 (e.g. `max_symbols_per_socket = 5000`, `replicas = 2`).
 
-The full matrix is **opt-in and manual** on a recorded reference machine; it
-is never an ordinary CI gate, and no wall-clock threshold is gated on in CI.
+The full matrix is **opt-in and manual** on a recorded reference machine; it is
+never an ordinary CI gate, and no wall-clock threshold is gated on in CI.
 
 ## 4. Event accounting ledger (mandatory correction)
 
-The harness keeps an independent expected-event ledger and reconciles it
-against production-counter evidence. Counters, at minimum:
+The harness keeps an independent expected-event ledger and reconciles it against
+production-counter evidence. Counters, at minimum:
 
 | Stage | Counter |
 |---|---|
@@ -94,16 +95,15 @@ against production-counter evidence. Counters, at minimum:
 
 Definitions:
 
-- A logical event delivered to both replicas is a **transport duplicate**,
+A logical event delivered to both replicas is a **transport duplicate**,
   not a duplicate application. `suppressed_replica_duplicates` counts exactly
   those merges (or the core-side drops in the #41 dedup/monotonic paths,
   labelled by reason).
-- A frame never delivered during an injected outage is an **availability
-  gap**, not an unexplained decoder drop; it is reported as such with time
-  bounds.
-- Writer-accepted but absent from the finalized SBE file is a **persistence
+- A frame never delivered during an injected outage is an **availability gap**,
+  not an unexplained decoder drop; it is reported as such with time bounds.
+Writer-accepted but absent from the finalized SBE file is a **persistence
   failure**.
-- Every discrepancy is classified exactly one way: `unexplained_drops`,
+Every discrepancy is classified exactly one way: `unexplained_drops`,
   `availability_gap`, `persistence_failure`, `overflow`, `order_violation`,
   `replica_transport_duplicate`. `unexplained_drops` is derived, never
   hard-coded to zero. Any non-zero value fails the cell.
@@ -112,7 +112,7 @@ Definitions:
 
 For every universe-complete cell, the harness computes:
 
-```
+```text
 expected_set_sha256
 acknowledged_set_sha256
 anchored_set_sha256
@@ -124,27 +124,27 @@ comparison. The sets must be equal exactly; count equality is not accepted.
 The decoy set must be disjoint from all three; a positive hit is a filter
 failure and fails the cell.
 
-For lifecycle-churn cells, coverage is computed **per universe epoch**:
-newly created markets join the expected set once discovered and anchored;
-retired markets exit the expected set at the retirement boundary. Hashes are
-recorded per epoch.
+For lifecycle-churn cells, coverage is computed **per universe epoch**: newly
+created markets join the expected set once discovered and anchored; retired
+markets exit the expected set at the retirement boundary. Hashes are recorded
+per epoch.
 
 ## 6. Clocks and percentile methodology
 
-- Intra-process intervals use a monotonic clock measured at both points.
+Intra-process intervals use a monotonic clock measured at both points.
   Wall-clock synchronization is required only where timestamps from
   independent clocks are compared (venue `sending_ts_ms` vs local receive).
-- Recorded per run: clock type (`CLOCK_MONOTONIC`/equivalent) and resolution.
-- Throughput percentiles (`p50/p95/p99/max`) are computed over **fixed-width
+Recorded per run: clock type (`CLOCK_MONOTONIC`/equivalent) and resolution.
+Throughput percentiles (`p50/p95/p99/max`) are computed over **fixed-width
   one-second bins** over the measured interval, not arbitrary sampling
   windows. The binning rule is recorded in the manifest.
-- Latency histograms are reported for: ingress→decode, decode→apply,
+Latency histograms are reported for: ingress→decode, decode→apply,
   apply→writer-accept, writer-accept→persistence, each with explicit units
   (`us`). Synthetic source→collector latency is never conflated with venue
   feed lag; the two are labelled separately.
 - Correctness-mode runs use controlled event order (virtual event time);
-  benchmark runs never rely on virtual time. Virtual time is not used to
-  claim throughput or latency.
+  benchmark runs never rely on virtual time. Virtual time is not used to claim
+  throughput or latency.
 
 ## 7. Failure semantics (mandatory explicit outcomes)
 
@@ -168,7 +168,7 @@ Git. The schema is `schema_version: 1` from its first release.
 
 Required fields (in addition to names in §4, §5, §6):
 
-```
+```text
 run_id                    configuration_sha256
 execution_mode            build_profile (`release`)
 evidence_class            target_triple
@@ -216,22 +216,22 @@ collector-capacity measurement and is labelled `mock_throughput_limited`.
 
 ## 9. Implementation placement and constraints
 
-- `tests/stress_support/*` — synthetic generator, workload definitions, the
+`tests/stress_support/*` — synthetic generator, workload definitions, the
   event ledger, manifest writer, host helpers, the Kalshi wire mock. No
   production module is added. `src/` is untouched unless shared production
   code is genuinely required.
-- No new external dependencies. SplitMix64 is specified inline with test
-  vectors and a fixed algorithm version constant; generation order and
-  ordering are stable across Rust versions.
-- The mock is a real WS/REST server per test process (loopback), not a
-  shortcut through discovery helpers. REST pagination (cursor), subscribe
-  acknowledgements with per-connection sid and seq, snapshots, deltas,
-  lifecycle frames, and connection-failure races are all implemented.
-- `capacity::plan` is called by the collector under test; the harness records
+- No new external dependencies. SplitMix64 is specified inline with test vectors
+  and a fixed algorithm version constant; generation order and ordering are
+  stable across Rust versions.
+The mock is a real WS/REST server per test process (loopback), not a shortcut
+  through discovery helpers. REST pagination (cursor), subscribe
+  acknowledgements with per-connection sid and seq, snapshots, deltas, lifecycle
+  frames, and connection-failure races are all implemented.
+`capacity::plan` is called by the collector under test; the harness records
   the desired vs actual topology and fails on a mismatch.
-- CI runs exactly one small correctness smoke (seeded, fixed cases:
-  uniform + zipf + lifecycle burst + disconnect; no wall-clock thresholds).
-- Raw captures go to a configured run directory (git-ignored) or are emitted
+CI runs exactly one small correctness smoke (seeded, fixed cases: uniform +
+  zipf + lifecycle burst + disconnect; no wall-clock thresholds).
+Raw captures go to a configured run directory (git-ignored) or are emitted
   as run artifacts; compact manifests and summaries are checked in under
   `measurements/stress/`.
 
@@ -248,11 +248,12 @@ Chunk rotation is mandatory. Raw captures are retained outside Git.
 ## 11. Execution sequence (reviewable increments)
 
 1. Ledger + generator + deterministic RNG vectors (unit tests)
-2. Kalshi wire mock (REST pagination, WS subscribe/ack/snapshot/delta/lifecycle, reconnect) + its own tests
+2. Kalshi wire mock (REST pagination, WS subscribe/ack/snapshot/delta/lifecycle,
+   reconnect) + its own tests
 3. Manifest writer + host helpers + index (unit tests incl. failure manifest)
 4. CI smoke case (4k) — the only thing that runs in Ordinary CI
-5. Correctness suite cases (1k–10k)
-6. Opt-in capacity/workload/recovery matrix wiring (`STRESS_*` env), `measurements/stress/` layout, README
+Correctness suite cases (1k–10k)
+Opt-in capacity/workload/recovery matrix wiring (`STRESS_*` env), `measurements/stress/` layout, README
 7. Sample run + sample deliberately-failed run (for review)
 
 ## 12. Acceptance (as enforced by the suite)
@@ -264,10 +265,10 @@ Chunk rotation is mandatory. Raw captures are retained outside Git.
 3. Every generated event accounted for or explicitly classified.
 4. Replica transport duplicates distinguished from duplicate applications.
 5. Backpressure bounded/visible; no accepted event silently dropped.
-6. Snapshot re-anchoring and incident accounting correct across
-   one-replica and total-outage scenarios.
-7. SIGINT-child-process shutdown drains accepted data and finalizes.
-8. `verify`, `completeness`, `coverage` and journal pass on release runs.
+6. Snapshot re-anchoring and incident accounting correct across one-replica and
+   total-outage scenarios.
+SIGINT-child-process shutdown drains accepted data and finalizes.
+`verify`, `completeness`, `coverage` and journal pass on release runs.
 9. Three repetitions; medians and spread reported; no cherry-picking.
 10. Versioned manifests on success and failure; index stays consistent.
 
@@ -280,6 +281,6 @@ Chunk rotation is mandatory. Raw captures are retained outside Git.
 
 ## 14. Explicitly not in this PR
 
-Adaptive sharding, continuity redesign, protocol migrations/hosts,
-dependency governance, CLI flags, new external dependencies, venue-data use,
-#43/#44 work.
+Adaptive sharding, continuity redesign, protocol migrations/hosts, dependency
+governance, CLI flags, new external dependencies, venue-data use,
+`#43`/`#44` work.

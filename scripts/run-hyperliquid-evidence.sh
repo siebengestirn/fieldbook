@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Collect a read-only Hyperliquid mainnet market-data capture and certify it.
 #
 # This workflow was derived from a real direct run after fixing the
@@ -43,7 +43,9 @@ if [[ "${HYPERLIQUID_READ_ONLY_ACCESS_CONFIRMED:-0}" != "1" ]]; then
   echo "       This script only uses public, direct, read-only market data." >&2
   exit 2
 fi
-if [[ -n "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}${ALL_PROXY:-}${all_proxy:-}" ]]; then
+PROXY_ENV="${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}"
+PROXY_ENV+="${http_proxy:-}${ALL_PROXY:-}${all_proxy:-}"
+if [[ -n "${PROXY_ENV}" ]]; then
   echo "ERROR: proxy environment variables are set; this workflow requires direct egress." >&2
   exit 2
 fi
@@ -141,6 +143,7 @@ fi
 
 JOURNAL_RUN="$(python3 - "$REPORT" <<'PY'
 import json, sys
+
 report = json.load(open(sys.argv[1], encoding="utf-8"))
 print((report.get("journal") or {}).get("run_directory", ""))
 PY
@@ -150,15 +153,22 @@ if [[ -z "$JOURNAL_RUN" ]]; then
   exit 1
 fi
 if [[ "$JOURNAL_RUN" != /* ]]; then JOURNAL_RUN="$ROOT/$JOURNAL_RUN"; fi
-"$BIN" journal verify "$JOURNAL_RUN" >"$OUT/journal-verify.json" 2>"$OUT/journal-verify.log"
+"$BIN" journal verify "$JOURNAL_RUN" >"$OUT/journal-verify.json" \
+  2>"$OUT/journal-verify.log"
 
-if ! python3 - "$RECOVERY" "$REPORT" "$OUT/sbe-verify.json" "$OUT/completeness.json" \
+if ! python3 - "$RECOVERY" "$REPORT" "$OUT/sbe-verify.json" \
+  "$OUT/completeness.json" \
     "$OUT/coverage.json" "$OUT/journal-verify.json" <<'PY'
 import json, sys
-recovery, report_path, sbe_path, complete_path, coverage_path, journal_path = sys.argv[1:]
+
+recovery, report_path, sbe_path, complete_path, coverage_path, journal_path = (
+    sys.argv[1:]
+)
 recovery = recovery == "1"
 load = lambda path: json.load(open(path, encoding="utf-8"))
-report, sbe, complete, coverage, journal = map(load, (report_path, sbe_path, complete_path, coverage_path, journal_path))
+report, sbe, complete, coverage, journal = map(
+    load, (report_path, sbe_path, complete_path, coverage_path, journal_path)
+)
 core = report.get("core", {})
 writer = report.get("writer", {})
 sources = report.get("sources", [])
@@ -170,19 +180,32 @@ checks = {
     "sbe_reconstruction_valid": sbe.get("valid") is True,
     "symbol_stream_anchored": complete.get("valid") is True,
     "coverage_valid": coverage.get("valid") is True,
-    "coverage_expected_matches_discovery": int(coverage.get("expected", 0)) == int(report.get("discovered_symbols", 0)),
-    "coverage_every_expected_acknowledged": int(coverage.get("acknowledged", 0)) == int(coverage.get("expected", 0)) and int(coverage.get("expected", 0)) > 0,
-    "coverage_every_expected_anchored": int(coverage.get("anchored", 0)) == int(coverage.get("expected", 0)) and int(coverage.get("expected", 0)) > 0,
+    "coverage_expected_matches_discovery": int(coverage.get("expected", 0))
+    == int(report.get("discovered_symbols", 0)),
+    "coverage_every_expected_acknowledged": int(coverage.get("acknowledged", 0))
+    == int(coverage.get("expected", 0))
+    and int(coverage.get("expected", 0)) > 0,
+    "coverage_every_expected_anchored": int(coverage.get("anchored", 0))
+    == int(coverage.get("expected", 0))
+    and int(coverage.get("expected", 0)) > 0,
     "journal_complete": journal.get("complete") is True,
     "journal_records_nonzero": int(journal.get("record_count", 0)) > 0,
     "no_writer_errors": int(writer.get("errors", 0)) == 0,
-    "no_decode_errors": all(int(source.get("decode_errors", 0)) == 0 for source in sources),
-    "no_protocol_errors": all(int(source.get("protocol_errors", 0)) == 0 for source in sources),
+    "no_decode_errors": all(
+        int(source.get("decode_errors", 0)) == 0 for source in sources
+    ),
+    "no_protocol_errors": all(
+        int(source.get("protocol_errors", 0)) == 0 for source in sources
+    ),
 }
 reconnects = [int(source.get("reconnects", 0)) for source in sources]
 if recovery:
-    checks["reconnect_drill_occurred"] = bool(reconnects) and min(reconnects) > 0
-    checks["fresh_snapshots_after_reconnect"] = int(core.get("exchange_snapshots", 0)) > max(reconnects)
+    checks["reconnect_drill_occurred"] = (
+        bool(reconnects) and min(reconnects) > 0
+    )
+    checks["fresh_snapshots_after_reconnect"] = int(
+        core.get("exchange_snapshots", 0)
+    ) > max(reconnects)
 else:
     checks["no_reconnects"] = all(value == 0 for value in reconnects)
 for name, passed in checks.items():
@@ -204,28 +227,57 @@ fi
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 python3 - "$OUT" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" \
-  "$DURATION_SECS" "$MAX_MARKETS" "$SHARDS" "$REPLICAS" "$JOURNAL_RUN" "$RECOVERY" "$CONFIG" <<'PY'
+  "$DURATION_SECS" "$MAX_MARKETS" "$SHARDS" "$REPLICAS" "$JOURNAL_RUN" \
+    "$RECOVERY" "$CONFIG" <<'PY'
 import hashlib, json, pathlib, sys
-out, commit, started, completed, duration, max_markets, shards, replicas, journal_run, recovery, config = sys.argv[1:]
+
+(
+    out,
+    commit,
+    started,
+    completed,
+    duration,
+    max_markets,
+    shards,
+    replicas,
+    journal_run,
+    recovery,
+    config,
+) = sys.argv[1:]
 recovery = recovery == "1"
 root = pathlib.Path(out)
 journal_root = pathlib.Path(journal_run)
+
+
 def sha(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
 load = lambda name: json.loads((root / name).read_text(encoding="utf-8"))
 report, sbe, complete, coverage, journal = map(
     load,
-    ("report.json", "sbe-verify.json", "completeness.json", "coverage.json", "journal-verify.json"),
+    (
+        "report.json",
+        "sbe-verify.json",
+        "completeness.json",
+        "coverage.json",
+        "journal-verify.json",
+    ),
 )
-journal_files = [journal_root / "manifest.json", *sorted(journal_root.glob("*.pmj"))]
+journal_files = [
+    journal_root / "manifest.json",
+    *sorted(journal_root.glob("*.pmj")),
+]
 manifest = {
     "schema_version": 1,
     "evidence_tier": "HL_LIVE_RECOVERY_OK" if recovery else "HL_LIVE_OK",
-    "classification": "real-direct-hyperliquid-mainnet-readonly-reconnect-drill" if recovery else "real-direct-hyperliquid-mainnet-readonly",
+    "classification": "real-direct-hyperliquid-mainnet-readonly-reconnect-drill"
+    if recovery
+    else "real-direct-hyperliquid-mainnet-readonly",
     "recovery_drill": recovery,
     "config_file": config or None,
     "access": "direct public market data; no proxy, VPN, alternate DNS, hosted runner, credentials or orders",
@@ -252,18 +304,43 @@ manifest = {
     "journal_complete": journal.get("complete"),
     "journal_directory": str(journal_root),
     "journal_files": [
-        {"path": path.name, "sha256": sha(path)} for path in journal_files if path.is_file()
+        {"path": path.name, "sha256": sha(path)}
+        for path in journal_files
+        if path.is_file()
     ],
     "artifacts": {
         name: {"path": name, "sha256": sha(root / name)}
         for name in (
-            "orderbook.sbe", "markets.json", "report.json", "sbe-verify.json",
-            "completeness.json", "coverage.json", "journal-verify.json", "collector.log",
+            "orderbook.sbe",
+            "markets.json",
+            "report.json",
+            "sbe-verify.json",
+            "completeness.json",
+            "coverage.json",
+            "journal-verify.json",
+            "collector.log",
         )
     },
 }
-(root / "evidence.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-print(json.dumps({key: manifest[key] for key in ("evidence_tier", "expected_symbols", "acknowledged_symbols", "anchored_symbols", "sbe_messages", "journal_records")}, indent=2))
+(root / "evidence.json").write_text(
+    json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+)
+print(
+    json.dumps(
+        {
+            key: manifest[key]
+            for key in (
+                "evidence_tier",
+                "expected_symbols",
+                "acknowledged_symbols",
+                "anchored_symbols",
+                "sbe_messages",
+                "journal_records",
+            )
+        },
+        indent=2,
+    )
+)
 PY
 
 echo "VERIFIED — Hyperliquid evidence: $OUT"

@@ -7,6 +7,7 @@ non-ignored files so a generated artifact cannot enter a commit unnoticed.
 Ignored build output is deliberately excluded: the build directory is not part
 of the reviewed source surface.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,10 +17,12 @@ from pathlib import Path
 
 
 def load_policy(root: Path) -> dict:
+    """Exercise load policy."""
     return json.loads((root / "git-policy.json").read_text(encoding="utf-8"))
 
 
 def git_paths(root: Path, args: list[str]) -> list[str]:
+    """Exercise git paths."""
     result = subprocess.run(
         ["git", "-C", str(root), *args],
         capture_output=True,
@@ -32,6 +35,7 @@ def git_paths(root: Path, args: list[str]) -> list[str]:
 
 
 def forbidden(path: str, policy: dict) -> str | None:
+    """Exercise forbidden."""
     generated = policy["generated_paths"]
     parts = path.split("/")
     for component in generated["forbidden_components"]:
@@ -47,9 +51,12 @@ def forbidden(path: str, policy: dict) -> str | None:
 
 
 def validate(root: Path) -> list[str]:
+    """Exercise validate."""
     policy = load_policy(root)
     tracked = git_paths(root, ["ls-files", "-z"])
-    untracked = git_paths(root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    untracked = git_paths(
+        root, ["ls-files", "--others", "--exclude-standard", "-z"]
+    )
     errors: list[str] = []
     for source, paths in (("tracked", tracked), ("untracked", untracked)):
         for path in paths:
@@ -60,6 +67,7 @@ def validate(root: Path) -> list[str]:
 
 
 def main() -> int:
+    """Exercise main."""
     root = Path(__file__).resolve().parent.parent
     try:
         errors = validate(root)
@@ -71,7 +79,10 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}")
         return 1
-    print("[PASS] no forbidden generated paths in tracked or untracked source files")
+    print(
+        "[PASS] no forbidden generated paths in tracked or "
+        "untracked source files"
+    )
     return 0
 
 

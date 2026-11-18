@@ -9,8 +9,8 @@ those two contracts in a decoder without an explicit protocol adapter.
 ## Provenance
 
 - Contract reference: <https://docs.polymarket.com/market-data/realtime-data>
-- Sections: raw market WebSocket connection, Order Book, Price Change, Tick
-  Size Change, Best Bid and Ask, New Market, and Market Resolved.
+- Sections: raw market WebSocket connection, Order Book, Price Change, Tick Size
+  Change, Best Bid and Ask, New Market, and Market Resolved.
 - The documentation page was checked on 2026-10-27.
 - Values and identifiers are illustrative/sanitized examples taken from the
   published examples or adapted for deterministic tests. These files are not

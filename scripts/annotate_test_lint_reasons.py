@@ -8,6 +8,8 @@ to touch anything else, and the result is verified afterwards by
 parses and still applies.
 """
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -45,6 +47,7 @@ SINGLE_NEW = """#![allow(
 
 
 def main(paths: list[str]) -> int:
+    """Exercise main."""
     for path in map(Path, paths):
         text = path.read_text()
         if text.count(BLOCK) == 1:

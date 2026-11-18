@@ -7,11 +7,11 @@ either updates these files together with the decoder or fails the build.
 
 ## Provenance
 
-- Contract reference: the Kalshi Exchange API WebSocket documentation
+Contract reference: the Kalshi Exchange API WebSocket documentation
   (`orderbook_delta`, `ticker`, and `market_lifecycle_v2` channels, plus the
   `subscribed` / `ok` / `error` / `unsubscribed` control acknowledgements).
-- Checked against the published documentation on 2026-11-14.
-- Values and identifiers are illustrative/sanitized examples adapted for
+Checked against the published documentation on 2026-11-14.
+Values and identifiers are illustrative/sanitized examples adapted for
   deterministic tests. These files are not claimed to be captured live
   traffic; live-captured evidence lives under `measurements/` and
   `captures/` with its own provenance chain.
@@ -37,14 +37,14 @@ PING/PONG text frame at this layer.
 Kalshi's perpetual-futures surface is a **separate API** that shares
 authentication and message-shape conventions but differs where it matters:
 
-- REST base `.../trade-api/v2/margin/` (demo:
+REST base `.../trade-api/v2/margin/` (demo:
   `external-api.demo.kalshi.co`), WebSocket
   `wss://external-api-margin-ws.*.kalshi.co/trade-api/ws/v2/margin`, and
   FIX hosts of its own.
-- All timestamps are Unix epoch milliseconds with an `_ms` suffix
+All timestamps are Unix epoch milliseconds with an `_ms` suffix
   (`ts_ms`, `created_ts_ms`, ...); the event-contract frames above mix
   RFC3339 datetimes and epoch seconds.
-- Margin-only channels (`corporate_actions`, `order_group_updates`) and
+Margin-only channels (`corporate_actions`, `order_group_updates`) and
   margin-only REST endpoints (balance, funding, transfers) do not exist on
   the event-contract API.
 

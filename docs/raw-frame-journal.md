@@ -100,13 +100,13 @@ never stored, and a reader must not fabricate them.
 Every application payload yielded by the WebSocket layer is journaled before
 parsing or protocol decisions, exactly once per payload read. This includes:
 
-- payloads that decode into events (`decoded`);
-- valid payloads the adapter reads but does not act on, recorded with an
+payloads that decode into events (`decoded`);
+valid payloads the adapter reads but does not act on, recorded with an
   explicit `ignored` reason — for example `control_frame` (PING/PONG text),
   `empty_frame`, `no_events`, `unknown_event_type`, and Kalshi's
   `stale_snapshot`, `foreign_lifecycle`, `subscription_ack`, `command_ack`,
   `handled_server_error`, `unsubscribed`, and `ignored_event`;
-- payloads a decode or protocol check rejects, recorded with a stable
+payloads a decode or protocol check rejects, recorded with a stable
   category — `invalid_json`, `invalid_payload`, or `protocol_violation` —
   together with their untouched bytes, including the payload that triggered a
   reconnect.
@@ -130,14 +130,14 @@ Pong is `heartbeat_ack` with its correlation payload; a Pong answering a
 server Ping is `peer_pong`.
 
 A protocol failure observed before any payload was read (for example a
-pending-command acknowledgement timeout) likewise has no payload to journal
-and does not advance the fence. A frame the venue wrote into a socket at the
-moment a connection is torn down is a transport loss, not a journal accounting
-failure; the v1 journal accounts for every application payload the collector
-actually read.
+pending-command acknowledgement timeout) likewise has no payload to journal and
+does not advance the fence. A frame the venue wrote into a socket at the moment
+a connection is torn down is a transport loss, not a journal accounting failure;
+the v1 journal accounts for every application payload the collector actually
+read.
 
-Rejected frames keep their payload and a stable category. Error text and
-payload previews are not written into the record header, so a journal does not
+Rejected frames keep their payload and a stable category. Error text and payload
+previews are not written into the record header, so a journal does not
 accumulate unbounded diagnostic strings.
 
 A record is framed as:
@@ -157,9 +157,9 @@ larger than 64 MiB.
 A segment starts with a header and ends with a footer. Both are length-prefixed
 JSON blocks followed by a 64-byte SHA-256 hex checksum of the block:
 
-- Header magic `PMJSEG01`: schema version, run id, venue, source commit,
+Header magic `PMJSEG01`: schema version, run id, venue, source commit,
   capture-configuration digest, segment index, and creation time.
-- Footer magic `PMJEND01`: finalized flag, record count, record-region byte
+Footer magic `PMJEND01`: finalized flag, record count, record-region byte
   count, segment checksum, first and last receive times, and per-source
   `first_epoch`/`first_seq`/`last_epoch`/`last_seq`/`records` ranges.
 
@@ -201,14 +201,14 @@ ordering. `control_seq` and `observation_seq` never change the meaning of
 
 `JournalStatus` counters distinguish:
 
-- `queued`: records accepted into the writer queue.
-- `written`: records handed to the segment buffer.
-- `flushed`: records whose bytes left the process buffer.
-- `synced`: records covered by `sync_all`.
-- `finalized`: records inside renamed segments recorded in the manifest.
-- `segments`: finalized segments.
-- `queue_depth`: current backlog.
-- `bytes`: record-region bytes in active and finalized segments.
+`queued`: records accepted into the writer queue.
+`written`: records handed to the segment buffer.
+`flushed`: records whose bytes left the process buffer.
+`synced`: records covered by `sync_all`.
+`finalized`: records inside renamed segments recorded in the manifest.
+`segments`: finalized segments.
+`queue_depth`: current backlog.
+`bytes`: record-region bytes in active and finalized segments.
 
 At finalization the segment footer's flush and fsync cover every written
 record, so `flushed` and `synced` equal `written`, `finalized` equals the
@@ -219,15 +219,15 @@ final `JournalStatus`, including the run directory and any failure text.
 
 ## Failure behavior
 
-The journal fails the run instead of dropping a frame, and a failure is
-terminal for the run:
+The journal fails the run instead of dropping a frame, and a failure is terminal
+for the run:
 
-- A full queue that stays full for `enqueue_timeout_ms` marks the run failed
+A full queue that stays full for `enqueue_timeout_ms` marks the run failed
   and returns an error to the source worker. The failure is latched: the
   writer observes it before every command, later records are rejected, and
   finalization refuses to set `finalized` on a failed run — including when the
   failure was latched by a producer and the normal shutdown path runs.
-- A write, flush, sync, rotation, or finalization error marks the manifest
+A write, flush, sync, rotation, or finalization error marks the manifest
   `failed`, records the error, stops the writer, and rejects later records.
 - A source worker whose journal record is rejected stops the collector with a
   fatal error, so the run report cannot describe a healthy capture after the
@@ -262,7 +262,8 @@ cargo run --release -- journal verify captures/journal/18f0c2a91d4-2f1c
 The command prints a JSON summary and exits non-zero unless `complete` is true.
 Verification checks the manifest schema and state, failure text, every listed
 segment's existence and finalized state, header provenance, header and footer
-checksums, record counts, byte counts, receive-time bounds, and source ranges. It
+checksums, record counts, byte counts, receive-time bounds, and source ranges.
+It
 re-parses every record checksum, requires per-source order within and across
 segments, rejects bytes after a footer, rejects unlisted `.pmj` files, and
 rejects any `.pmj.partial` file. In v2 segments it additionally enforces, per
@@ -296,9 +297,9 @@ manifest or segment digests.
 
 ## Current limits
 
-- No compression, retention policy, disk watermark, or cross-run index is
+No compression, retention policy, disk watermark, or cross-run index is
   implemented. Operators must size the directory and remove old runs.
-- `read_records` loads the full run into memory.
+`read_records` loads the full run into memory.
 - One writer thread serves the process; the queue bound converts overload into
   an explicit failure rather than unbounded memory growth.
 - Payloads are not encrypted. Directory permissions are the access boundary.

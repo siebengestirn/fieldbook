@@ -11,7 +11,8 @@ This standard governs hand-written Rust in `src/`, `tests/`, `benches/` and `bui
 
 `MUST`, `MUST NOT`, `SHOULD` and `MAY` carry their RFC 2119 meaning. A rule is binding unless the change records an exception under §12. A rule that no tool checks is a review obligation, and the review gate names it.
 
-The repository has one formatting authority and one lint authority. Reviewers do not debate either.
+The repository has one formatting authority and one lint authority. Reviewers do
+not debate either.
 
 ## 2. Tooling and formatting
 
@@ -149,7 +150,8 @@ The repository has one formatting authority and one lint authority. Reviewers do
 
 ## 13. Upstream references
 
-The Rust API guidelines, the Rustonomicon, the Clippy lint catalogue and the rustfmt configuration reference answer questions this document does not cover.
+The Rust API guidelines, the Rustonomicon, the Clippy lint catalogue and the
+rustfmt configuration reference answer questions this document does not cover.
 
 The Linux kernel's Rust guidance and its `.rustfmt.toml` are prior art for two decisions in this standard: formatting is tool-owned, and a suppression that can go stale is written as an `expect`. They are upstream references, not this repository's policy. Where they differ from `rustfmt` defaults, `rustfmt` is authoritative.
 
@@ -157,13 +159,14 @@ The Linux kernel's Rust guidance and its `.rustfmt.toml` are prior art for two d
 
 Applied in the commit that introduced this standard:
 
-- `clippy::allow_attributes` and `clippy::allow_attributes_without_reason` are denied. Every hand-written suppression in `src/` is an `expect` with a reason.
-- The migration removed two suppressions that no longer fired: the crate-level `print_stdout` allowance in `src/util/build.rs` and the `too_many_arguments` allowance on `session::handle_control`.
-- The build-generated SBE codec carries one documented, module-scoped exemption because generated code cannot carry reasons.
-- Test crates state why they relax the production lint set.
-- `scripts/annotate_test_lint_reasons.py` is the enumerated, compiler-verified transform used for the test-crate headers. It matches two exact shapes and refuses any other input.
+`clippy::allow_attributes` and `clippy::allow_attributes_without_reason` are denied. Every hand-written suppression in `src/` is an `expect` with a reason.
+The migration removed two suppressions that no longer fired: the crate-level `print_stdout` allowance in `src/util/build.rs` and the `too_many_arguments` allowance on `session::handle_control`.
+- The build-generated SBE codec carries one documented, module-scoped exemption
+  because generated code cannot carry reasons.
+Test crates state why they relax the production lint set.
+`scripts/annotate_test_lint_reasons.py` is the enumerated, compiler-verified transform used for the test-crate headers. It matches two exact shapes and refuses any other input.
 
 Deferred, with a stated condition:
 
-- Vertical import layout across the tree. This is a `rustfmt` operation, but it touches most files, so it lands in a dedicated commit whose `git diff -w` is empty apart from import blocks.
-- `clippy::undocumented_unsafe_blocks`. No hand-written unsafe remains to document; enabling it now would flag only the generated codec. It becomes relevant if `unsafe_code = "deny"` is relaxed.
+Vertical import layout across the tree. This is a `rustfmt` operation, but it touches most files, so it lands in a dedicated commit whose `git diff -w` is empty apart from import blocks.
+`clippy::undocumented_unsafe_blocks`. No hand-written unsafe remains to document; enabling it now would flag only the generated codec. It becomes relevant if `unsafe_code = "deny"` is relaxed.

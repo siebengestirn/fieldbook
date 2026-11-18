@@ -92,6 +92,21 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             )?;
             Ok(report)
         }
+        "style" => {
+            run(&mut report, root, &style_commands())?;
+            Ok(report)
+        }
+        "style-fix" => {
+            run(
+                &mut report,
+                root,
+                &[
+                    Cmd::new("python3 -m pyink --config pyproject.toml scripts"),
+                    Cmd::new("python3 scripts/check_style.py --fix"),
+                ],
+            )?;
+            Ok(report)
+        }
         "e2e" => {
             e2e::run(&mut report, root, &args[1..])?;
             Ok(report)
@@ -109,6 +124,7 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             Ok(report)
         }
         "check" => {
+            run(&mut report, root, &style_commands())?;
             run(
                 &mut report,
                 root,
@@ -124,6 +140,7 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             Ok(report)
         }
         "ci" => {
+            run(&mut report, root, &style_commands())?;
             run(
                 &mut report,
                 root,
@@ -151,6 +168,17 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
     }
 }
 
+/// Every non-Rust language gate, in one place, so `style`, `check` and `ci`
+/// cannot drift apart. Tool versions are pinned in requirements-dev.txt.
+fn style_commands() -> Vec<Cmd> {
+    vec![
+        Cmd::new("python3 scripts/check_style.py"),
+        Cmd::new("python3 -m ruff check --no-cache ."),
+        Cmd::new("python3 -m pyink --check --config pyproject.toml scripts"),
+        Cmd::new("python3 scripts/check_shellcheck.py"),
+    ]
+}
+
 fn run(report: &mut Report, root: &Path, commands: &[Cmd]) -> Result<(), String> {
     for command in commands {
         let outcome = command.execute(root)?;
@@ -170,6 +198,8 @@ xtask - repository tasks
 Usage: cargo xtask <command> [args]
 
 Commands:
+  style     Python, shell, Makefile, JSON and Markdown style gates
+  style-fix apply the safe Python and Markdown style fixes
   fmt       check formatting
   lint      clippy with warnings denied
   test      all-target and doc tests

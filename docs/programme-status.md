@@ -136,4 +136,5 @@ subscription consumption or the SBE writer. P5 is a deterministic simulator
 plus SQL contract, not a live database integration. P6 adds a **real local
 durable store** and a **PostgreSQL contract plus `SqlExecutor` trait**, but it
 still has no driver and no live database. It is not wired into the market-data
-collector, makes no performance claim, and is not wired into the market-data collector.
+collector, makes no performance claim, and is not wired into the market-data
+collector.

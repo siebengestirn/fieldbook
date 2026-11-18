@@ -1,8 +1,8 @@
 # Event accounting contract
 
 This document defines the accounting contract currently implemented for the
-market-data collector and its stress laboratory. It intentionally separates
-what is implemented from future platform-wide guarantees.
+market-data collector and its stress laboratory. It intentionally separates what
+is implemented from future platform-wide guarantees.
 
 ## Identities
 
@@ -23,8 +23,8 @@ evidence.
 ## Transport accounting
 
 Every raw data frame observed at the transport boundary is counted once,
-including frames whose subsequent decode fails. Native WebSocket control
-frames are accounted separately and never counted as application data frames.
+including frames whose subsequent decode fails. Native WebSocket control frames
+are accounted separately and never counted as application data frames.
 
 `transport_frames_received = decoded_frames + decode_failed + protocol_rejected + unsupported`
 
@@ -34,43 +34,43 @@ Every `ExchangeEvent::LevelChange` admitted to `CollectorCore::handle_event` is
 counted at core ingress and must reach exactly one terminal
 `DeltaDisposition`:
 
-- `Emitted`
-- `SuppressedReplica`
-- `AppliedWithNoActiveSource`
-- `UnknownSymbol`
-- `ContinuityNotLive`
-- `SourceNotAssigned`
-- `InvalidSourceBook`
-- `ShadowClockRegression`
-- `ApplyRejected`
-- `ZeroDeltaNoop`
-- `SbeConversionFailed`
+`Emitted`
+`SuppressedReplica`
+`AppliedWithNoActiveSource`
+`UnknownSymbol`
+`ContinuityNotLive`
+`SourceNotAssigned`
+`InvalidSourceBook`
+`ShadowClockRegression`
+`ApplyRejected`
+`ZeroDeltaNoop`
+`SbeConversionFailed`
 
 The partition identity is:
 
-```
+```text
 decoded deltas =
     emitted + suppressed replica + no active source + unknown symbol
   + non-live + unassigned source + invalid book + shadow clock regression
   + apply rejected + zero noop + SBE conversion failed
 ```
 
-All counters are monotonic and sampled over the same baseline/final window.
-A missing counter, a reset, or a nonzero shortfall/excess blocks certification.
+All counters are monotonic and sampled over the same baseline/final window. A
+missing counter, a reset, or a nonzero shortfall/excess blocks certification.
 
 ## Directional reconciliation
 
 For each comparable boundary pair, certification computes both directions:
 
-- `shortfall = max(0, expected - observed)`
-- `excess = max(0, observed - expected)`
+`shortfall = max(0, expected - observed)`
+`excess = max(0, observed - expected)`
 
 Both must be zero. Saturating subtraction is never used to hide an over-count.
 
 Comparable pairs:
 
-- enqueued vs transmitted (with explicit drops and in-flight work)
-- transmitted vs decoded (`transmit_decode_shortfall` / `transmit_decode_excess`)
+enqueued vs transmitted (with explicit drops and in-flight work)
+transmitted vs decoded (`transmit_decode_shortfall` / `transmit_decode_excess`)
 - decoded vs sum of terminal dispositions
 - applied vs writer admission
 - writer admission vs successful writer completion
@@ -89,7 +89,7 @@ The non-market-data reference application has its own disjoint accounting in
 `ImportReport`. Every physical input line read in a run lands in exactly one
 bucket (`accounted() == total_read`):
 
-```
+```text
 total_read = delivered + duplicates + rejected + outstanding + uncertain
            + accepted + skipped + target_delivered + simulated
 ```

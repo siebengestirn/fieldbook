@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Shared machinery for the assurance gates (polish, update, upgrade).
 #
 # Sourced, not executed. Every gate is fail-closed: a step that cannot run
@@ -49,7 +49,8 @@ run_optional_step() {
     run_step "$name" "$@"
   else
     GATE_STEPS+=("${name}|SKIP|0")
-    printf '== %s: skipped (%s is not installed; install it for full coverage)\n' \
+    printf \
+      '== %s: skipped (%s is not installed; install it for full coverage)\n' \
       "$name" "$1"
   fi
 }

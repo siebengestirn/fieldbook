@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Deploy verification: exercise the documented deployment path.
 #
 # This is not a unit test and not a simulation. It builds the release
@@ -68,30 +68,72 @@ BIN="$ROOT/target/release/engineering-challenge"
 
 # A free localhost port for the metrics endpoint, chosen before the settings
 # file is written so the scrape targets are deterministic.
-METRICS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" || fail "cannot allocate metrics port"
+METRICS_PORT="$(python3 - <<'PY'
+import socket
+
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)" || fail "cannot allocate metrics port"
 
 echo "== writing settings.toml from config.example.toml"
-python3 - "$ROOT/config.example.toml" "$SETTINGS" "$VAR_LIB" "$METRICS_PORT" "$DURATION_SECS" <<'PY'
+python3 - "$ROOT/config.example.toml" "$SETTINGS" "$VAR_LIB" "$METRICS_PORT" \
+  "$DURATION_SECS" <<'PY'
 import re, sys
+
 source, target, var_lib, port, duration = sys.argv[1:]
 text = open(source, encoding="utf-8").read()
-text = re.sub(r'^exchange = ".*"', 'exchange = "polymarket"', text, count=1, flags=re.M)
+text = re.sub(
+    r'^exchange = ".*"', 'exchange = "polymarket"', text, count=1, flags=re.M
+)
 # Drop the Kalshi credential section: the sandbox uses the public feed.
-text = re.sub(r'^\[kalshi\].*?(?=^\[)', "", text, flags=re.S | re.M)
-text = re.sub(r'^duration_secs = 0$', f'duration_secs = {duration}', text, count=1, flags=re.M)
-text = re.sub(r'^max_markets = 0$', 'max_markets = 5', text, count=1, flags=re.M)
-text = text.replace('path = "captures/kalshi.sbe"', f'path = "{var_lib}/capture.sbe"')
-text = text.replace('metadata_path = "captures/kalshi-markets.json"', f'metadata_path = "{var_lib}/markets.json"')
-text = text.replace('report_path = "captures/kalshi-report.json"', f'report_path = "{var_lib}/report.json"')
-text = re.sub(r'^listen = "127\.0\.0\.1:9090"$', f'listen = "127.0.0.1:{port}"', text, count=1, flags=re.M)
+text = re.sub(r"^\[kalshi\].*?(?=^\[)", "", text, flags=re.S | re.M)
+text = re.sub(
+    r"^duration_secs = 0$",
+    f"duration_secs = {duration}",
+    text,
+    count=1,
+    flags=re.M,
+)
+text = re.sub(
+    r"^max_markets = 0$", "max_markets = 5", text, count=1, flags=re.M
+)
+text = text.replace(
+    'path = "captures/kalshi.sbe"', f'path = "{var_lib}/capture.sbe"'
+)
+text = text.replace(
+    'metadata_path = "captures/kalshi-markets.json"',
+    f'metadata_path = "{var_lib}/markets.json"',
+)
+text = text.replace(
+    'report_path = "captures/kalshi-report.json"',
+    f'report_path = "{var_lib}/report.json"',
+)
+text = re.sub(
+    r'^listen = "127\.0\.0\.1:9090"$',
+    f'listen = "127.0.0.1:{port}"',
+    text,
+    count=1,
+    flags=re.M,
+)
 # Enable the raw-frame journal at a sandbox path.
-text = re.sub(r'^# directory = "captures/kalshi-journal"$', f'directory = "{var_lib}/journal"', text, count=1, flags=re.M)
+text = re.sub(
+    r'^# directory = "captures/kalshi-journal"$',
+    f'directory = "{var_lib}/journal"',
+    text,
+    count=1,
+    flags=re.M,
+)
 open(target, "w", encoding="utf-8").write(text)
 PY
 [[ -s "$SETTINGS" ]] || fail "settings.toml was not generated"
-grep -q '^exchange = "polymarket"$' "$SETTINGS" || fail "settings patch failed (exchange)"
-grep -q "^directory = \"$VAR_LIB/journal\"$" "$SETTINGS" || fail "settings patch failed (journal)"
-grep -q "^duration_secs = $DURATION_SECS$" "$SETTINGS" || fail "settings patch failed (duration)"
+grep -q '^exchange = "polymarket"$' "$SETTINGS" || fail \
+  "settings patch failed (exchange)"
+grep -q "^directory = \"$VAR_LIB/journal\"$" "$SETTINGS" || fail \
+  "settings patch failed (journal)"
+grep -q "^duration_secs = $DURATION_SECS$" "$SETTINGS" || fail \
+  "settings patch failed (duration)"
 
 echo "== structural checks on the systemd unit"
 unit_checks=(
@@ -119,9 +161,12 @@ else
   echo "unit hardening: FAILED" >&2
 fi
 if command -v systemd-analyze >/dev/null 2>&1; then
-  systemd-analyze verify "$UNIT" 2>"$SANDBOX/systemd-analyze.log" &&
-    echo "systemd-analyze verify: pass" ||
-    { echo "systemd-analyze verify FAILED; see $SANDBOX/systemd-analyze.log" >&2; UNIT_STATUS=FAIL; }
+  if systemd-analyze verify "$UNIT" 2>"$SANDBOX/systemd-analyze.log"; then
+    echo "systemd-analyze verify: pass"
+  else
+    echo "systemd-analyze verify FAILED; see $SANDBOX/systemd-analyze.log" >&2
+    UNIT_STATUS=FAIL
+  fi
 else
   echo "systemd-analyze not available on this host; structural checks only"
 fi
@@ -148,17 +193,21 @@ while (( SECONDS < deadline )); do
   if ! kill -0 "$COLLECTOR_PID" 2>/dev/null; then
     break
   fi
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$BASE_URL/livez" 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+    "$BASE_URL/livez" 2>/dev/null || true)"
   [[ "$code" == "200" ]] && LIVEZ_STATUS=pass
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$BASE_URL/readyz" 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
+    "$BASE_URL/readyz" 2>/dev/null || true)"
   if [[ "$code" == "200" ]]; then
     READYZ_STATUS=pass
     READY_BODY="$(curl -s --max-time 2 "$BASE_URL/readyz" 2>/dev/null || true)"
   fi
-  if curl -s --max-time 2 "$BASE_URL/metrics" 2>/dev/null | grep -q '^# HELP collector_deltas_emitted_total'; then
+  if curl -s --max-time 2 "$BASE_URL/metrics" 2>/dev/null | grep -q \
+    '^# HELP collector_deltas_emitted_total'; then
     METRICS_STATUS=pass
   fi
-  if [[ "$LIVEZ_STATUS" == pass && "$READYZ_STATUS" == pass && "$METRICS_STATUS" == pass ]]; then
+  if [[ "$LIVEZ_STATUS" == pass && "$READYZ_STATUS" == pass && \
+    "$METRICS_STATUS" == pass ]]; then
     break
   fi
   sleep 2
@@ -188,22 +237,32 @@ fi
 
 echo "== verifying artifacts through the production integrity chain"
 for artifact in capture.sbe markets.json report.json; do
-  [[ -s "$VAR_LIB/$artifact" ]] || { echo "artifact missing/empty: $VAR_LIB/$artifact" >&2; tail -n 40 "$VAR_LOG/collector.log" >&2; fail "deployed run did not produce $artifact"; }
+  [[ -s "$VAR_LIB/$artifact" ]] || { echo \
+    "artifact missing/empty: $VAR_LIB/$artifact" >&2; tail -n 40 \
+      "$VAR_LOG/collector.log" >&2; fail \
+        "deployed run did not produce $artifact"; }
 done
 
-"$BIN" verify "$VAR_LIB/capture.sbe" >"$SANDBOX/sbe-verify.json" 2>"$SANDBOX/sbe-verify.log" ||
-  { echo "SBE verification FAILED; see $SANDBOX/sbe-verify.json" >&2; SBE_STATUS=FAIL; }
+"$BIN" verify "$VAR_LIB/capture.sbe" >"$SANDBOX/sbe-verify.json" \
+  2>"$SANDBOX/sbe-verify.log" ||
+  { echo "SBE verification FAILED; see $SANDBOX/sbe-verify.json" >&2; \
+    SBE_STATUS=FAIL; }
 SBE_STATUS=${SBE_STATUS:-pass}
-"$BIN" completeness "$VAR_LIB/capture.sbe" --out "$SANDBOX/completeness.json" >"$SANDBOX/completeness.stdout" 2>&1 ||
-  { echo "completeness FAILED; see $SANDBOX/completeness.json" >&2; COMPLETE_STATUS=FAIL; }
+"$BIN" completeness "$VAR_LIB/capture.sbe" --out \
+  "$SANDBOX/completeness.json" >"$SANDBOX/completeness.stdout" 2>&1 ||
+  { echo "completeness FAILED; see $SANDBOX/completeness.json" >&2; \
+    COMPLETE_STATUS=FAIL; }
 COMPLETE_STATUS=${COMPLETE_STATUS:-pass}
-"$BIN" coverage "$VAR_LIB/capture.sbe" "$VAR_LIB/markets.json" "$VAR_LIB/report.json" \
+"$BIN" coverage "$VAR_LIB/capture.sbe" "$VAR_LIB/markets.json" \
+  "$VAR_LIB/report.json" \
   --out "$SANDBOX/coverage.json" >"$SANDBOX/coverage.stdout" 2>&1 ||
-  { echo "coverage FAILED; see $SANDBOX/coverage.json" >&2; COVERAGE_STATUS=FAIL; }
+  { echo "coverage FAILED; see $SANDBOX/coverage.json" >&2; \
+    COVERAGE_STATUS=FAIL; }
 COVERAGE_STATUS=${COVERAGE_STATUS:-pass}
 
 JOURNAL_RUN="$(python3 - "$VAR_LIB/report.json" <<'PY'
 import json, sys
+
 try:
     report = json.load(open(sys.argv[1], encoding="utf-8"))
     print((report.get("journal") or {}).get("run_directory", ""))
@@ -213,8 +272,10 @@ PY
 )"
 if [[ -n "$JOURNAL_RUN" ]]; then
   [[ "$JOURNAL_RUN" == /* ]] || JOURNAL_RUN="$ROOT/$JOURNAL_RUN"
-  "$BIN" journal verify "$JOURNAL_RUN" >"$SANDBOX/journal-verify.json" 2>"$SANDBOX/journal-verify.log" ||
-    { echo "journal verification FAILED; see $SANDBOX/journal-verify.json" >&2; JOURNAL_STATUS=FAIL; }
+  "$BIN" journal verify "$JOURNAL_RUN" >"$SANDBOX/journal-verify.json" \
+    2>"$SANDBOX/journal-verify.log" ||
+    { echo "journal verification FAILED; see $SANDBOX/journal-verify.json" \
+      >&2; JOURNAL_STATUS=FAIL; }
   JOURNAL_STATUS=${JOURNAL_STATUS:-pass}
 else
   echo "report does not name a journal run" >&2
@@ -223,16 +284,22 @@ fi
 
 python3 - "$SANDBOX" "$VAR_LIB" <<'PY' || VERDICT=FAIL
 import json, sys
+
 sandbox, var_lib = sys.argv[1:]
 load = lambda name: json.load(open(f"{sandbox}/{name}", encoding="utf-8"))
 report = json.load(open(f"{var_lib}/report.json", encoding="utf-8"))
-sbe, complete, coverage, journal = load("sbe-verify.json"), load("completeness.json"), load("coverage.json"), load("journal-verify.json")
+sbe, complete, coverage, journal = (
+    load("sbe-verify.json"),
+    load("completeness.json"),
+    load("coverage.json"),
+    load("journal-verify.json"),
+)
 checks = {
     "sbe_reconstruction_valid": sbe.get("valid") is True,
     "completeness_valid": complete.get("valid") is True,
     "coverage_valid": coverage.get("valid") is True,
     "coverage_anchored_equals_expected": int(coverage.get("expected", 0)) > 0
-        and int(coverage.get("anchored", 0)) == int(coverage.get("expected", 0)),
+    and int(coverage.get("anchored", 0)) == int(coverage.get("expected", 0)),
     "journal_complete": journal.get("complete") is True,
     "discovered_nonempty": int(report.get("discovered_symbols", 0)) > 0,
 }
@@ -253,16 +320,39 @@ VERDICT=${VERDICT:-pass}
 
 COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if ! python3 - "$SANDBOX" "$VAR_LIB" "$COMMIT" "$STARTED_AT" "$COMPLETED_AT" \
-  "$DURATION_SECS" "$METRICS_PORT" "$LIVEZ_STATUS" "$READYZ_STATUS" "$METRICS_STATUS" \
-  "$EXIT_STATUS" "$UNIT_STATUS" "$SBE_STATUS" "$COMPLETE_STATUS" "$COVERAGE_STATUS" \
+  "$DURATION_SECS" "$METRICS_PORT" "$LIVEZ_STATUS" "$READYZ_STATUS" \
+    "$METRICS_STATUS" \
+  "$EXIT_STATUS" "$UNIT_STATUS" "$SBE_STATUS" "$COMPLETE_STATUS" \
+    "$COVERAGE_STATUS" \
   "$JOURNAL_STATUS" "$VERDICT" <<'PY'
 import hashlib, json, pathlib, sys
-(sandbox, var_lib, commit, started, completed, duration, port,
- livez, readyz, metrics, exit_status, unit_status, sbe, complete,
- coverage, journal, verdict) = sys.argv[1:]
+
+(
+    sandbox,
+    var_lib,
+    commit,
+    started,
+    completed,
+    duration,
+    port,
+    livez,
+    readyz,
+    metrics,
+    exit_status,
+    unit_status,
+    sbe,
+    complete,
+    coverage,
+    journal,
+    verdict,
+) = sys.argv[1:]
 root, lib = pathlib.Path(sandbox), pathlib.Path(var_lib)
+
+
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 settings = root / "etc" / "engineering-challenge" / "settings.toml"
 manifest = {
     "schema_version": 1,
@@ -299,7 +389,9 @@ manifest = {
     },
     "verdict": verdict,
 }
-(root / "deploy-verification.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+(root / "deploy-verification.json").write_text(
+    json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+)
 print(json.dumps(manifest, indent=2))
 PY
 then

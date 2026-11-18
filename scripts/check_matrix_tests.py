@@ -17,6 +17,7 @@ represented. P5 and P6 are the non-market-data source-to-target reference
 applications; their identifiers use the same file-qualified contract. Comments
 and string literals do not declare tests.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -137,11 +138,13 @@ def split_row(line: str) -> list[str]:
 
 def evidence_columns(header: list[str]) -> list[int]:
     """Column indexes whose heading declares evidence content."""
-    return [index for index, name in enumerate(header) if "evidence" in name.lower()]
+    return [
+        index for index, name in enumerate(header) if "evidence" in name.lower()
+    ]
 
 
 def scan_matrix(markdown: str) -> list[Row]:
-    """Return requirement rows with the backticked spans from evidence columns."""
+    """Return requirement rows with backticked evidence spans."""
     rows: list[Row] = []
     header: list[str] | None = None
     evidence: list[int] = []
@@ -205,14 +208,14 @@ def mask_non_code(source: str) -> str:
                     out[position] = " "
             index = end
             continue
-        if char == "r" and index + 1 < length and source[index + 1] in "#\"":
+        if char == "r" and index + 1 < length and source[index + 1] in '#"':
             hashes = 0
             cursor = index + 1
             while cursor < length and source[cursor] == "#":
                 hashes += 1
                 cursor += 1
-            if cursor < length and source[cursor] == "\"":
-                terminator = '\"' + "#" * hashes
+            if cursor < length and source[cursor] == '"':
+                terminator = '"' + "#" * hashes
                 end = source.find(terminator, cursor + 1)
                 end = length if end == -1 else end + len(terminator)
                 for position in range(index, end):
@@ -255,12 +258,15 @@ def discover_tests(root: Path = ROOT) -> dict[str, set[str]]:
             relative = path.relative_to(root).as_posix()
             content = path.read_text(encoding="utf-8")
             discovered[relative] = {
-                match.group(1) for match in TEST_DECL_RE.finditer(mask_non_code(content))
+                match.group(1)
+                for match in TEST_DECL_RE.finditer(mask_non_code(content))
             }
     return discovered
 
 
-def classify(span: Span, known_names: set[str]) -> tuple[Reference | None, str | None]:
+def classify(
+    span: Span, known_names: set[str]
+) -> tuple[Reference | None, str | None]:
     """Resolve one span, returning either a reference or a rejection reason."""
     text = span.text
     if not text:
@@ -268,7 +274,10 @@ def classify(span: Span, known_names: set[str]) -> tuple[Reference | None, str |
     if "*" in text and ("::" in text or "/" in text or text == "*"):
         return None, "wildcards are not allowed; name each test exactly"
     if "{" in text or "}" in text:
-        return None, "grouped references are not allowed; list each test separately"
+        return (
+            None,
+            "grouped references are not allowed; list each test separately",
+        )
     if "::" in text:
         match = REFERENCE_RE.fullmatch(text)
         if not match:
@@ -277,9 +286,15 @@ def classify(span: Span, known_names: set[str]) -> tuple[Reference | None, str |
                 "reference must be file-qualified as "
                 "src/...rs::test_name or tests/...rs::test_name",
             )
-        return Reference(match.group("file"), match.group("test"), span.line), None
+        return (
+            Reference(match.group("file"), match.group("test"), span.line),
+            None,
+        )
     if BARE_RE.fullmatch(text) or text in known_names:
-        return None, "bare test name is ambiguous; qualify it with its source file"
+        return (
+            None,
+            "bare test name is ambiguous; qualify it with its source file",
+        )
     return None, None
 
 
@@ -291,7 +306,9 @@ def validate(
 ) -> tuple[list[str], list[Reference]]:
     """Return validation errors and every resolved reference."""
     rows = scan_matrix(markdown)
-    known_names = set().union(*tests_by_file.values()) if tests_by_file else set()
+    known_names = (
+        set().union(*tests_by_file.values()) if tests_by_file else set()
+    )
     errors: list[str] = []
     references: list[Reference] = []
     seen: dict[str, int] = {}
@@ -306,7 +323,9 @@ def validate(
         else:
             seen[row.requirement] = row.line
         if row.requirement not in required_requirements:
-            errors.append(f"line {row.line}: unexpected requirement ID {row.requirement}")
+            errors.append(
+                f"line {row.line}: unexpected requirement ID {row.requirement}"
+            )
 
         resolved: list[Reference] = []
         for span in row.spans:
@@ -326,7 +345,9 @@ def validate(
 
     for reference in references:
         if reference.file not in tests_by_file:
-            errors.append(f"line {reference.line}: {reference.file} does not exist")
+            errors.append(
+                f"line {reference.line}: {reference.file} does not exist"
+            )
         elif reference.test not in tests_by_file[reference.file]:
             errors.append(
                 f"line {reference.line}: {reference.test} is not declared in "
@@ -336,12 +357,15 @@ def validate(
     present = {reference.test for reference in references}
     for name in sorted(required_tests):
         if name not in present:
-            errors.append(f"mandatory evidence test is missing from the matrix: {name}")
+            errors.append(
+                f"mandatory evidence test is missing from the matrix: {name}"
+            )
 
     return errors, references
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Exercise main."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--matrix", type=Path, default=MATRIX)
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -359,13 +383,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.verbose:
         for reference in references:
-            print(f"[ok] line {reference.line}: {reference.file}::{reference.test}")
+            print(
+                f"[ok] line {reference.line}: "
+                f"{reference.file}::{reference.test}"
+            )
 
     if errors:
         for error in errors:
             print(f"[FAIL] {error}", file=sys.stderr)
         print(
-            f"[FAIL] {len(errors)} requirement-matrix error(s) in {args.matrix.name}",
+            f"[FAIL] {len(errors)} requirement-matrix error(s) "
+            f"in {args.matrix.name}",
             file=sys.stderr,
         )
         return 1

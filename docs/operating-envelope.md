@@ -1,6 +1,8 @@
 # Operating envelope
 
-This document records the measured capacity envelope of the collector, the capacity math that derives hard limits, and the gate status for production readiness.
+This document records the measured capacity envelope of the collector, the
+capacity math that derives hard limits, and the gate status for production
+readiness.
 
 ## Measured Scale Evidence
 
@@ -15,11 +17,15 @@ All measurements taken on macOS (Apple Silicon) with the collector built in `--r
 
 **Key observations:**
 
-- Connection establishment and subscription handshake scale linearly with connection count (1.2s for 40 connections).
-- Initial snapshot processing (anchoring) dominates the settle phase and scales with total subscriptions.
+- Connection establishment and subscription handshake scale linearly with
+  connection count (1.2s for 40 connections).
+- Initial snapshot processing (anchoring) dominates the settle phase and scales
+  with total subscriptions.
 - Memory grows roughly linearly with outcome symbols (~7 KB/symbol at 100k).
-- Writer throughput is not a bottleneck at these scales (no rotation segments created; all output fits in the first chunk).
-- The collector processes 200k subscriptions and 100k deltas in ~5 seconds end-to-end.
+- Writer throughput is not a bottleneck at these scales (no rotation segments
+  created; all output fits in the first chunk).
+- The collector processes 200k subscriptions and 100k deltas in ~5 seconds
+  end-to-end.
 
 ## Capacity Math
 
@@ -47,34 +53,38 @@ If the derived shard count exceeds `max_shards`, the collector refuses to start.
 
 ### Full-Universe Rejection
 
-Polymarket Gamma currently publishes **~274,471 active conditions** with **2 outcomes each = 548,942 outcome tokens**.
+Polymarket Gamma currently publishes **~274,471 active conditions** with **2
+outcomes each = 548,942 outcome tokens**.
 
 At the default `max_symbols_per_socket = 5,000`:
 
-```
+```text
 required_shards = ceil(548,942 / 5,000) = 110
 ```
 
 With `replicas = 2`:
-```
+```text
 required_connections = 110 × 2 = 220
 ```
 
 The default `max_shards = 64` rejects this configuration at startup:
 
-```
+```text
 error: derived shard count 110 exceeds max_shards 64
 ```
 
-**Two-replica full-universe collection is unsupported** with current defaults. To approach full-universe coverage, the following would need measured validation:
+**Two-replica full-universe collection is unsupported** with current defaults.
+To approach full-universe coverage, the following would need measured
+validation:
 
-1. Increase `max_shards` to ≥ 110 (requires coordinator scalability validation).
-2. Increase `max_total_connections` to ≥ 220 (requires FD limit validation).
-3. Validate a deployment override for `max_estimated_book_memory_mb` ≥ 2.2 GiB (548,942 × 4 KiB planning estimate).
-4. Validate a deployment override for `max_snapshot_bytes_per_sec` ≥ 74.9 MB/s (548,942 × 8 KiB / 60s planning estimate).
+Increase `max_shards` to ≥ 110 (requires coordinator scalability validation).
+Increase `max_total_connections` to ≥ 220 (requires FD limit validation).
+Validate a deployment override for `max_estimated_book_memory_mb` ≥ 2.2 GiB (548,942 × 4 KiB planning estimate).
+Validate a deployment override for `max_snapshot_bytes_per_sec` ≥ 74.9 MB/s (548,942 × 8 KiB / 60s planning estimate).
 5. Run 24-hour soak at full scale with fault injection (unexecuted gate).
 
-Until these are measured, the collector **must not claim production readiness for full-universe collection**.
+Until these are measured, the collector **must not claim production readiness
+for full-universe collection**.
 
 ## Configuration Reference
 

@@ -39,20 +39,20 @@ boundaries.
 
 `CanonicalEnvelope<T>` carries:
 
-- `event_id` — an opaque deterministic id derived with `OpaqueId::derive` from
+`event_id` — an opaque deterministic id derived with `OpaqueId::derive` from
   explicit provenance inputs (never a wall clock or display label);
-- `instrument_id: Option<InstrumentId>` and `feed_id: Option<FeedId>` from
+`instrument_id: Option<InstrumentId>` and `feed_id: Option<FeedId>` from
   `src/identity.rs` — resolved identity, not a mutable title or symbol;
-- `source_id` — an opaque platform-assigned source identity, also from
+`source_id` — an opaque platform-assigned source identity, also from
   `src/identity.rs`;
-- `connection_epoch` and `sequence: Option<SequenceMetadata>` — local receive
+`connection_epoch` and `sequence: Option<SequenceMetadata>` — local receive
   fence plus optional venue sequence, exchange clock, and receive sequence;
-- `source_time: Option<i64>` and `receive_time: i64` — copied exactly from the
+`source_time: Option<i64>` and `receive_time: i64` — copied exactly from the
   event metadata; receive time is never clamped or rewritten;
-- `raw_observation: Option<String>` — the raw bytes or a stable reference into
+`raw_observation: Option<String>` — the raw bytes or a stable reference into
   the independent raw journal;
-- `schema_version` — `CANONICAL_SCHEMA_VERSION`, serialized with every envelope;
-- `payload: T` — one typed payload from the taxonomy, or the `CanonicalEvent`
+`schema_version` — `CANONICAL_SCHEMA_VERSION`, serialized with every envelope;
+`payload: T` — one typed payload from the taxonomy, or the `CanonicalEvent`
   sum type.
 
 `CanonicalEnvelope::from_exchange` copies receive time, connection epoch, and
@@ -65,9 +65,9 @@ stays `None`; it is never guessed.
 Envelopes serialize with `schema_version`. `CanonicalReader::decode` parses an
 envelope and calls `validate()`, which rejects:
 
-- any `schema_version` other than `CANONICAL_SCHEMA_VERSION`
+any `schema_version` other than `CANONICAL_SCHEMA_VERSION`
   (`UnsupportedSchemaVersion`);
-- a missing or blank `raw_observation` (`MissingProvenance`).
+a missing or blank `raw_observation` (`MissingProvenance`).
 
 The same validation is applied by `NormalizedStore::append`, so an untrusted
 envelope cannot enter even the test store. No serde attribute or field is added
@@ -93,11 +93,11 @@ not durable, not concurrent, and is not a production subsystem.
   with its own format and verification. A canonical envelope carries a pointer
   to raw provenance; it is never the sole copy of the observation, and the
   journal is not derived from canonical events.
-- The **SBE writer is one projection** of the collector's normalized book
-  state. The canonical model is a separate, additive view; it does not replace
-  or change the SBE writer.
-- No performance, scale, throughput, latency, live-coverage, or production
+- The **SBE writer is one projection** of the collector's normalized book state.
+  The canonical model is a separate, additive view; it does not replace or
+  change the SBE writer.
+No performance, scale, throughput, latency, live-coverage, or production
   readiness claim is made. The evidence is offline and contract-level only.
-- The collector remains **not a production certification** for order entry,
+The collector remains **not a production certification** for order entry,
   execution, or trading. See `docs/architecture.md` and
   `docs/requirement-test-matrix.md` for the surrounding guarantees and evidence.

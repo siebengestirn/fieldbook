@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read-only English and terminology candidate audit for Git-tracked text."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,13 +10,15 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
 
 
 @dataclass(frozen=True)
 class Pattern:
+    """Model pattern."""
+
     category: str
     expression: str
     severity: str
@@ -43,7 +46,7 @@ PATTERNS: tuple[Pattern, ...] = (
     ),
     Pattern(
         "first_person",
-        r"(?<![A-Za-z0-9_/])(?:I|We|Us|Our|Ours|My|Mine|Me|Myself|Ourselves|we|us|our|ours|my|mine|me|myself|ourselves)(?:['’](?:m|re|ve|ll|d))?(?![A-Za-z0-9_/])",  # english-audit-ignore: matcher vocabulary required to detect this category
+        r"(?<![A-Za-z0-9_/])(?:I|We|Us|Our|Ours|My|Mine|Me|Myself|Ourselves|we|us|our|ours|my|mine|me|myself|ourselves)(?:['\u2019](?:m|re|ve|ll|d))?(?![A-Za-z0-9_/])",  # english-audit-ignore: matcher vocabulary required to detect this category
         "review",
         "Review voice in normative and technical text; retain in quotations, founder narratives and historical evidence.",
     ),
@@ -78,6 +81,8 @@ COMPILED = tuple((p, re.compile(p.expression, re.IGNORECASE)) for p in PATTERNS)
 
 @dataclass
 class Finding:
+    """Model finding."""
+
     source: str
     line: int
     category: str
@@ -88,21 +93,28 @@ class Finding:
 
 
 def git(repo: Path, *args: str) -> bytes:
+    """Exercise git."""
     proc = subprocess.run(
         ["git", "-C", str(repo), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip()
-        raise RuntimeError(f"git {' '.join(args)} failed ({proc.returncode}): {detail}")
+        raise RuntimeError(
+            f"git {' '.join(args)} failed ({proc.returncode}): {detail}"
+        )
     return proc.stdout
 
 
 def tracked_paths(repo: Path) -> list[Path]:
+    """Exercise tracked paths."""
     raw = git(repo, "ls-files", "-z", "--cached")
-    return [Path(p.decode("utf-8", "surrogateescape")) for p in raw.split(b"\0") if p]
+    return [
+        Path(p.decode("utf-8", "surrogateescape"))
+        for p in raw.split(b"\0")
+        if p
+    ]
 
 
 def _prose_lines(text: str, source: str) -> list[tuple[int, str]]:
@@ -134,12 +146,18 @@ def _prose_lines(text: str, source: str) -> list[tuple[int, str]]:
 
     if suffix == ".rs":
         # Scan line comments; Rust identifiers and time-unit suffixes are not prose.  # english-audit-ignore: literal identifier example
-        return [(n, line.lstrip()[2:].strip()) for n, line in enumerate(lines, 1)
-                if line.lstrip().startswith("//")]
+        return [
+            (n, line.lstrip()[2:].strip())
+            for n, line in enumerate(lines, 1)
+            if line.lstrip().startswith("//")
+        ]
 
     if suffix in {".py", ".yml", ".yaml", ".toml", ".sh", ".service"}:
-        return [(n, line.lstrip()[1:].strip()) for n, line in enumerate(lines, 1)
-                if line.lstrip().startswith("#")]
+        return [
+            (n, line.lstrip()[1:].strip())
+            for n, line in enumerate(lines, 1)
+            if line.lstrip().startswith("#")
+        ]
 
     if suffix == ".md":
         visible: list[tuple[int, str]] = []
@@ -162,8 +180,12 @@ def _prose_lines(text: str, source: str) -> list[tuple[int, str]]:
             # Inline code is a literal value or identifier, not prose.
             clean = re.sub(r"`[^`]*`", "", clean)
             # Mermaid node identifiers such as `Source --> Target` are diagram symbols.  # english-audit-ignore: literal diagram identifier example
-            clean = re.sub(r"(?<!\w)I(?=\s*(?:-->|---|==>|-.->|\[|\{))", "NODE", clean)
-            clean = re.sub(r"(?<=-->)\s*I(?=\s*(?:-->|---|==>|-.->|\[|\{))", "NODE", clean)
+            clean = re.sub(
+                r"(?<!\w)I(?=\s*(?:-->|---|==>|-.->|\[|\{))", "NODE", clean
+            )
+            clean = re.sub(
+                r"(?<=-->)\s*I(?=\s*(?:-->|---|==>|-.->|\[|\{))", "NODE", clean
+            )
             visible.append((n, clean))
         return visible
 
@@ -171,6 +193,7 @@ def _prose_lines(text: str, source: str) -> list[tuple[int, str]]:
 
 
 def scan_text(text: str, source: str) -> list[Finding]:
+    """Exercise scan text."""
     findings: list[Finding] = []
     for line_number, candidate in _prose_lines(text, source):
         # Suppressions require a reason and apply to exactly one line.
@@ -178,7 +201,11 @@ def scan_text(text: str, source: str) -> list[Finding]:
             continue
         for pattern, compiled in COMPILED:
             for match in compiled.finditer(candidate):
-                if pattern.category == "first_person" and match.group(0).isupper() and match.group(0) != "I":
+                if (
+                    pattern.category == "first_person"
+                    and match.group(0).isupper()
+                    and match.group(0) != "I"
+                ):
                     continue
                 findings.append(
                     Finding(
@@ -193,13 +220,24 @@ def scan_text(text: str, source: str) -> list[Finding]:
                 )
     return findings
 
+
 def is_excluded(path: str, excludes: Iterable[str]) -> bool:
+    """Exercise is excluded."""
     return any(fnmatch.fnmatch(path, rule) for rule in excludes)
 
 
-def scan_tracked_tree(repo: Path, excludes: Iterable[str] = ()) -> tuple[list[Finding], dict]:
+def scan_tracked_tree(
+    repo: Path, excludes: Iterable[str] = ()
+) -> tuple[list[Finding], dict]:
+    """Exercise scan tracked tree."""
     findings: list[Finding] = []
-    stats = {"tracked_paths": 0, "scanned_text_files": 0, "binary_files": [], "unreadable_files": [], "excluded_files": []}
+    stats = {
+        "tracked_paths": 0,
+        "scanned_text_files": 0,
+        "binary_files": [],
+        "unreadable_files": [],
+        "excluded_files": [],
+    }
     for rel in tracked_paths(repo):
         path = rel.as_posix()
         stats["tracked_paths"] += 1
@@ -218,15 +256,20 @@ def scan_tracked_tree(repo: Path, excludes: Iterable[str] = ()) -> tuple[list[Fi
         try:
             text = raw.decode("utf-8-sig")
         except UnicodeDecodeError as exc:
-            stats["unreadable_files"].append({"path": path, "reason": f"not UTF-8: {exc}"})
+            stats["unreadable_files"].append(
+                {"path": path, "reason": f"not UTF-8: {exc}"}
+            )
             continue
         stats["scanned_text_files"] += 1
         findings.extend(scan_text(text, path))
     return findings, stats
 
 
-def scan_commit_history(repo: Path, revision_range: str | None = None) -> list[Finding]:
+def scan_commit_history(
+    repo: Path, revision_range: str | None = None
+) -> list[Finding]:
     # Record delimiter and field delimiter are control bytes that cannot occur in Git subjects.
+    """Exercise scan commit history."""
     args = ["log", "--format=%H%x1f%s%x1f%b%x1e"]
     if revision_range:
         args.append(revision_range)
@@ -248,23 +291,56 @@ def scan_commit_history(repo: Path, revision_range: str | None = None) -> list[F
 
 
 def summarize(findings: list[Finding]) -> dict:
+    """Exercise summarize."""
     by_category: dict[str, int] = {}
     by_severity: dict[str, int] = {}
     for f in findings:
         by_category[f.category] = by_category.get(f.category, 0) + 1
         by_severity[f.severity] = by_severity.get(f.severity, 0) + 1
-    return {"total_findings": len(findings), "by_category": dict(sorted(by_category.items())), "by_severity": dict(sorted(by_severity.items()))}
+    return {
+        "total_findings": len(findings),
+        "by_category": dict(sorted(by_category.items())),
+        "by_severity": dict(sorted(by_severity.items())),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Exercise main."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", type=Path, default=Path.cwd(), help="Git repository root or a path inside it")
-    parser.add_argument("--include-history", action="store_true", help="Scan commit subjects and bodies reachable from local refs")
-    parser.add_argument("--history-range", help="Scan commit subjects and bodies in a Git revision range, such as origin/main..HEAD")
-    parser.add_argument("--strict", action="store_true", help="Return non-zero for high-confidence tautology findings")
-    parser.add_argument("--fail-on-review", action="store_true", help="Return non-zero for any candidate finding; use only for reviewed baselines")
-    parser.add_argument("--exclude", action="append", default=[], help="Git path glob to exclude; repeat as needed")
-    parser.add_argument("--json-out", type=Path, help="Write machine-readable report")
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=Path.cwd(),
+        help="Git repository root or a path inside it",
+    )
+    parser.add_argument(
+        "--include-history",
+        action="store_true",
+        help="Scan commit subjects and bodies reachable from local refs",
+    )
+    parser.add_argument(
+        "--history-range",
+        help="Scan commit subjects and bodies in a Git revision range, such as origin/main..HEAD",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return non-zero for high-confidence tautology findings",
+    )
+    parser.add_argument(
+        "--fail-on-review",
+        action="store_true",
+        help="Return non-zero for any candidate finding; use only for reviewed baselines",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Git path glob to exclude; repeat as needed",
+    )
+    parser.add_argument(
+        "--json-out", type=Path, help="Write machine-readable report"
+    )
     args = parser.parse_args(argv)
 
     repo = args.repo.resolve()
@@ -272,7 +348,9 @@ def main(argv: list[str] | None = None) -> int:
         top = Path(git(repo, "rev-parse", "--show-toplevel").decode().strip())
         findings, stats = scan_tracked_tree(top, args.exclude)
         if args.include_history and args.history_range:
-            raise RuntimeError("choose either --include-history or --history-range")
+            raise RuntimeError(
+                "choose either --include-history or --history-range"
+            )
         if args.include_history:
             findings.extend(scan_commit_history(top))
         elif args.history_range:
@@ -286,7 +364,16 @@ def main(argv: list[str] | None = None) -> int:
         "repository": str(top),
         "head": git(top, "rev-parse", "HEAD").decode().strip(),
         "tree": git(top, "rev-parse", "HEAD^{tree}").decode().strip(),
-        "scope": "tracked working-tree text" + (" plus all reachable commit subjects and bodies" if args.include_history else (f" plus commit range {args.history_range}" if args.history_range else "")),
+        "scope": "tracked working-tree text"
+        + (
+            " plus all reachable commit subjects and bodies"
+            if args.include_history
+            else (
+                f" plus commit range {args.history_range}"
+                if args.history_range
+                else ""
+            )
+        ),
         "stats": stats,
         "summary": summarize(findings),
         "findings": [asdict(f) for f in findings],
@@ -296,12 +383,20 @@ def main(argv: list[str] | None = None) -> int:
             "automatic_rewrites": False,
         },
     }
-    print(json.dumps({k: v for k, v in payload.items() if k != "findings"}, indent=2))
+    print(
+        json.dumps(
+            {k: v for k, v in payload.items() if k != "findings"}, indent=2
+        )
+    )
     for f in findings:
-        print(f"{f.severity.upper():6} {f.source}:{f.line}: [{f.category}] {f.phrase!r} :: {f.context}")
+        print(
+            f"{f.severity.upper():6} {f.source}:{f.line}: [{f.category}] {f.phrase!r} :: {f.context}"
+        )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        args.json_out.write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
     if args.fail_on_review and findings:
         return 1
     if args.strict and any(f.category == "tautology" for f in findings):

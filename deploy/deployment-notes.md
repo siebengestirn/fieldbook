@@ -16,7 +16,7 @@ sudo install -d -o collector -g collector /var/lib/engineering-challenge /var/lo
 
 ## Directory Layout
 
-```
+```text
 /etc/engineering-challenge/
   settings.toml          # Main configuration (root readable)
 
@@ -118,8 +118,8 @@ request_timeout_secs = 5
 
 ### Secrets
 
-- Kalshi private key: `/etc/engineering-challenge/kalshi-key.pem` (mode 600, owned by collector)
-- Never commit secrets to version control. Use `systemd` `LoadCredential` or external secret manager.
+Kalshi private key: `/etc/engineering-challenge/kalshi-key.pem` (mode 600, owned by collector)
+Never commit secrets to version control. Use `systemd` `LoadCredential` or external secret manager.
 
 ## Log Rotation
 
@@ -157,11 +157,11 @@ described in `docs/operating-envelope.md` and exposed by the metrics endpoint.
 ### Grafana Dashboards
 
 Key panels:
-- Delta emission rate (`rate(collector_deltas_emitted_total[1m])`)
-- Anchor fraction (`collector_symbols_anchored / collector_symbols_expected`)
-- Source connectivity (`collector_sources_connected / collector_sources_configured`)
-- Writer queue depth (`collector_writer_queue_depth`)
-- Catalog age (`collector_catalog_age_seconds`)
+Delta emission rate (`rate(collector_deltas_emitted_total[1m])`)
+Anchor fraction (`collector_symbols_anchored / collector_symbols_expected`)
+Source connectivity (`collector_sources_connected / collector_sources_configured`)
+Writer queue depth (`collector_writer_queue_depth`)
+Catalog age (`collector_catalog_age_seconds`)
 - Memory usage (process RSS from node_exporter)
 
 ## Health Checks
@@ -209,46 +209,48 @@ Key panels:
 
 ## Rolling Updates
 
-1. Drain traffic: remove from load balancer (wait for `/readyz` to go 503).
-2. Stop service: `systemctl stop engineering-challenge`.
-3. Replace binary and/or config.
-4. Start service: `systemctl start engineering-challenge`.
-5. Wait for `/readyz` to return `ready: true`.
+Drain traffic: remove from load balancer (wait for `/readyz` to go 503).
+Stop service: `systemctl stop engineering-challenge`.
+Replace binary and/or config.
+Start service: `systemctl start engineering-challenge`.
+Wait for `/readyz` to return `ready: true`.
 6. Re-add to load balancer.
 
-**Zero-downtime not supported** for config changes that alter shard count or catalog mode. The collector must rebuild subscriptions from scratch.
+**Zero-downtime not supported** for config changes that alter shard count or
+catalog mode. The collector must rebuild subscriptions from scratch.
 
 ## Backup and Recovery
 
 ### Capture Files
 
-- SBE captures are append-only; back up the entire `/var/lib/engineering-challenge/` directory.
-- Rotation segments are independently verifiable; no need to back up partial (`.partial`) files.
-- Manifest (`capture.manifest.json`) enables integrity verification of the full chain.
+SBE captures are append-only; back up the entire `/var/lib/engineering-challenge/` directory.
+Rotation segments are independently verifiable; no need to back up partial (`.partial`) files.
+Manifest (`capture.manifest.json`) enables integrity verification of the full chain.
 
 ### Metadata/Catalog
 
-- `metadata.json` and `catalog.json` are latest-wins; back up periodically.
-- On restore, the collector will use the catalog checkpoint if `catalog_mode = warm|require|stale` and the checksum verifies.
+`metadata.json` and `catalog.json` are latest-wins; back up periodically.
+On restore, the collector will use the catalog checkpoint if `catalog_mode = warm|require|stale` and the checksum verifies.
 
 ### Disaster Recovery
 
-1. Restore `/var/lib/engineering-challenge/` from backup.
-2. Ensure `settings.toml` matches the original run (especially `catalog_mode` and `catalog_path`).
-3. Start collector. It will resume from the catalog checkpoint (if valid) or run fresh discovery.
+Restore `/var/lib/engineering-challenge/` from backup.
+Ensure `settings.toml` matches the original run (especially `catalog_mode` and `catalog_path`).
+3. Start collector. It will resume from the catalog checkpoint (if valid) or run
+   fresh discovery.
 
 ## Security Checklist
 
-- [ ] Binary built with `cargo build --release --locked` on trusted machine.
-- [ ] `cargo audit` passes (no known vulnerabilities in dependencies).
-- [ ] `cargo deny check` passes (license, bans, sources).
-- [ ] Kalshi private key stored at `/etc/engineering-challenge/kalshi-key.pem` mode 600.
-- [ ] Service runs as unprivileged `collector` user.
-- [ ] systemd hardening enabled (see service file).
-- [ ] Output directory on dedicated mount with `noexec,nodev,nosuid`.
-- [ ] Metrics endpoint bound to localhost only (expose via sidecar).
-- [ ] Log shipping configured (no local log retention beyond 7 days).
-- [ ] Alerting configured for all critical metrics (see Metric Runbook).
+[ ] Binary built with `cargo build --release --locked` on trusted machine.
+[ ] `cargo audit` passes (no known vulnerabilities in dependencies).
+[ ] `cargo deny check` passes (license, bans, sources).
+[ ] Kalshi private key stored at `/etc/engineering-challenge/kalshi-key.pem` mode 600.
+[ ] Service runs as unprivileged `collector` user.
+[ ] systemd hardening enabled (see service file).
+[ ] Output directory on dedicated mount with `noexec,nodev,nosuid`.
+[ ] Metrics endpoint bound to localhost only (expose via sidecar).
+[ ] Log shipping configured (no local log retention beyond 7 days).
+[ ] Alerting configured for all critical metrics (see Metric Runbook).
 
 ## Unresolved Deployment Items
 

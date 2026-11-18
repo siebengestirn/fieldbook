@@ -44,7 +44,7 @@ topic names. Do not create `dev`, `new-main`, `main-final`, `backup-main`, or
 
 ## Branch lifecycle
 
-```
+```text
 CREATED -> ACTIVE -> PULL REQUEST -> VERIFIED MERGE -> DELETED
 ```
 
@@ -105,24 +105,25 @@ Annotated tags may be created only after the relevant milestone has landed on
 
 ## Never
 
-- Never use `git push --force` or rewrite published commits.
+Never use `git push --force` or rewrite published commits.
 - Never merge a dependent branch before its foundational branch.
 - Never delete a branch merely because it looks old.
 - Never leave an outdated PR description after implementation changes.
-- Never use a ZIP export or secondary working copy as Git history.
-- Never let local `main` drift from `origin/main`.
-- Never allow undocumented differences between this policy and GitHub branch protection.
+Never use a ZIP export or secondary working copy as Git history.
+Never let local `main` drift from `origin/main`.
+- Never allow undocumented differences between this policy and GitHub branch
+  protection.
 
 ## GitHub protection audit
 
 The protection settings are checked against the repository policy:
 
-- direct pushes to `main` restricted; PR required;
-- required CI checks and latest-check enforcement enabled;
-- force pushes and deletion of `main` disabled;
+direct pushes to `main` restricted; PR required;
+required CI checks and latest-check enforcement enabled;
+force pushes and deletion of `main` disabled;
 - merge commit allowed; squash/rebase merging disabled;
 - linear history not required (the repository deliberately uses merge commits);
 - conversation resolution required;
 - required approving reviews remain zero because an artificial reviewer
-  requirement cannot be satisfied by the sole developer; self-review plus CI
-  is the enforced substitute.
+  requirement cannot be satisfied by the sole developer; self-review plus CI is
+  the enforced substitute.
