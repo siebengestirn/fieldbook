@@ -19,12 +19,22 @@ last idempotency key. Database checkpoint writes require strict sequence/offset
 advancement, except for an identical-position retry of the same event id;
 competing events at one source position are rejected transactionally. Event
 and disposition rows carry the source identity. Older rows migrate into the
-explicit empty-source namespace and keep legacy checksum validation until an
-operator maps them with `assign_legacy_checkpoint_source`. Reusing an event key
-with changed canonical content is rejected after a full persisted-row
-comparison. `PgTarget::with_source` rejects an envelope whose source identity
-does not match the bound target, and the target rejects multi-event delivery
-requests rather than silently truncating them.
+explicit empty-source namespace and retain v1/v2 historical checksum
+validation until an operator maps them with `assign_legacy_checkpoint_source`.
+That procedure verifies the stored legacy checksum, re-keys both historical
+three-part and explicit empty-source four-part event/disposition keys, checks
+that event and disposition identity sets match and that the checkpoint's last
+key has both rows, then rebinds the checkpoint to the source-scoped v4 checksum
+in one transaction. An invalid or incomplete legacy position is never
+legitimized by mapping. Reusing an event key with changed canonical content is
+rejected after a full persisted-row
+comparison. The target, supplied checkpoint and envelope must all name the
+same source. `PgTarget::with_source` is the required constructor for modern
+non-empty source identities; `PgTarget::new` and `with_checkpoint` are limited
+to the explicit empty-source legacy namespace. Empty source is not a wildcard:
+a modern envelope cannot be written while erasing its provenance. The target
+also rejects multi-event delivery requests rather than silently truncating
+them.
 
 ## Independent network source
 
@@ -49,7 +59,7 @@ flowchart LR
     SRC --> TX
     TX --> ENV[CanonicalEnvelope: distinct source_time and receive_time, deterministic event id]
     ENV --> RUNNER[run_jsonl_to_target_with_mode: accounting, mode, quarantine-before-progression]
-    RUNNER --> TARGET[TargetConnector: idempotency keyed by event id]
+    RUNNER --> TARGET[TargetConnector: source/target/contract-scoped idempotency]
     TARGET --> SQL[CommitTranscript: BEGIN, INSERT event, INSERT disposition, UPSERT checkpoint, COMMIT only on durable commit]
     SQL --> PG[PgTarget: synchronous PostgreSQL execution and explicit schema]
     TARGET --> SIM[PostgresSimulator: in-memory commit state]
