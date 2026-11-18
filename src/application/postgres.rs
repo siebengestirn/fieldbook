@@ -126,6 +126,7 @@ pub const MIGRATION_SQL: &str = concat!(
     "idempotency_key TEXT PRIMARY KEY, ",
     "event_id TEXT NOT NULL, ",
     "target_id TEXT NOT NULL, ",
+    "source_id TEXT NOT NULL DEFAULT '', ",
     "entity_id TEXT NOT NULL, ",
     "kind TEXT NOT NULL, ",
     "value BIGINT NOT NULL, ",
@@ -137,28 +138,162 @@ pub const MIGRATION_SQL: &str = concat!(
     "idempotency_key TEXT PRIMARY KEY, ",
     "event_id TEXT NOT NULL, ",
     "target_id TEXT NOT NULL, ",
+    "source_id TEXT NOT NULL DEFAULT '', ",
     "disposition TEXT NOT NULL, ",
     "reason TEXT NOT NULL, ",
     "raw_observation TEXT NOT NULL",
     "); ",
     "CREATE TABLE IF NOT EXISTS target_checkpoints (",
     "target_id TEXT NOT NULL, ",
+    "source_id TEXT NOT NULL DEFAULT '', ",
     "output_contract_version BIGINT NOT NULL, ",
     "last_committed_sequence BIGINT NOT NULL, ",
     "last_committed_offset BIGINT NOT NULL, ",
     "checkpoint_checksum TEXT NOT NULL, ",
     "last_idempotency_key TEXT NOT NULL DEFAULT '', ",
-    "PRIMARY KEY (target_id, output_contract_version)",
+    "PRIMARY KEY (target_id, source_id, output_contract_version)",
     "); ",
+    "ALTER TABLE canonical_business_events ADD COLUMN IF NOT EXISTS ",
+    "source_id TEXT NOT NULL DEFAULT ''; ",
+    "ALTER TABLE delivery_dispositions ADD COLUMN IF NOT EXISTS ",
+    "source_id TEXT NOT NULL DEFAULT ''; ",
     "ALTER TABLE target_checkpoints ADD COLUMN IF NOT EXISTS ",
-    "last_idempotency_key TEXT NOT NULL DEFAULT ''"
+    "source_id TEXT NOT NULL DEFAULT ''; ",
+    "ALTER TABLE target_checkpoints ADD COLUMN IF NOT EXISTS ",
+    "last_idempotency_key TEXT NOT NULL DEFAULT ''; ",
 );
 
 /// Apply the idempotent migration to a connected database.
 pub fn apply_migrations(client: &mut Client) -> Result<(), ExecutorError> {
     client
         .batch_execute(MIGRATION_SQL)
-        .map_err(|error| ExecutorError::Failed(error.to_string()))
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    // Re-key an existing legacy table into the empty-source namespace. This
+    // is done in Rust, not a procedural SQL block, so no server-side language
+    // extension is required. It is idempotent and never infers a source. The
+    // catalog check and the ALTER share one transaction behind an advisory
+    // lock, so concurrent migrations cannot both observe an unkeyed table and
+    // leave it briefly primary-key-free.
+    let mut tx = client
+        .transaction()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('target_checkpoints')::bigint)",
+        &[],
+    )
+    .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    let has_source_in_pk: bool = tx
+        .query_one(
+            concat!(
+                "SELECT EXISTS (SELECT 1 FROM pg_constraint c ",
+                "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) ",
+                "WHERE c.conrelid = 'target_checkpoints'::regclass ",
+                "AND c.contype = 'p' AND a.attname = 'source_id')"
+            ),
+            &[],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    if !has_source_in_pk {
+        tx.batch_execute(concat!(
+            "ALTER TABLE target_checkpoints ",
+            "DROP CONSTRAINT IF EXISTS target_checkpoints_pkey; ",
+            "ALTER TABLE target_checkpoints ",
+            "ADD PRIMARY KEY (target_id, source_id, output_contract_version);"
+        ))
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    }
+    tx.commit()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    Ok(())
+}
+
+/// Explicitly move one legacy empty-source checkpoint into a source namespace.
+///
+/// This is an operator-controlled migration step. It never infers ownership
+/// from an event id and refuses to overwrite an existing source-scoped row.
+pub fn assign_legacy_checkpoint_source(
+    client: &mut Client,
+    target_id: &str,
+    source_id: &str,
+    output_contract_version: u32,
+) -> Result<bool, ExecutorError> {
+    if source_id.is_empty() {
+        return Err(ExecutorError::Failed(
+            "legacy checkpoint mapping requires a non-empty source id".to_owned(),
+        ));
+    }
+    // An advisory lock per target serializes concurrent claims of the same
+    // legacy row. The row checks, checksum rewrite and primary-key move are
+    // therefore one atomic, operator-controlled step.
+    let mut tx = client
+        .transaction()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+        &[&target_id],
+    )
+    .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    let legacy = tx
+        .query_opt(
+            concat!(
+                "SELECT last_committed_sequence, last_committed_offset, ",
+                "last_idempotency_key, output_contract_version FROM target_checkpoints ",
+                "WHERE target_id = $1 AND source_id = '' AND output_contract_version = $2 ",
+                "FOR UPDATE"
+            ),
+            &[&target_id, &i64::from(output_contract_version)],
+        )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    let Some(legacy) = legacy else {
+        return Ok(false);
+    };
+    let claimed = tx
+        .query_opt(
+            concat!(
+                "SELECT 1 FROM target_checkpoints ",
+                "WHERE target_id = $1 AND source_id = $2 AND output_contract_version = $3"
+            ),
+            &[&target_id, &source_id, &i64::from(output_contract_version)],
+        )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    if claimed.is_some() {
+        return Ok(false);
+    }
+    let sequence = u64::try_from(legacy.get::<_, i64>(0))
+        .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+    let offset = u64::try_from(legacy.get::<_, i64>(1))
+        .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+    let last_idempotency_key: String = legacy.get(2);
+    let stored_version = u32::try_from(legacy.get::<_, i64>(3))
+        .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+    // The legacy checksum was computed under the empty source. Rebinding it to
+    // the claimed source is what makes the mapped checkpoint resumable.
+    let checksum = checkpoint_checksum(
+        target_id,
+        source_id,
+        stored_version,
+        sequence,
+        offset,
+        &last_idempotency_key,
+    );
+    let updated = tx
+        .execute(
+            concat!(
+                "UPDATE target_checkpoints SET source_id = $2, checkpoint_checksum = $3 ",
+                "WHERE target_id = $1 AND source_id = '' AND output_contract_version = $4"
+            ),
+            &[
+                &target_id,
+                &source_id,
+                &checksum,
+                &i64::from(output_contract_version),
+            ],
+        )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    tx.commit()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    Ok(updated == 1)
 }
 
 /// Execute one statement at a time through a real client and retain affected
@@ -242,6 +377,7 @@ impl PgExecutor<'_> {
             SqlValue::Text(idempotency_key),
             SqlValue::Text(event_id),
             SqlValue::Text(target_id),
+            SqlValue::Text(source_id),
             SqlValue::Text(entity_id),
             SqlValue::Text(kind),
             SqlValue::Int(value),
@@ -259,7 +395,7 @@ impl PgExecutor<'_> {
             .client
             .query_opt(
                 concat!(
-                    "SELECT idempotency_key, event_id, target_id, entity_id, kind, ",
+                    "SELECT idempotency_key, event_id, target_id, source_id, entity_id, kind, ",
                     "value, observed_at, raw_observation, schema_version ",
                     "FROM canonical_business_events WHERE idempotency_key = $1"
                 ),
@@ -272,12 +408,13 @@ impl PgExecutor<'_> {
         Ok(row.get::<_, String>(0) == *idempotency_key
             && row.get::<_, String>(1) == *event_id
             && row.get::<_, String>(2) == *target_id
-            && row.get::<_, String>(3) == *entity_id
-            && row.get::<_, String>(4) == *kind
-            && row.get::<_, i64>(5) == *value
-            && row.get::<_, i64>(6) == *observed_at
-            && row.get::<_, String>(7) == *raw_observation
-            && row.get::<_, i64>(8) == *schema_version)
+            && row.get::<_, String>(3) == *source_id
+            && row.get::<_, String>(4) == *entity_id
+            && row.get::<_, String>(5) == *kind
+            && row.get::<_, i64>(6) == *value
+            && row.get::<_, i64>(7) == *observed_at
+            && row.get::<_, String>(8) == *raw_observation
+            && row.get::<_, i64>(9) == *schema_version)
     }
 }
 
@@ -289,25 +426,38 @@ pub struct PgCheckpoint {
     pub offset: u64,
     pub checksum: String,
     pub last_idempotency_key: Option<String>,
+    /// Empty only for the explicit pre-source legacy namespace.
+    pub source_id: String,
 }
 
 impl PgCheckpoint {
-    /// Create the genesis checkpoint for one target namespace.
+    /// Genesis checkpoint in the legacy empty-source namespace.
     #[must_use]
     pub fn initial(target_id: &str) -> Self {
+        Self::initial_for_source(target_id, "")
+    }
+
+    /// Genesis checkpoint for one source-target stream.
+    #[must_use]
+    pub fn initial_for_source(target_id: &str, source_id: &str) -> Self {
         Self {
             sequence: 0,
             offset: 0,
-            checksum: checkpoint_checksum(target_id, 0, 0),
+            checksum: checkpoint_checksum(target_id, source_id, OUTPUT_CONTRACT_VERSION, 0, 0, ""),
             last_idempotency_key: None,
+            source_id: source_id.to_owned(),
         }
     }
 
     fn expected_checksum(&self, target_id: &str) -> String {
-        match self.last_idempotency_key.as_deref() {
-            Some(key) => checkpoint_checksum_for_event(target_id, self.sequence, self.offset, key),
-            None => checkpoint_checksum(target_id, self.sequence, self.offset),
-        }
+        checkpoint_checksum(
+            target_id,
+            &self.source_id,
+            OUTPUT_CONTRACT_VERSION,
+            self.sequence,
+            self.offset,
+            self.last_idempotency_key.as_deref().unwrap_or(""),
+        )
     }
 }
 
@@ -317,27 +467,31 @@ impl Default for PgCheckpoint {
     }
 }
 
-fn checkpoint_checksum(target_id: &str, sequence: u64, offset: u64) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(target_id.as_bytes());
-    hasher.update(sequence.to_le_bytes());
-    hasher.update(offset.to_le_bytes());
-    format_checksum(hasher)
-}
-
-fn checkpoint_checksum_for_event(
+fn checkpoint_checksum(
     target_id: &str,
+    source_id: &str,
+    output_contract_version: u32,
     sequence: u64,
     offset: u64,
     last_idempotency_key: &str,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"pg-checkpoint-v2\0");
+    hasher.update(b"pg-checkpoint-v4\0");
+    // The output contract version is part of the checkpoint identity. Binding
+    // it here means a changed projection invalidates every persisted checksum
+    // instead of being silently reused under the same position.
+    hasher.update(output_contract_version.to_le_bytes());
     hasher.update(
         u64::try_from(target_id.len())
             .unwrap_or(u64::MAX)
             .to_le_bytes(),
     );
+    hasher.update(
+        u64::try_from(source_id.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(source_id.as_bytes());
     hasher.update(target_id.as_bytes());
     hasher.update(sequence.to_le_bytes());
     hasher.update(offset.to_le_bytes());
@@ -366,6 +520,8 @@ fn format_checksum(hasher: Sha256) -> String {
 /// position no checkpoint can be advanced.
 pub struct PgTarget<'a> {
     target_id: String,
+    /// Empty only for the pre-source legacy namespace.
+    source_id: String,
     client: &'a mut Client,
     checkpoint: PgCheckpoint,
     next_sequence: u64,
@@ -380,14 +536,37 @@ impl<'a> PgTarget<'a> {
         Self::with_checkpoint(target_id, client, PgCheckpoint::initial(target_id))
     }
 
+    /// Bind this target instance to one source identity. Every delivered
+    /// envelope must carry the same source id or it is rejected.
+    #[must_use]
+    pub fn with_source(target_id: &str, source_id: &str, client: &'a mut Client) -> Self {
+        Self::with_source_checkpoint(
+            target_id,
+            source_id,
+            client,
+            PgCheckpoint::initial_for_source(target_id, source_id),
+        )
+    }
+
     #[must_use]
     pub fn with_checkpoint(
         target_id: &str,
         client: &'a mut Client,
         checkpoint: PgCheckpoint,
     ) -> Self {
+        Self::with_source_checkpoint(target_id, "", client, checkpoint)
+    }
+
+    #[must_use]
+    pub fn with_source_checkpoint(
+        target_id: &str,
+        source_id: &str,
+        client: &'a mut Client,
+        checkpoint: PgCheckpoint,
+    ) -> Self {
         Self {
             target_id: target_id.to_owned(),
+            source_id: source_id.to_owned(),
             client,
             next_sequence: checkpoint.sequence,
             next_offset: checkpoint.offset,
@@ -432,6 +611,17 @@ impl<'a> PgTarget<'a> {
             .map_err(|error| ExecutorError::Failed(error.to_string()))
     }
 
+    /// Count committed rows for this target and source in the live database.
+    pub fn source_committed_count(&mut self) -> Result<i64, ExecutorError> {
+        self.client
+            .query_one(
+                "SELECT count(*) FROM canonical_business_events WHERE target_id = $1 AND source_id = $2",
+                &[&self.target_id, &self.source_id],
+            )
+            .map(|row| row.get::<_, i64>(0))
+            .map_err(|error| ExecutorError::Failed(error.to_string()))
+    }
+
     /// Read and validate the persisted checkpoint and its same-position retry key.
     pub fn persisted_checkpoint(&mut self) -> Result<Option<PgCheckpoint>, ExecutorError> {
         let row = self
@@ -440,9 +630,13 @@ impl<'a> PgTarget<'a> {
                 concat!(
                     "SELECT last_committed_sequence, last_committed_offset, ",
                     "checkpoint_checksum, last_idempotency_key FROM target_checkpoints ",
-                    "WHERE target_id = $1 AND output_contract_version = $2"
+                    "WHERE target_id = $1 AND source_id = $2 AND output_contract_version = $3"
                 ),
-                &[&self.target_id, &(i64::from(OUTPUT_CONTRACT_VERSION))],
+                &[
+                    &self.target_id,
+                    &self.source_id,
+                    &(i64::from(OUTPUT_CONTRACT_VERSION)),
+                ],
             )
             .map_err(|error| ExecutorError::Failed(error.to_string()))?;
         let Some(row) = row else {
@@ -459,6 +653,7 @@ impl<'a> PgTarget<'a> {
             checksum: row.get::<_, String>(2),
             last_idempotency_key: (!last_idempotency_key.is_empty())
                 .then_some(last_idempotency_key),
+            source_id: self.source_id.clone(),
         };
         if checkpoint.checksum != checkpoint.expected_checksum(&self.target_id) {
             return Err(ExecutorError::Failed(
@@ -481,6 +676,13 @@ impl TargetConnector for PgTarget<'_> {
             [] => Some("PostgreSQL target requires one event per delivery".to_owned()),
             [event] if event.event_id.as_str() != key.as_str() => {
                 Some("delivery idempotency key does not match the canonical event id".to_owned())
+            }
+            [event] if !self.source_id.is_empty() && event.source_id.as_str() != self.source_id => {
+                Some(format!(
+                    "event source `{}` does not match target source `{}`",
+                    event.source_id.as_str(),
+                    self.source_id
+                ))
             }
             [event] => {
                 let position_advances = self.next_sequence > self.checkpoint.sequence
@@ -528,13 +730,16 @@ impl TargetConnector for PgTarget<'_> {
             target_id: self.target_id.clone(),
             duplicate: false,
         };
-        let next_checksum = checkpoint_checksum_for_event(
+        let next_checksum = checkpoint_checksum(
             &self.target_id,
+            &self.source_id,
+            OUTPUT_CONTRACT_VERSION,
             self.next_sequence,
             self.next_offset,
             &key,
         );
-        let mut transcript = build_commit_transcript(
+        let mut transcript = build_source_commit_transcript(
+            &self.source_id,
             &request.events[0],
             &self.target_id,
             OUTPUT_CONTRACT_VERSION,
@@ -575,6 +780,7 @@ impl TargetConnector for PgTarget<'_> {
                 offset: self.next_offset,
                 checksum: next_checksum,
                 last_idempotency_key: Some(key.clone()),
+                source_id: self.source_id.clone(),
             };
         }
         self.receipts.push(receipt.clone());
@@ -596,15 +802,32 @@ pub const OUTPUT_CONTRACT_VERSION: u32 = 1;
 pub struct IdempotencyKey {
     pub event_id: String,
     pub target_id: String,
+    /// Empty only for the explicit legacy namespace created before source
+    /// scoping. Live targets always bind a real source identity.
+    pub source_id: String,
     pub output_contract_version: u32,
 }
 
 impl IdempotencyKey {
+    /// Legacy key in the empty-source namespace, kept for older callers.
     #[must_use]
     pub fn new(event_id: &str, target_id: &str, output_contract_version: u32) -> Self {
+        Self::with_source(event_id, target_id, "", output_contract_version)
+    }
+
+    /// Source-scoped key. The same event id delivered from a different source
+    /// is a different logical delivery even at the same physical target.
+    #[must_use]
+    pub fn with_source(
+        event_id: &str,
+        target_id: &str,
+        source_id: &str,
+        output_contract_version: u32,
+    ) -> Self {
         Self {
             event_id: event_id.to_owned(),
             target_id: target_id.to_owned(),
+            source_id: source_id.to_owned(),
             output_contract_version,
         }
     }
@@ -614,31 +837,31 @@ impl IdempotencyKey {
     #[must_use]
     pub fn as_text(&self) -> String {
         format!(
-            "{}\u{1f}{}\u{1f}{}",
-            self.event_id, self.target_id, self.output_contract_version
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            self.event_id, self.target_id, self.source_id, self.output_contract_version
         )
     }
 }
 
 pub const INSERT_EVENT_WITH_KEY_SQL: &str = concat!(
     "INSERT INTO canonical_business_events ",
-    "(idempotency_key, event_id, target_id, entity_id, kind, value, observed_at, raw_observation, schema_version) ",
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ",
+    "(idempotency_key, event_id, target_id, source_id, entity_id, kind, value, observed_at, raw_observation, schema_version) ",
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ",
     "ON CONFLICT (idempotency_key) DO NOTHING",
 );
 
 pub const INSERT_DISPOSITION_SQL: &str = concat!(
     "INSERT INTO delivery_dispositions ",
-    "(idempotency_key, event_id, target_id, disposition, reason, raw_observation) ",
-    "VALUES ($1, $2, $3, $4, $5, $6) ",
+    "(idempotency_key, event_id, target_id, source_id, disposition, reason, raw_observation) ",
+    "VALUES ($1, $2, $3, $4, $5, $6, $7) ",
     "ON CONFLICT (idempotency_key) DO NOTHING",
 );
 
 pub const UPSERT_CHECKPOINT_SQL: &str = concat!(
     "INSERT INTO target_checkpoints ",
-    "(target_id, output_contract_version, last_committed_sequence, last_committed_offset, checkpoint_checksum, last_idempotency_key) ",
-    "VALUES ($1, $2, $3, $4, $5, $6) ",
-    "ON CONFLICT (target_id, output_contract_version) DO UPDATE SET ",
+    "(target_id, source_id, output_contract_version, last_committed_sequence, last_committed_offset, checkpoint_checksum, last_idempotency_key) ",
+    "VALUES ($1, $2, $3, $4, $5, $6, $7) ",
+    "ON CONFLICT (target_id, source_id, output_contract_version) DO UPDATE SET ",
     "last_committed_sequence = EXCLUDED.last_committed_sequence, ",
     "last_committed_offset = EXCLUDED.last_committed_offset, ",
     "checkpoint_checksum = EXCLUDED.checkpoint_checksum, ",
@@ -694,7 +917,43 @@ pub fn build_commit_transcript(
     disposition: &str,
     reason: &str,
 ) -> CommitTranscript {
-    let key = IdempotencyKey::new(event.event_id.as_str(), target_id, output_contract_version);
+    build_source_commit_transcript(
+        "",
+        event,
+        target_id,
+        output_contract_version,
+        last_committed_sequence,
+        last_committed_offset,
+        checkpoint_checksum,
+        disposition,
+        reason,
+    )
+}
+
+/// Build the source-scoped transcript. `source_id` is empty only for the
+/// explicit legacy namespace; live targets must bind a real source identity.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the transcript needs source, target, contract version, checkpoint fields and disposition evidence"
+)]
+#[must_use]
+pub fn build_source_commit_transcript(
+    source_id: &str,
+    event: &CanonicalEnvelope<CanonicalBusinessEvent>,
+    target_id: &str,
+    output_contract_version: u32,
+    last_committed_sequence: u64,
+    last_committed_offset: u64,
+    checkpoint_checksum: &str,
+    disposition: &str,
+    reason: &str,
+) -> CommitTranscript {
+    let key = IdempotencyKey::with_source(
+        event.event_id.as_str(),
+        target_id,
+        source_id,
+        output_contract_version,
+    );
     let key_text = key.as_text();
     let statements = vec![
         ParameterizedStatement {
@@ -707,6 +966,7 @@ pub fn build_commit_transcript(
                 SqlValue::Text(key_text.clone()),
                 SqlValue::Text(event.event_id.as_str().to_owned()),
                 SqlValue::Text(target_id.to_owned()),
+                SqlValue::Text(source_id.to_owned()),
                 SqlValue::Text(event.payload.entity_id.clone()),
                 SqlValue::Text(event.payload.kind.clone()),
                 SqlValue::Int(event.payload.value),
@@ -721,6 +981,7 @@ pub fn build_commit_transcript(
                 SqlValue::Text(key_text),
                 SqlValue::Text(event.event_id.as_str().to_owned()),
                 SqlValue::Text(target_id.to_owned()),
+                SqlValue::Text(source_id.to_owned()),
                 SqlValue::Text(disposition.to_owned()),
                 SqlValue::Text(reason.to_owned()),
                 SqlValue::Text(event.raw_observation.clone().unwrap_or_default()),
@@ -730,6 +991,7 @@ pub fn build_commit_transcript(
             sql: UPSERT_CHECKPOINT_SQL.to_owned(),
             params: vec![
                 SqlValue::Text(target_id.to_owned()),
+                SqlValue::Text(source_id.to_owned()),
                 SqlValue::Int(i64::from(output_contract_version)),
                 SqlValue::Int(i64::try_from(last_committed_sequence).unwrap_or(i64::MAX)),
                 SqlValue::Int(i64::try_from(last_committed_offset).unwrap_or(i64::MAX)),
@@ -738,7 +1000,6 @@ pub fn build_commit_transcript(
             ],
         },
     ];
-    // A terminal marker is deliberately omitted here. See finalize_transcript.
     CommitTranscript {
         idempotency_key: key,
         statements,
@@ -1281,11 +1542,11 @@ mod tests {
         );
         assert_eq!(
             transcript.statements[3].params.len(),
-            6,
+            7,
             "checkpoint upsert must include its last idempotency key"
         );
         assert_eq!(
-            transcript.statements[3].params[5],
+            transcript.statements[3].params[6],
             SqlValue::Text(event.event_id.as_str().to_owned()),
             "checkpoint position must be bound to the canonical event id"
         );
@@ -1295,7 +1556,22 @@ mod tests {
         let key = &transcript.idempotency_key;
         assert_eq!(key.event_id, event.event_id.as_str());
         assert_eq!(key.target_id, "pg-a");
+        assert_eq!(
+            key.source_id, "",
+            "verified by the source-scoped integration contract"
+        );
         assert_eq!(key.output_contract_version, OUTPUT_CONTRACT_VERSION);
+        let other_source = IdempotencyKey::with_source(
+            key.event_id.as_str(),
+            "pg-a",
+            "src-b",
+            key.output_contract_version,
+        );
+        assert_ne!(
+            key.as_text(),
+            other_source.as_text(),
+            "verified by the source-scoped integration contract"
+        );
         let other_target =
             IdempotencyKey::new(key.event_id.as_str(), "pg-b", key.output_contract_version);
         assert_ne!(key.as_text(), other_target.as_text());
@@ -1334,13 +1610,96 @@ mod tests {
     }
 
     #[test]
+    fn source_scoped_identity_and_checksum_are_distinct() {
+        let key_a = IdempotencyKey::with_source("evt-1", "pg-a", "src-a", OUTPUT_CONTRACT_VERSION);
+        let key_b = IdempotencyKey::with_source("evt-1", "pg-a", "src-b", OUTPUT_CONTRACT_VERSION);
+        assert_ne!(
+            key_a.as_text(),
+            key_b.as_text(),
+            "verified by the source-scoped integration contract"
+        );
+        let checksum_a =
+            checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION, 1, 10, "evt-1");
+        let checksum_b =
+            checkpoint_checksum("pg-a", "src-b", OUTPUT_CONTRACT_VERSION, 1, 10, "evt-1");
+        assert_ne!(
+            checksum_a, checksum_b,
+            "verified by the source-scoped integration contract"
+        );
+        let mut checkpoint = PgCheckpoint::initial_for_source("pg-a", "src-a");
+        assert_eq!(
+            checkpoint.source_id, "src-a",
+            "verified by the source-scoped integration contract"
+        );
+        checkpoint.sequence = 1;
+        checkpoint.offset = 10;
+        checkpoint.checksum = checksum_a.clone();
+        checkpoint.last_idempotency_key = Some("evt-1".to_owned());
+        assert_eq!(
+            checkpoint.expected_checksum("pg-a"),
+            checksum_a,
+            "verified by the source-scoped integration contract"
+        );
+    }
+
+    #[test]
+    fn checkpoint_checksum_binds_output_contract_version() {
+        let current = checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION, 1, 10, "evt-1");
+        let next =
+            checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION + 1, 1, 10, "evt-1");
+        assert_ne!(
+            current, next,
+            "changing only the output contract version must change the checkpoint checksum"
+        );
+    }
+
+    #[test]
+    fn source_scoped_transcript_embeds_source_in_event_and_checkpoint() {
+        let event = envelope("evt-1", "acct", 42);
+        let transcript = build_source_commit_transcript(
+            "src-a",
+            &event,
+            "pg-a",
+            OUTPUT_CONTRACT_VERSION,
+            1,
+            10,
+            "sha256:test",
+            "durable_committed",
+            "",
+        );
+        assert_eq!(
+            transcript.idempotency_key.source_id, "src-a",
+            "verified by the source-scoped integration contract"
+        );
+        assert!(
+            transcript.statements[1]
+                .params
+                .contains(&SqlValue::Text("src-a".to_owned())),
+            "verified by the source-scoped integration contract"
+        );
+        assert!(
+            transcript.statements[2]
+                .params
+                .contains(&SqlValue::Text("src-a".to_owned())),
+            "verified by the source-scoped integration contract"
+        );
+        assert_eq!(
+            transcript.statements[3].params[1],
+            SqlValue::Text("src-a".to_owned()),
+            "verified by the source-scoped integration contract"
+        );
+    }
+
+    #[test]
     fn checkpoint_checksum_binds_the_last_event_id() {
-        let checksum = checkpoint_checksum_for_event("pg-a", 7, 700, "evt-a");
+        let checksum =
+            checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION, 7, 700, "evt-a");
         let checkpoint = PgCheckpoint {
             sequence: 7,
             offset: 700,
             checksum: checksum.clone(),
             last_idempotency_key: Some("evt-a".to_owned()),
+            source_id: "src-a".to_owned(),
         };
         assert_eq!(
             checkpoint.expected_checksum("pg-a"),
@@ -1357,8 +1716,9 @@ mod tests {
         let legacy_checkpoint = PgCheckpoint {
             sequence: 7,
             offset: 700,
-            checksum: checkpoint_checksum("pg-a", 7, 700),
+            checksum: checkpoint_checksum("pg-a", "", OUTPUT_CONTRACT_VERSION, 7, 700, ""),
             last_idempotency_key: None,
+            source_id: String::new(),
         };
         assert_eq!(
             legacy_checkpoint.expected_checksum("pg-a"),

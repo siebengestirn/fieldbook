@@ -375,7 +375,10 @@ fn uncertain_ack_resolves_with_the_same_target_specific_key() {
         .collect();
     assert!(rows[1].contains("ON CONFLICT (idempotency_key) DO NOTHING"));
     assert!(rows[2].contains("ON CONFLICT (idempotency_key) DO NOTHING"));
-    assert!(rows[3].contains("ON CONFLICT (target_id, output_contract_version) DO UPDATE"));
+    assert!(
+        rows[3].contains("ON CONFLICT (target_id, source_id, output_contract_version) DO UPDATE"),
+        "verified by the source-scoped integration contract"
+    );
     assert!(!transcript.has_commit());
     finalize_transcript(
         &mut transcript,

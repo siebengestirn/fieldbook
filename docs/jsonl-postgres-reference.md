@@ -12,16 +12,19 @@ P5 established the in-memory source plus the SQL/simulator contract. **P6 adds a
 real local durable commit path, a streaming file source with a content-bound
 resume anchor, corrected delivery semantics and a database executor seam.**
 A real PostgreSQL target now applies the same transcript through a synchronous
-driver; it is opt-in and requires an operator-supplied server. Its checkpoint
-namespace is currently one ordered input stream per logical target id. Database
-checkpoint writes require strict sequence/offset advancement, except for an
-identical-position retry of the same event id; competing events at one source
-position are rejected transactionally. The current checkpoint checksum binds
-the target, position and last event id. Older rows migrate with no known last
-key and retain legacy checksum validation until they advance. Reusing an event
-key with changed canonical content is rejected after a full persisted-row
-comparison. The live target rejects multi-event delivery requests rather than
-silently truncating them.
+driver; it is opt-in and requires an operator-supplied server. The checkpoint
+namespace is `(target_id, source_id, output_contract_version)`, and the
+checksum binds all three identity components plus sequence, byte offset and
+last idempotency key. Database checkpoint writes require strict sequence/offset
+advancement, except for an identical-position retry of the same event id;
+competing events at one source position are rejected transactionally. Event
+and disposition rows carry the source identity. Older rows migrate into the
+explicit empty-source namespace and keep legacy checksum validation until an
+operator maps them with `assign_legacy_checkpoint_source`. Reusing an event key
+with changed canonical content is rejected after a full persisted-row
+comparison. `PgTarget::with_source` rejects an envelope whose source identity
+does not match the bound target, and the target rejects multi-event delivery
+requests rather than silently truncating them.
 
 ## Independent network source
 
@@ -134,10 +137,11 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
 
 The synchronous `postgres` dependency is wired through `PgExecutor` and
 `PgTarget`. `apply_migrations` applies the explicit schema, and the ignored
-`tests/postgres_live.rs::postgres_live_checkpoint_and_idempotency` test drives
-an operator-supplied database. The operator reports that test passed against
-PostgreSQL 18.6. It is not run by CI, and no server transcript or evidence
-manifest is retained in this source export.
+`tests/postgres_live.rs::postgres_live_source_scoped_delivery` test drives an
+operator-supplied database. It passed against PostgreSQL 18.6; the exact
+command, output and SHA-256 hashes are retained in
+`measurements/live/2026-11-18-postgres-source-scoped/`, with `source_commit`
+naming the exact code commit tested. It is an opt-in test, not run by CI.
 
 The TCP source in `src/application/network_source.rs` is deliberately a small
 loopback reference protocol. Its tests exercise a local server, clean-disconnect

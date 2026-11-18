@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running tests/postgres_live.rs (target/debug/deps/postgres_live-9b5018bfcef9fc5d)
+
+running 1 test
+test postgres_live_source_scoped_delivery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
