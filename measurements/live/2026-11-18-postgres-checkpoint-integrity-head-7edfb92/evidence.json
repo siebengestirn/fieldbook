@@ -1,0 +1,21 @@
+{
+  "classification": "real-live-postgresql-integration-test",
+  "created_at_utc": "2026-11-18T15:02:28.071915+00:00",
+  "source_branch": "main",
+  "source_commit": "7edfb92fed55d56f8d2e3ab20fff21e2500bc864",
+  "command": "NIRNAY_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' cargo test --test postgres_live --offline -- --ignored --nocapture",
+  "server": "PostgreSQL 18.6, local socket /tmp:5432, database postgres",
+  "outcome": "PASS at current main head; 1 passed, 0 failed; source commit and output hash retained",
+  "files": [
+    {
+      "path": "command.txt",
+      "bytes": 137,
+      "sha256": "5bc5a982673de896f0ac91e134e350c88a2212c97ec19d8cca345922a7f6229c"
+    },
+    {
+      "path": "output.log",
+      "bytes": 324,
+      "sha256": "5153c2c05b6af5c5b39b352bd586786f19a143f5b19e0262c11baf78955d4932"
+    }
+  ]
+}
