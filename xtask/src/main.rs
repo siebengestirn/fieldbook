@@ -184,6 +184,10 @@ fn run(report: &mut Report, root: &Path, commands: &[Cmd]) -> Result<(), String>
         let outcome = command.execute(root)?;
         let failed = outcome.status == "failed";
         println!("[{}] {}", outcome.status, outcome.command);
+        if failed {
+            // Keep the failure cause in CI logs, not only in the JSON report.
+            eprintln!("--- failed step output ---\n{}", outcome.output_tail);
+        }
         report.push(outcome);
         if failed {
             return Ok(());
