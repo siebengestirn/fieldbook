@@ -43,8 +43,9 @@ Five boundaries make the independence claim falsifiable:
    fixed-capacity `BufRead` buffer, adds the physical byte offset of every
    line, and computes a SHA-256 fingerprint of the complete file **once before**
    streaming with a fixed 64 KiB read buffer. Exact duplicate-id detection
-   retains one in-memory entry per unique record, so total memory still grows
-   with source cardinality; the I/O buffers, not all source state, are bounded.
+   uses a fixed-size in-memory bucket table whose entry chains live in a
+   scratch file removed on drop, so memory does not grow with source
+   cardinality.
 **Payload boundary.** [`CanonicalBusinessEvent`](../src/application.rs) is
    `{ entity_id, kind, value, observed_at }`. It has no price, side, venue,
    instrument, book or market concept. The transform is a pure function of the
@@ -92,7 +93,8 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
 `src/application/file_source.rs`: `SourceFingerprint`, `SourceIdentity`,
   `SourceRegistry`, `CheckpointBinding`, `DurableCheckpoint`, `DuplicatePolicy`
   and the fixed-buffer `FileSource` with `open`/`with_resume`. Its exact
-  duplicate-id index grows with the number of unique records.
+  duplicate-id index keeps a fixed-size bucket table in memory and appends
+  entries to a scratch file.
 `src/application/durable.rs`: `CommitRecord`, `CommitEnvelope`, `CommitStore`,
   `DurableState`, `StoreFault`, `load_state` and `run_streaming_pipeline`.
 `src/application/postgres.rs`: parameterized SQL generation, a deterministic

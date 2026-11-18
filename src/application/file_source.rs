@@ -7,19 +7,23 @@
 //! SHA-256 fingerprint of the complete source bytes is computed once with a
 //! fixed-size read buffer, before streaming, so a resume anchor can be bound to
 //! the exact content that was originally read. Exact duplicate-id detection
-//! currently retains one in-memory entry per unique record, so total memory
-//! still grows with source cardinality; only the I/O buffers are bounded.
+//! uses a bounded-memory, disk-backed hash index: the in-memory state is a
+//! fixed-size bucket-head table, and entry chains live in a scratch file that
+//! is removed when the source is dropped. No probabilistic filter is used, so
+//! a duplicate is reported only after the full identifier matches.
 //!
-//! No clock, randomness, network, or environment is read. The module imports
-//! only the generic application contract, the opaque identity newtype and the
+//! No clock, randomness or network is read. The scratch directory comes from
+//! the platform temporary directory; apart from that the module imports only
+//! the generic application contract, the opaque identity newtype and the
 //! standard library plus `serde`/`sha2`. It does not depend on any market-data
 //! module or on any storage implementation.
 
 use std::{
     collections::BTreeMap,
     fmt::Write as FmtWrite,
-    io::{BufRead, Read, Seek, SeekFrom},
-    path::Path,
+    io::{BufRead, Read, Seek, SeekFrom, Write as IoWrite},
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use serde::{Deserialize, Serialize};
@@ -41,6 +45,157 @@ pub const MAX_LINE_BYTES: usize = 1 << 20;
 
 /// Fixed read size used to fingerprint a file without loading it into memory.
 const FINGERPRINT_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Number of hash buckets. The in-memory head table is fixed at this size, so
+/// duplicate state never grows with the number of unique record identifiers.
+/// Longer chains cost bounded sequential reads from the scratch file.
+const DUPLICATE_BUCKETS: usize = 1 << 18;
+
+/// Bytes in one overflow entry header: next offset, first line, hash, id len.
+const DUPLICATE_HEADER_BYTES: usize = 28;
+
+static DUPLICATE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn le_u64(bytes: &[u8]) -> Result<u64, std::io::Error> {
+    let array: [u8; 8] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "short duplicate-index entry",
+        )
+    })?;
+    Ok(u64::from_le_bytes(array))
+}
+
+fn le_u32(bytes: &[u8]) -> Result<u32, std::io::Error> {
+    let array: [u8; 4] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "short duplicate-index entry",
+        )
+    })?;
+    Ok(u32::from_le_bytes(array))
+}
+
+/// Deterministic FNV-1a hash. Only the bucket choice uses it; identity is
+/// always confirmed by comparing the full stored identifier, so a collision
+/// cannot produce a false duplicate.
+fn duplicate_hash(id: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3_u64);
+    }
+    hash
+}
+
+/// Exact duplicate-id index with constant in-memory state.
+///
+/// Bucket heads are held in a fixed array. Entries are appended to one scratch
+/// file as `(next, first_line, hash, id_len, id_bytes)` records. Lookup follows
+/// the chain and compares the complete identifier, so the result is exact.
+/// The scratch file is created on first write and removed on drop.
+#[derive(Debug)]
+struct DuplicateIndex {
+    heads: Vec<u64>,
+    overflow: Option<std::fs::File>,
+    path: Option<PathBuf>,
+}
+
+impl Default for DuplicateIndex {
+    fn default() -> Self {
+        Self::with_buckets(DUPLICATE_BUCKETS)
+    }
+}
+
+impl DuplicateIndex {
+    fn with_buckets(buckets: usize) -> Self {
+        Self {
+            heads: vec![u64::MAX; buckets.max(1)],
+            overflow: None,
+            path: None,
+        }
+    }
+
+    fn ensure_open(&mut self) -> Result<&mut std::fs::File, std::io::Error> {
+        if self.overflow.is_none() {
+            let unique = DUPLICATE_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "nirnay-duplicate-index-{}-{unique}",
+                std::process::id()
+            ));
+            let file = std::fs::OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            self.overflow = Some(file);
+            self.path = Some(path);
+        }
+        self.overflow
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("index not open"))
+    }
+
+    /// Return the first line of `id`, or `None` when it has not been seen.
+    fn lookup(&mut self, id: &str) -> Result<Option<usize>, std::io::Error> {
+        let Some(file) = self.overflow.as_mut() else {
+            return Ok(None);
+        };
+        let hash = duplicate_hash(id);
+        let bucket = (hash as usize) % self.heads.len();
+        let mut offset = self.heads[bucket];
+        let mut header = [0_u8; DUPLICATE_HEADER_BYTES];
+        while offset != u64::MAX {
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut header)?;
+            let next = le_u64(&header[0..8])?;
+            let line = le_u64(&header[8..16])?;
+            let stored_hash = le_u64(&header[16..24])?;
+            let length = le_u32(&header[24..28])? as usize;
+            let mut stored = vec![0_u8; length];
+            file.read_exact(&mut stored)?;
+            if stored_hash == hash && stored == id.as_bytes() {
+                return usize::try_from(line).map(Some).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "line overflow")
+                });
+            }
+            offset = next;
+        }
+        Ok(None)
+    }
+
+    /// Record `id` at `line`. Insertion is append-only and O(1) memory.
+    fn insert(&mut self, id: &str, line: usize) -> Result<(), std::io::Error> {
+        let hash = duplicate_hash(id);
+        let bucket = (hash as usize) % self.heads.len();
+        let head = self.heads[bucket];
+        let file = self.ensure_open()?;
+        let offset = file.stream_position()?;
+        let mut header = Vec::with_capacity(DUPLICATE_HEADER_BYTES);
+        header.extend_from_slice(&head.to_le_bytes());
+        header.extend_from_slice(&(line as u64).to_le_bytes());
+        header.extend_from_slice(&hash.to_le_bytes());
+        header.extend_from_slice(&(id.len() as u32).to_le_bytes());
+        file.write_all(&header)?;
+        file.write_all(id.as_bytes())?;
+        self.heads[bucket] = offset;
+        Ok(())
+    }
+
+    /// Fixed in-memory footprint, exposed for a regression test.
+    #[cfg(test)]
+    fn memory_bytes(&self) -> usize {
+        self.heads.len() * size_of::<u64>()
+    }
+}
+
+impl Drop for DuplicateIndex {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
 
 /// SHA-256 of the complete bytes of a source, computed once before streaming.
 /// The text form is `sha256:<64 lowercase hex digits>`.
@@ -316,7 +471,7 @@ pub struct FileSource<R: BufRead> {
     line_number: usize,
     byte_offset: u64,
     last_offset: u64,
-    first_seen: BTreeMap<String, usize>,
+    seen: DuplicateIndex,
     duplicate_policy: DuplicatePolicy,
     exhausted: bool,
 }
@@ -333,7 +488,7 @@ impl<R: BufRead> FileSource<R> {
             line_number: 0,
             byte_offset: 0,
             last_offset: 0,
-            first_seen: BTreeMap::new(),
+            seen: DuplicateIndex::default(),
             duplicate_policy: DuplicatePolicy::default(),
             exhausted: false,
         }
@@ -394,6 +549,21 @@ impl<R: BufRead> FileSource<R> {
     #[must_use]
     pub fn buffer_capacity(&self) -> usize {
         self.line_buffer.capacity()
+    }
+
+    fn io_error(
+        &self,
+        sequence: u64,
+        line_number: usize,
+        operation: &str,
+        error: std::io::Error,
+    ) -> SourceError {
+        SourceError::Io {
+            sequence,
+            line_number,
+            offset: self.byte_offset,
+            message: format!("{operation}: {error}"),
+        }
     }
 
     fn reject(
@@ -475,8 +645,10 @@ impl<R: BufRead> FileSource<R> {
             ));
         }
 
-        if let Some(first_line) = self.first_seen.get(&record_id) {
-            let first_line = *first_line;
+        let first_line = self.seen.lookup(&record_id).map_err(|error| {
+            self.io_error(sequence, line_number, "duplicate index lookup", error)
+        })?;
+        if let Some(first_line) = first_line {
             let _ = self.duplicate_policy;
             return Err(SourceError::DuplicateId {
                 sequence,
@@ -486,7 +658,9 @@ impl<R: BufRead> FileSource<R> {
                 raw_bytes: raw_bytes.to_vec(),
             });
         }
-        self.first_seen.insert(record_id.clone(), line_number);
+        self.seen.insert(&record_id, line_number).map_err(|error| {
+            self.io_error(sequence, line_number, "duplicate index insert", error)
+        })?;
         Ok(record_id)
     }
 }
@@ -678,6 +852,40 @@ mod tests {
             SourceFingerprint::compute_reader(&mut reader).expect("reader fingerprint");
         assert_eq!(fingerprint, SourceFingerprint::compute(&bytes));
         assert_eq!(reader.largest_request, FINGERPRINT_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn duplicate_index_memory_is_fixed_across_cardinality() {
+        let mut small = DuplicateIndex::with_buckets(8);
+        let mut large = DuplicateIndex::with_buckets(8);
+        for index in 0..10 {
+            small
+                .insert(&format!("id-{index}"), index)
+                .expect("small insert");
+        }
+        for index in 0..5_000 {
+            large
+                .insert(&format!("id-{index}"), index)
+                .expect("large insert");
+        }
+        assert_eq!(small.memory_bytes(), large.memory_bytes());
+        assert_eq!(large.lookup("id-4999").expect("lookup"), Some(4999));
+        assert_eq!(large.lookup("missing").expect("lookup"), None);
+        assert_eq!(large.lookup("id-7").expect("lookup"), Some(7));
+    }
+
+    #[test]
+    fn duplicate_index_is_exact_when_all_ids_share_a_bucket() {
+        let mut index = DuplicateIndex::with_buckets(1);
+        index.insert("alpha", 3).expect("insert alpha");
+        index.insert("beta", 9).expect("insert beta");
+        assert_eq!(index.lookup("alpha").expect("lookup"), Some(3));
+        assert_eq!(index.lookup("beta").expect("lookup"), Some(9));
+        assert_eq!(index.lookup("gamma").expect("lookup"), None);
+        let scratch = index.path.clone().expect("scratch path");
+        assert!(scratch.exists());
+        drop(index);
+        assert!(!scratch.exists(), "scratch index must be removed on drop");
     }
 
     #[test]
