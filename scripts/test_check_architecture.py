@@ -7,6 +7,31 @@ import unittest
 import check_architecture as gate
 
 
+class AnchorMaskingTests(unittest.TestCase):
+    """Check that anchors cannot be satisfied by non-code text."""
+
+    def test_comment_and_string_text_is_masked(self) -> None:
+        """Remove commentary and literals but keep executable anchors."""
+        source = (
+            "// pub fn commented() {}\n"
+            'let text = "pub fn literal() {}";\n'
+            "pub fn real() {}\n"
+        )
+        masked = gate.mask_rust(source)
+        self.assertNotIn("commented", masked)
+        self.assertNotIn("literal", masked)
+        self.assertIn("pub fn real", masked)
+
+    def test_raw_string_and_block_comment_are_masked(self) -> None:
+        """Handle nested block comments and raw string literals."""
+        source = (
+            '/* /* pub fn nested() {} */ */\nlet r = r#"pub fn raw() {}"#;\n'
+        )
+        masked = gate.mask_rust(source)
+        self.assertNotIn("nested", masked)
+        self.assertNotIn("raw", masked)
+
+
 class ArchitectureGateTests(unittest.TestCase):
     """Model architecture gate tests."""
 
