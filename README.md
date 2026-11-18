@@ -1,68 +1,65 @@
-# Cross-Venue Market Data Infrastructure
+# Cross-venue market-data collector
 
-A Rust market-data platform for the ingestion, normalization, validation,
-journaling, replay, and analysis of financial-market data across asset classes
-and trading venues. The current implementation ingests live prediction-market
-order books from Kalshi and Polymarket, maintains one normalized book per
-outcome symbol, writes the supplied FIX SBE schema, and can record the exact
-public websocket frames. The two adapters share the same core.
+A read-only Rust collector for public market data. It discovers venues over
+REST, subscribes over websocket, normalizes events, writes the supplied FIX SBE
+capture format, and preserves exact inbound frames in a checksummed raw-frame
+journal. Kalshi, Polymarket and Hyperliquid share one ingestion core; other
+venue connectors are reference-data only unless explicitly stated.
 
-This is a market-data system, not a trading system. It does not submit orders,
-hold positions, or run strategy or pre-trade risk. The Kalshi adapter has an
-opt-in authenticated live test, but no live Kalshi run is claimed until a
-permitted production connection produces a verified capture. Polymarket
-full-universe discovery is verified, but simultaneous subscription at that
-fan-out is not claimed.
+The collector does not place orders, hold positions, or run strategy or
+pre-trade risk. It uses no private credentials except the opt-in, read-only
+Kalshi test, and never writes credentials or account identifiers into evidence.
 
-## Integrated foundation: feed continuity, recovery and multi-venue evidence
+## Current state
 
-A preserved 60-minute full-universe Polymarket run
-([evidence](measurements/live/2026-11-14-universe-capture-failed/)) showed a
-completed process — zero writer errors, a finalized journal — that was **not a
-correct dataset**: 12.34% of snapshots failed SBE reconstruction after 756
-websocket connection errors drove 10 million failover snapshots. The
-integrated continuity and recovery work (merged into `main`) enforces one
-distinction throughout the collector:
+| Area | Status |
+|---|---|
+| Hyperliquid | Real, direct, read-only mainnet evidence: five retained captures, including two clean `HL_LIVE_OK` runs and one `HL_LIVE_RECOVERY_OK` reconnect drill. See `captures/INDEX.md`. |
+| Polymarket | Live connections disabled until permitted access is documented. The preserved live run is a failed capture, not certification. |
+| Kalshi | Opt-in authenticated read-only test exists; no live capture is claimed. |
+| Gates | `cargo xtask ci` PASS on `main` at `1445068`; 850 Rust tests, 35 Python tests, 14 e2e suites. Hosted run `44207462878`. |
+| Evidence | Synthetic loopback is labelled as such. Only independently verified real captures become live evidence. |
 
-> An instrument's lack of updates must not be interpreted as evidence that its
-> WebSocket connection is unhealthy. A connection's health must not be
-> interpreted as proof that every instrument's book is continuous.
+Start with the [live evidence index](captures/INDEX.md),
+[live evidence runbook](docs/live-evidence-runbook.md),
+[programme status](docs/programme-status.md), and
+[architecture](docs/architecture.md).
 
-Three state domains are kept independent — connection health (per source,
-including typed heartbeat acknowledgements: application-text for Polymarket,
-native WebSocket control frames for Kalshi), instrument activity (per
-instrument), and book continuity (per instrument+source, with recovery fencing).
-Exhausting a symbol's stale-probe budget records a symbol continuity incident
-and requests a symbol-scoped refresh; it does not reconnect the shared source.
-Source-level reconnects remain a separate transport/heartbeat or explicit
-recovery decision.
+The central rule separates three domains: a quiet instrument is not an
+unhealthy connection, an unhealthy connection is not proof of a broken book,
+and a green exit code is not a correct dataset. A preserved 60-minute
+full-universe Polymarket run completed with zero writer errors and a finalized
+journal while 12.34% of snapshots failed SBE reconstruction after 756
+websocket errors drove 10 million failover snapshots. The continuity and
+recovery work in `main` enforces that separation in the collector itself.
 
-Recovery decisions are now typed (`RecoveryAction`, `RecoveryCause`) and
-bounded by an explicit attempt policy. Instrument-scoped refreshes and
-source-scoped reconnects are owned by independent bounded queues keyed by
-exact `(source, instrument, generation)` and `(source, generation)` targets.
-Recovery acknowledgements enumerate the instruments they cover and are fenced
-to those exact targets; stale generations, old connection epochs, and unknown
-targets fence nothing. Milestone and evidence status is in
-[`docs/programme-status.md`](docs/programme-status.md).
+Three state domains are independent: connection health (per source, with typed
+heartbeat acknowledgements), instrument activity (per instrument), and book
+continuity (per instrument and source, with receive fences). A stale-probe
+budget produces a symbol-scoped refresh, not a source reconnect. Recovery
+decisions are typed and bounded; acknowledgements fence exact
+`(source, instrument, generation)` or `(source, generation)` targets.
+
 Kalshi's margin (perps) API is a separate surface with its own wire contract
 and is not covered by these adapters.
 
-The current code supports prediction markets only. The target domain, adapter
-boundaries, numeric model, event model, and compatibility rules are in the
-[platform charter](docs/platform-charter.md). That document describes design
-intent; it is not a claim that those capabilities are implemented.
-
 ## Review path
 
-[Programme status](docs/programme-status.md) — what is implemented, tested and certified.
-[Architecture](docs/architecture.md) — current topology and failure model.
-[Requirement-to-test matrix](docs/requirement-test-matrix.md) — test evidence per requirement.
-[Programme status](docs/programme-status.md) — current gate and certification status.
-[Design decisions](docs/design-decisions.md) — why the boundaries exist.
-[ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md) — journal observation contract.
-[Hyperliquid integration](docs/hyperliquid-integration-plan.md) — reference venue design; H0-H3 are synthetic-loopback evidence only.
-[JSONL-to-target reference](docs/jsonl-postgres-reference.md) — non-market-data source/target pipeline.
+- [Programme status](docs/programme-status.md) — status by milestone.
+- [Live evidence index](captures/INDEX.md) — real captures with hashes.
+- [Live evidence runbook](docs/live-evidence-runbook.md) — access rules and
+  reproduction commands.
+- [Architecture](docs/architecture.md) — topology and failure model.
+- [Requirement-to-test matrix](docs/requirement-test-matrix.md) — test
+  evidence per requirement.
+- [Design decisions](docs/design-decisions.md) — why boundaries exist.
+- [ADR-0002](docs/adr/0002-persist-transport-observations-without-changing-receive-order.md)
+  — journal observation contract.
+- [Hyperliquid integration](docs/hyperliquid-integration-plan.md) — venue
+  design and H0-H3 history.
+- [JSONL-to-target reference](docs/jsonl-postgres-reference.md) —
+  non-market-data source/target pipeline.
+- [Style guide](docs/style-guide.md) — enforceable rules for every language.
 
 Format contracts: [replay format](docs/replay-format.md),
 [raw-frame journal](docs/raw-frame-journal.md),
@@ -76,17 +73,17 @@ Format contracts: [replay format](docs/replay-format.md),
   restart.
 - Keeps a book per symbol, applies snapshots and deltas, and rejects invalid
   states.
-Writes a full snapshot every 60 seconds and on failover, recovery, removal,
+- Writes a full snapshot every 60 seconds and on failover, recovery, removal,
   and shutdown; writes deltas as they arrive.
-Assigns symbols to fixed shards and opens `replicas` sockets per shard. A
+- Assigns symbols to fixed shards and opens `replicas` sockets per shard. A
   backup is promoted only when its book is valid and fresh, and promotion is
   anchored by a full snapshot.
-Handles SIGINT and SIGTERM: stops discovery, emits final snapshots, closes
+- Handles SIGINT and SIGTERM: stops discovery, emits final snapshots, closes
   websockets, flushes and syncs output, and writes sidecars.
-Exposes Prometheus text metrics, `/healthz`, and `/readyz` when configured.
-Provides deterministic replay, offline SBE inspect and verify, and an optional
+- Exposes Prometheus text metrics, `/healthz`, and `/readyz` when configured.
+- Provides deterministic replay, offline SBE inspect and verify, and an optional
   checksummed raw-frame journal with `journal verify` and `journal recover`.
-Egress is direct by default or one explicitly configured proxy (HTTP
+- Egress is direct by default or one explicitly configured proxy (HTTP
   CONNECT or SOCKS5), fail-closed with no silent fallback, sharing one policy
   between REST discovery and websockets. Route provenance — mode, kind, host,
   port, DNS mode, fingerprint — is recorded in the journal manifest; the

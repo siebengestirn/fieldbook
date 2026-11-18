@@ -49,7 +49,11 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `127e926` | PR #70 — P5 JSONL-to-target reference application |
 | `339b4ad` | PR #71 — final status reconciliation |
 | `56d5960` | PR #72 — comment audit and duplicate roadmap removal |
-| `0c669a2` | PR #74 — P6 durable file-to-target pipeline (current integrated head) |
+| `0c669a2` | PR #74 — P6 durable file-to-target pipeline |
+| `d856ee7` | PR #76 — xtask, Rust style guides and assurance hardening |
+| `e647667` | PR #77 — real Hyperliquid wire decoding and live certification |
+| `23fe17c` | PR #78 — live Hyperliquid reconnect recovery drill |
+| `1445068` | PR #79 — Google/Linux style gates for all languages (current integrated head) |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -69,9 +73,9 @@ twice.
 | M5.5 backpressure | Yes | Yes | Reference executed | Yes (v16 profiles bundle) | No | No |
 | M5.6 stage timing | Yes | Yes | Workload-dependent | Synthetic stage histograms; no full v16 timing report retained | No | Synthetic measurements only; no performance certificate |
 | M5.7 capacity | Stages 4k/10k/25k/50k present | Deterministic selectors CI-tested | 10k short cell executed | Yes (v16 10k manifest in bundle); 25k/50k not executed | No | No capacity claim |
-| Hyperliquid H0 | Yes | Yes | N/A | Golden reference fixture | No | N/A |
-| Hyperliquid H1 | Yes | Yes | N/A | Telemetry fixtures + e2e | No | No |
-| Hyperliquid H2 | Yes | Yes | N/A | Books e2e + recovery drill | No | No |
+| Hyperliquid H0 | Yes | Yes | N/A | Golden fixture + live REST discovery | Yes (read-only mainnet) | N/A |
+| Hyperliquid H1 | Yes | Yes | N/A | Telemetry fixtures + real frames | Yes (read-only mainnet) | No |
+| Hyperliquid H2 | Yes | Yes | N/A | Books e2e + retained live captures | Yes (read-only mainnet) | No |
 | Hyperliquid H3 | Yes | Yes | Reference executed | Yes (v16 Hyperliquid manifest in bundle) | No | No |
 | Coinbase/Kraken/OKX/Binance H0 | Yes | Yes | N/A | Golden reference fixtures | No | No |
 | GOV-002 | Yes | Yes | N/A | v16 evidence bundle + ledger | N/A | N/A |
@@ -96,8 +100,24 @@ capability.
 | Local reference commit store | Implemented (`src/application/durable.rs`): append-only checksummed fsync records, reopen verification, fault injection | Single-writer local filesystem only; no replication or live DB | No |
 | Streaming file source | Implemented (`src/application/file_source.rs`): bounded `BufRead`, exact bytes/offsets, fingerprint-bound resume | No network source; no live file ingestion run | No |
 | PostgreSQL execution | `SqlExecutor` trait + parameterized `CommitTranscript` (`src/application/postgres.rs`) | No `tokio-postgres` driver, no server, no migrations executed | No |
-| Hyperliquid | H0-H3 implemented | Synthetic loopback evidence only | No |
+| Hyperliquid | H0-H3 implemented; H1/H2 wire codecs fixed from real frames | Read-only mainnet captures in `captures/`, including a reconnect drill; no orders | No |
 | Additional H0 venues | Reference data only | No live product integration | No |
+
+## Live validation
+
+`captures/INDEX.md` records five real, direct, read-only Hyperliquid mainnet
+captures with source commits, configurations, raw journals, SBE files,
+verification reports and SHA-256 manifests. Two clean `HL_LIVE_OK` runs and
+one `HL_LIVE_RECOVERY_OK` reconnect drill pass all acceptance criteria: exact
+selected-universe coverage, exchange-originated snapshots, valid SBE
+reconstruction, complete journals, zero decode/writer errors and reconciled
+accounting. The two failed captures are retained as the evidence that exposed
+the wire-shape, precision and accounting defects.
+
+Synthetic loopback (`evidence_class = synthetic-loopback`) is not live
+evidence. Polymarket live connections remain disabled because permitted access
+from the operator's estimated location was not documented; Kalshi remains an
+opt-in authenticated read-only test with no live capture claimed.
 
 ## Evidence bundle
 
