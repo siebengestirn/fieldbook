@@ -1,0 +1,21 @@
+{
+  "classification": "real-live-postgresql-source-scoped-integration",
+  "created_at_utc": "2026-11-18T16:28:45.789709+00:00",
+  "source_branch": "feat/source-scoped-postgres-v2",
+  "source_commit": "35db19adf8db163212105d75f53882eefe029da0",
+  "command": "NIRNAY_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' cargo test --test postgres_live --offline -- --ignored --nocapture",
+  "server": "PostgreSQL 18.6, local socket /tmp:5432, database postgres",
+  "outcome": "PASS: two sources share one target with isolated checkpoints; stale-writer rejection; idempotent exact retry; changed-payload rejection; failed checkpoint race leaves no event; explicit legacy mapping; concurrent writers preserve per-source monotonicity",
+  "files": [
+    {
+      "path": "command.txt",
+      "bytes": 137,
+      "sha256": "5bc5a982673de896f0ac91e134e350c88a2212c97ec19d8cca345922a7f6229c"
+    },
+    {
+      "path": "output.log",
+      "bytes": 321,
+      "sha256": "a78c748f74309619d6363f5f1836f368d69af0e373863245b4cdb05a7b11065c"
+    }
+  ]
+}
