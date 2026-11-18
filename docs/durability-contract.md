@@ -91,9 +91,17 @@ identity components, sequence, byte offset and last idempotency key. Event and
 disposition rows persist `source_id` alongside their canonical provenance.
 Legacy rows migrated from the earlier schema retain the explicit empty-source
 namespace until an operator calls `assign_legacy_checkpoint_source`; ownership
-is never inferred from an event id. That procedure also rebinds the checksum to
-the claimed source in the same transaction, so a mapped position can be reloaded
-and resumed. `PgTarget::with_source` binds an instance to one source identity
+is never inferred from an event id. The operator must assert that the entire
+legacy target/contract stream belonged to one source. A mixed-source legacy
+stream cannot be split safely from the information retained. Legacy reads and
+source assignment validate
+the original v1/v2 checksum (or the current empty-source v4 checksum) before
+any mapping. It re-keys matching event and disposition records from the
+historical three-part or empty-source four-part key, verifies the two identity
+sets and the checkpoint's last-event anchor, and then rebinds the checksum to
+the claimed source in the same transaction. A mapped position can therefore
+be reloaded without losing replay deduplication.
+`PgTarget::with_source` binds an instance to one source identity
 and rejects an envelope whose source does not match.
 `PgTarget` accepts exactly one event per delivery and rejects empty or
 multi-event batches rather than silently dropping records. A failed statement

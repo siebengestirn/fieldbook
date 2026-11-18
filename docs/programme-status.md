@@ -95,16 +95,25 @@ metadata and cannot by itself establish PR merge commits, branch cleanliness or
 the operator's PostgreSQL run. Those facts are taken from the canonical Git
 checkout and the retained evidence records instead of from the archive.
 
-## Current integrated head (a6f9fcb)
+## Current source export (operator-reported head 169537b)
 
-`a6f9fcb` is the integration of PR #89. PR #87 (`15d2993`) hardened PostgreSQL
-checkpoint integrity: the checksum binds target, position and the last
-idempotency key; competing writers cannot regress a checkpoint; and an event
-key reused with changed canonical content fails closed. PR #88 (`7edfb92`)
-bounded loopback mock-server socket waits so a loaded host cannot turn a
-healthy read into an uncertain receipt. Both PRs were merged after
-`cargo xtask ci` and `scripts/assurance/polish.sh --loop 2` passed; the live
-PostgreSQL test passed against a real PostgreSQL 18.6 server.
+The operator reports canonical `main` at
+`169537bdc931a3f9856d5f9b630efd2d4e0bce9c`, clean and pushed, after PRs #90
+and #91. The uploaded `engineering-challenge-template-169537b.zip` contains no
+`.git` metadata, so this export cannot independently establish its Git
+ancestry, merge commits or working-tree cleanliness. The supplied report says
+`cargo xtask ci`, `scripts/assurance/polish.sh` and all PR CI jobs passed.
+
+PR #87 (`15d2993`) hardened PostgreSQL checkpoint integrity: the checksum
+binds target, position and the last idempotency key; competing writers cannot
+regress a checkpoint; and an event key reused with changed canonical content
+fails closed. PR #88 (`7edfb92`) bounded loopback mock-server socket waits so
+a loaded host cannot turn a healthy read into an uncertain receipt. PR #89
+(`a6f9fcb`) reconciled the prior head and live evidence. PR #90 added
+source-scoped durable PostgreSQL delivery. PR #91 excluded operator-local
+`.local/` review files from the style scan and retained the merged-head live
+PostgreSQL output. The exact PR #90/#91 merge commit IDs are not present in this
+source export and are therefore not invented here.
 
 Three retained evidence records are deliberately distinguished:
 
@@ -118,9 +127,16 @@ Three retained evidence records are deliberately distinguished:
   exact code commit that was executed.
 
 The earlier record does not prove a later head passed; each head-specific
-record proves only its own source commit. None is a production certification.
+record proves only its own source commit. The merged record at
+`measurements/live/2026-11-18-postgres-source-scoped-merged/` identifies test
+commit `200bbf141e39002ce2f443679333eeac721b6ef3` and retains the exact
+command, output and hashes. Its note states that the subsequent
+style-gate/evidence-only change did not modify production source.
+The operator reports the later `169537b` head and PR #91 CI as passing; this ZIP
+cannot independently verify that Git relationship. None of these records is a
+production certification.
 
-## Source-scoped durable delivery (PR #90, under review)
+## Source-scoped durable delivery (PR #90, operator-reported merged)
 
 The PostgreSQL target namespaces checkpoints by
 `(target_id, source_id, output_contract_version)`. Event and disposition rows
@@ -128,8 +144,12 @@ carry source identity, and the checksum binds all three identity dimensions
 plus sequence, byte offset and the last idempotency key. `PgTarget::with_source`
 rejects an envelope from a different source. Legacy rows stay in an explicit
 empty-source namespace and are moved only by the operator-controlled
-`assign_legacy_checkpoint_source` procedure, which rebinds the checksum to the
-claimed source so the mapped position remains resumable. The opt-in live test
+`assign_legacy_checkpoint_source` procedure. The procedure validates the
+historical checksum, re-keys corresponding event/disposition rows, verifies
+that their identity sets and the checkpoint's final-event anchor agree, and
+rebinds the checksum in one transaction. The operator must assert that the
+legacy target/contract stream belonged to one source; a mixed-source legacy
+stream cannot be separated safely after the fact. The opt-in live test
 exercises two sources on one physical target, per-source restart reload, stale
 writers, foreign-source envelopes, exact retries, changed payloads, a failed
 checkpoint race, resumable legacy mapping and concurrent writers. Command,

@@ -210,8 +210,11 @@ pub fn apply_migrations(client: &mut Client) -> Result<(), ExecutorError> {
 
 /// Explicitly move one legacy empty-source checkpoint into a source namespace.
 ///
-/// This is an operator-controlled migration step. It never infers ownership
-/// from an event id and refuses to overwrite an existing source-scoped row.
+/// This is an operator-controlled migration step. The operator asserts that
+/// every legacy row for this target and contract version belongs to `source_id`;
+/// mixed-source legacy targets cannot be separated safely and must not use this
+/// procedure. It never infers ownership from an event id or overwrites an
+/// existing source-scoped checkpoint.
 pub fn assign_legacy_checkpoint_source(
     client: &mut Client,
     target_id: &str,
@@ -238,7 +241,8 @@ pub fn assign_legacy_checkpoint_source(
         .query_opt(
             concat!(
                 "SELECT last_committed_sequence, last_committed_offset, ",
-                "last_idempotency_key, output_contract_version FROM target_checkpoints ",
+                "last_idempotency_key, output_contract_version, checkpoint_checksum ",
+                "FROM target_checkpoints ",
                 "WHERE target_id = $1 AND source_id = '' AND output_contract_version = $2 ",
                 "FOR UPDATE"
             ),
@@ -267,8 +271,109 @@ pub fn assign_legacy_checkpoint_source(
     let last_idempotency_key: String = legacy.get(2);
     let stored_version = u32::try_from(legacy.get::<_, i64>(3))
         .map_err(|error| ExecutorError::Failed(error.to_string()))?;
-    // The legacy checksum was computed under the empty source. Rebinding it to
-    // the claimed source is what makes the mapped checkpoint resumable.
+    let stored_checksum: String = legacy.get(4);
+    if !legacy_checkpoint_checksum_matches(
+        target_id,
+        stored_version,
+        sequence,
+        offset,
+        &last_idempotency_key,
+        &stored_checksum,
+    ) {
+        return Err(ExecutorError::Failed(
+            "legacy checkpoint checksum is invalid; refusing source assignment".to_owned(),
+        ));
+    }
+    // Historical rows used the three-part key; rows written through the
+    // current explicit empty-source namespace use the four-part key with an
+    // empty source component. Re-key only those exact forms for this target
+    // and contract version. Event, disposition and checkpoint changes share
+    // one transaction so replay cannot duplicate a migrated event.
+    let contract_version_text = output_contract_version.to_string();
+    let moved_events = tx
+        .execute(
+            concat!(
+                "UPDATE canonical_business_events SET source_id = $2, ",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || ",
+                "$2 || chr(31) || $3 ",
+                "WHERE target_id = $1 AND source_id = '' AND (",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || $3 ",
+                "OR idempotency_key = event_id || chr(31) || target_id || chr(31) || chr(31) || $3)"
+            ),
+            &[&target_id, &source_id, &contract_version_text],
+        )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    let moved_dispositions = tx
+        .execute(
+            concat!(
+                "UPDATE delivery_dispositions SET source_id = $2, ",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || ",
+                "$2 || chr(31) || $3 ",
+                "WHERE target_id = $1 AND source_id = '' AND (",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || $3 ",
+                "OR idempotency_key = event_id || chr(31) || target_id || chr(31) || chr(31) || $3)"
+            ),
+            &[&target_id, &source_id, &contract_version_text],
+        )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    if moved_events != moved_dispositions {
+        return Err(ExecutorError::Failed(format!(
+            "legacy event/disposition row counts differ during source assignment: {moved_events} events, {moved_dispositions} dispositions"
+        )));
+    }
+    let paired_rows_match: bool = tx
+        .query_one(
+            concat!(
+                "SELECT NOT EXISTS (",
+                "SELECT event_id FROM canonical_business_events ",
+                "WHERE target_id = $1 AND source_id = $2 AND ",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || $2 || chr(31) || $3 ",
+                "EXCEPT SELECT event_id FROM delivery_dispositions ",
+                "WHERE target_id = $1 AND source_id = $2 AND ",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || $2 || chr(31) || $3",
+                ") AND NOT EXISTS (",
+                "SELECT event_id FROM delivery_dispositions ",
+                "WHERE target_id = $1 AND source_id = $2 AND ",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || $2 || chr(31) || $3 ",
+                "EXCEPT SELECT event_id FROM canonical_business_events ",
+                "WHERE target_id = $1 AND source_id = $2 AND ",
+                "idempotency_key = event_id || chr(31) || target_id || chr(31) || $2 || chr(31) || $3",
+                ")"
+            ),
+            &[&target_id, &source_id, &contract_version_text],
+        )
+        .map(|row| row.get(0))
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    if !paired_rows_match {
+        return Err(ExecutorError::Failed(
+            "legacy event and disposition identities differ; refusing source assignment".to_owned(),
+        ));
+    }
+    if !last_idempotency_key.is_empty() {
+        let checkpoint_anchor_matches: bool = tx
+            .query_one(
+                concat!(
+                    "SELECT EXISTS (SELECT 1 FROM canonical_business_events ",
+                    "WHERE target_id = $1 AND source_id = $2 AND event_id = $3 ",
+                    "AND idempotency_key = event_id || chr(31) || target_id || chr(31) || $2 || chr(31) || $4) ",
+                    "AND EXISTS (SELECT 1 FROM delivery_dispositions ",
+                    "WHERE target_id = $1 AND source_id = $2 AND event_id = $3 ",
+                    "AND idempotency_key = event_id || chr(31) || target_id || chr(31) || $2 || chr(31) || $4)"
+                ),
+                &[&target_id, &source_id, &last_idempotency_key, &contract_version_text],
+            )
+            .map(|row| row.get(0))
+            .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+        if !checkpoint_anchor_matches {
+            return Err(ExecutorError::Failed(
+                "legacy checkpoint event key has no matching event and disposition; refusing source assignment"
+                    .to_owned(),
+            ));
+        }
+    }
+
+    // Only a checksum-verified legacy position may be rebound to the claimed
+    // source. The new checksum uses the source-scoped v4 identity format.
     let checksum = checkpoint_checksum(
         target_id,
         source_id,
@@ -504,6 +609,69 @@ fn checkpoint_checksum(
     format_checksum(hasher)
 }
 
+/// Checksum used by the original pre-event-key PostgreSQL checkpoint schema.
+fn legacy_checkpoint_checksum_v1(target_id: &str, sequence: u64, offset: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(target_id.as_bytes());
+    hasher.update(sequence.to_le_bytes());
+    hasher.update(offset.to_le_bytes());
+    format_checksum(hasher)
+}
+
+/// Checksum used after same-position retries gained an event-key fence and
+/// before source identity became part of the checkpoint namespace.
+fn legacy_checkpoint_checksum_v2(
+    target_id: &str,
+    sequence: u64,
+    offset: u64,
+    last_idempotency_key: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"pg-checkpoint-v2\0");
+    hasher.update(
+        u64::try_from(target_id.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(target_id.as_bytes());
+    hasher.update(sequence.to_le_bytes());
+    hasher.update(offset.to_le_bytes());
+    hasher.update(
+        u64::try_from(last_idempotency_key.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(last_idempotency_key.as_bytes());
+    format_checksum(hasher)
+}
+
+/// Accept only checksums that can legitimately exist in the empty-source
+/// namespace: current v4, historical event-bound v2, or original v1 when no
+/// event key was stored. This is used both before legacy reads and before an
+/// operator-controlled source assignment.
+fn legacy_checkpoint_checksum_matches(
+    target_id: &str,
+    output_contract_version: u32,
+    sequence: u64,
+    offset: u64,
+    last_idempotency_key: &str,
+    stored_checksum: &str,
+) -> bool {
+    stored_checksum
+        == checkpoint_checksum(
+            target_id,
+            "",
+            output_contract_version,
+            sequence,
+            offset,
+            last_idempotency_key,
+        )
+        || stored_checksum
+            == legacy_checkpoint_checksum_v2(target_id, sequence, offset, last_idempotency_key)
+        || (last_idempotency_key.is_empty()
+            && stored_checksum == legacy_checkpoint_checksum_v1(target_id, sequence, offset))
+}
+
 fn format_checksum(hasher: Sha256) -> String {
     let digest = hasher.finalize();
     let mut text = String::with_capacity(7 + digest.len() * 2);
@@ -531,6 +699,9 @@ pub struct PgTarget<'a> {
 }
 
 impl<'a> PgTarget<'a> {
+    /// Construct a target in the explicit legacy empty-source namespace.
+    /// Modern envelopes carry a non-empty source id and must use
+    /// [`Self::with_source`].
     #[must_use]
     pub fn new(target_id: &str, client: &'a mut Client) -> Self {
         Self::with_checkpoint(target_id, client, PgCheckpoint::initial(target_id))
@@ -548,6 +719,9 @@ impl<'a> PgTarget<'a> {
         )
     }
 
+    /// Construct a target from a checkpoint in the legacy empty-source
+    /// namespace. The checkpoint and each delivered envelope must have an
+    /// empty source id.
     #[must_use]
     pub fn with_checkpoint(
         target_id: &str,
@@ -557,6 +731,8 @@ impl<'a> PgTarget<'a> {
         Self::with_source_checkpoint(target_id, "", client, checkpoint)
     }
 
+    /// Construct a source-bound target from a checkpoint. Delivery rejects a
+    /// checkpoint whose source namespace differs from `source_id`.
     #[must_use]
     pub fn with_source_checkpoint(
         target_id: &str,
@@ -655,9 +831,21 @@ impl<'a> PgTarget<'a> {
                 .then_some(last_idempotency_key),
             source_id: self.source_id.clone(),
         };
-        if checkpoint.checksum != checkpoint.expected_checksum(&self.target_id) {
+        let checksum_valid = if self.source_id.is_empty() {
+            legacy_checkpoint_checksum_matches(
+                &self.target_id,
+                OUTPUT_CONTRACT_VERSION,
+                checkpoint.sequence,
+                checkpoint.offset,
+                checkpoint.last_idempotency_key.as_deref().unwrap_or(""),
+                &checkpoint.checksum,
+            )
+        } else {
+            checkpoint.checksum == checkpoint.expected_checksum(&self.target_id)
+        };
+        if !checksum_valid {
             return Err(ExecutorError::Failed(
-                "persisted checkpoint checksum does not match target, position and last event id"
+                "persisted checkpoint checksum does not match target, source, position and last event id"
                     .to_owned(),
             ));
         }
@@ -677,40 +865,41 @@ impl TargetConnector for PgTarget<'_> {
             [event] if event.event_id.as_str() != key.as_str() => {
                 Some("delivery idempotency key does not match the canonical event id".to_owned())
             }
-            [event] if !self.source_id.is_empty() && event.source_id.as_str() != self.source_id => {
-                Some(format!(
-                    "event source `{}` does not match target source `{}`",
-                    event.source_id.as_str(),
-                    self.source_id
-                ))
-            }
             [event] => {
-                let position_advances = self.next_sequence > self.checkpoint.sequence
-                    && self.next_offset > self.checkpoint.offset;
-                let exact_position_retry = self.next_sequence == self.checkpoint.sequence
-                    && self.next_offset == self.checkpoint.offset
-                    && self.checkpoint.last_idempotency_key.as_deref() == Some(key.as_str());
-                event_validation_error(event).or_else(|| {
-                    if self.checkpoint.checksum
-                        != self.checkpoint.expected_checksum(&self.target_id)
-                    {
-                        Some(
-                            "checkpoint checksum does not match target, position and last event id"
-                                .to_owned(),
-                        )
-                    } else if self.next_sequence > i64::MAX as u64
-                        || self.next_offset > i64::MAX as u64
-                    {
-                        Some("checkpoint position exceeds PostgreSQL BIGINT range".to_owned())
-                    } else if position_advances || exact_position_retry {
-                        None
-                    } else {
-                        Some(
-                            "checkpoint position must advance, except for an exact same-key retry"
-                                .to_owned(),
-                        )
-                    }
-                })
+                if let Some(reason) = source_binding_error(
+                    &self.source_id,
+                    &self.checkpoint.source_id,
+                    event.source_id.as_str(),
+                ) {
+                    Some(reason)
+                } else {
+                    let position_advances = self.next_sequence > self.checkpoint.sequence
+                        && self.next_offset > self.checkpoint.offset;
+                    let exact_position_retry = self.next_sequence == self.checkpoint.sequence
+                        && self.next_offset == self.checkpoint.offset
+                        && self.checkpoint.last_idempotency_key.as_deref() == Some(key.as_str());
+                    event_validation_error(event).or_else(|| {
+                        if self.checkpoint.checksum
+                            != self.checkpoint.expected_checksum(&self.target_id)
+                        {
+                            Some(
+                                "checkpoint checksum does not match target, source, position and last event id"
+                                    .to_owned(),
+                            )
+                        } else if self.next_sequence > i64::MAX as u64
+                            || self.next_offset > i64::MAX as u64
+                        {
+                            Some("checkpoint position exceeds PostgreSQL BIGINT range".to_owned())
+                        } else if position_advances || exact_position_retry {
+                            None
+                        } else {
+                            Some(
+                                "checkpoint position must advance, except for an exact same-key retry"
+                                    .to_owned(),
+                            )
+                        }
+                    })
+                }
             }
             _ => Some(
                 "PostgreSQL target currently accepts exactly one event per delivery".to_owned(),
@@ -1071,6 +1260,27 @@ pub fn execute_transcript<E: SqlExecutor>(
         executor.execute(statement)?;
     }
     Ok(count)
+}
+
+/// Require the target, its checkpoint and the canonical envelope to name the
+/// same source. The empty string is an explicit legacy namespace, not a
+/// wildcard that accepts and erases modern source provenance.
+fn source_binding_error(
+    bound_source_id: &str,
+    checkpoint_source_id: &str,
+    envelope_source_id: &str,
+) -> Option<String> {
+    if checkpoint_source_id != bound_source_id {
+        return Some(format!(
+            "checkpoint source `{checkpoint_source_id}` does not match target source `{bound_source_id}`"
+        ));
+    }
+    if envelope_source_id != bound_source_id {
+        return Some(format!(
+            "event source `{envelope_source_id}` does not match target source `{bound_source_id}`"
+        ));
+    }
+    None
 }
 
 /// Validate an envelope before it can enter the simulated transaction.
@@ -1512,6 +1722,37 @@ mod tests {
     }
 
     #[test]
+    fn source_binding_rejects_legacy_laundering_and_checkpoint_transplants() {
+        let event = envelope("evt-1", "acct", 42);
+        let source_a = event.source_id.as_str();
+        let source_b = "src:other";
+
+        assert_eq!(
+            source_binding_error(source_a, source_a, source_a),
+            None,
+            "matching target, checkpoint and envelope sources must pass"
+        );
+        assert!(
+            source_binding_error("", "", source_a)
+                .expect("legacy namespace must reject modern source")
+                .contains("event source"),
+            "the legacy namespace must not erase modern source provenance"
+        );
+        assert!(
+            source_binding_error(source_b, source_a, source_b)
+                .expect("checkpoint from another source must be rejected")
+                .contains("checkpoint source"),
+            "a checkpoint must not be transplanted between sources"
+        );
+        assert!(
+            source_binding_error(source_a, source_a, source_b)
+                .expect("foreign envelope must be rejected")
+                .contains("event source"),
+            "an envelope from another source must be rejected"
+        );
+    }
+
+    #[test]
     fn commit_transcript_has_full_shape_and_target_specific_idempotency_key() {
         let event = envelope("evt-1", "acct", 42);
         let mut transcript = build_commit_transcript(
@@ -1639,6 +1880,80 @@ mod tests {
             checkpoint.expected_checksum("pg-a"),
             checksum_a,
             "verified by the source-scoped integration contract"
+        );
+    }
+
+    #[test]
+    fn legacy_checkpoint_checksums_are_verified_before_source_mapping() {
+        let target_id = "pg-legacy";
+        let sequence = 7;
+        let offset = 700;
+        let legacy_key = "evt-legacy";
+        let v1 = legacy_checkpoint_checksum_v1(target_id, sequence, offset);
+        let v2 = legacy_checkpoint_checksum_v2(target_id, sequence, offset, legacy_key);
+        let current_legacy = checkpoint_checksum(
+            target_id,
+            "",
+            OUTPUT_CONTRACT_VERSION,
+            sequence,
+            offset,
+            legacy_key,
+        );
+
+        assert!(
+            legacy_checkpoint_checksum_matches(
+                target_id,
+                OUTPUT_CONTRACT_VERSION,
+                sequence,
+                offset,
+                "",
+                &v1,
+            ),
+            "the original v1 checksum must remain readable without an event key"
+        );
+        assert!(
+            legacy_checkpoint_checksum_matches(
+                target_id,
+                OUTPUT_CONTRACT_VERSION,
+                sequence,
+                offset,
+                legacy_key,
+                &v2,
+            ),
+            "the event-bound v2 checksum must remain readable"
+        );
+        assert!(
+            legacy_checkpoint_checksum_matches(
+                target_id,
+                OUTPUT_CONTRACT_VERSION,
+                sequence,
+                offset,
+                legacy_key,
+                &current_legacy,
+            ),
+            "the current empty-source v4 checksum must remain readable"
+        );
+        assert!(
+            !legacy_checkpoint_checksum_matches(
+                target_id,
+                OUTPUT_CONTRACT_VERSION,
+                sequence,
+                offset,
+                legacy_key,
+                "sha256:legacy",
+            ),
+            "an unrecognized legacy checksum must fail closed"
+        );
+        assert!(
+            !legacy_checkpoint_checksum_matches(
+                target_id,
+                OUTPUT_CONTRACT_VERSION,
+                sequence,
+                offset,
+                legacy_key,
+                &v1,
+            ),
+            "the v1 checksum cannot validate a checkpoint with a recorded event key"
         );
     }
 
