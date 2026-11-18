@@ -18,6 +18,84 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs/architecture.md"
 
+
+def mask_rust(source: str) -> str:
+    """Blank comments and string literals, preserving offsets and newlines.
+
+    Architecture anchors describe executable code. Matching the raw text would
+    let a commented-out call or a string constant satisfy a requirement, so
+    every source used for anchor matching is masked first.
+    """
+    output = list(source)
+    index = 0
+    length = len(source)
+    while index < length:
+        char = source[index]
+        if char == "/" and source.startswith("//", index):
+            end = source.find("\n", index)
+            end = length if end == -1 else end
+            for position in range(index, end):
+                output[position] = " "
+            index = end
+            continue
+        if char == "/" and source.startswith("/*", index):
+            depth = 1
+            cursor = index + 2
+            while cursor < length and depth:
+                if source.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif source.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            for position in range(index, cursor):
+                if output[position] != "\n":
+                    output[position] = " "
+            index = cursor
+            continue
+        if char == "r" and index + 1 < length and source[index + 1] == "#":
+            hashes = 0
+            cursor = index + 1
+            while cursor < length and source[cursor] == "#":
+                hashes += 1
+                cursor += 1
+            if cursor < length and source[cursor] == '"':
+                terminator = '"' + "#" * hashes
+                end = source.find(terminator, cursor + 1)
+                end = length if end == -1 else end + len(terminator)
+                for position in range(index, end):
+                    if output[position] != "\n":
+                        output[position] = " "
+                index = end
+                continue
+        if char == '"':
+            cursor = index + 1
+            while cursor < length:
+                if source[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if source[cursor] == '"':
+                    cursor += 1
+                    break
+                cursor += 1
+            for position in range(index, min(cursor, length)):
+                if output[position] != "\n":
+                    output[position] = " "
+            index = cursor
+            continue
+        index += 1
+    return "".join(output)
+
+
+# Anchors that are legitimately string literals: venue wire field names and an
+# explicit fail-closed error message. They describe data/contracts, not calls,
+# so matching them against raw source is intentional and narrowly allowed.
+LITERAL_ANCHORS = frozenset(
+    {"tickSz", "lotSz", "network discovery is not implemented"}
+)
+
 # Every tracked Rust source module must have an assigned responsibility.
 SOURCE_RESPONSIBILITIES = {
     "src/cli.rs": "clap command model and CLI-to-settings overrides",
@@ -461,10 +539,10 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
 
     # Check active source files reference missing dependencies
-    config = (root / "src/config.rs").read_text(encoding="utf-8")
+    config = mask_rust((root / "src/config.rs").read_text(encoding="utf-8"))
     capacity_path = root / "src/capacity.rs"
     if capacity_path.exists():
-        capacity = capacity_path.read_text(encoding="utf-8")
+        capacity = mask_rust(capacity_path.read_text(encoding="utf-8"))
         collector_struct = re.search(
             r"pub struct CollectorSettings\s*\{(.*?)\n\}", config, re.DOTALL
         )
@@ -479,19 +557,26 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
                 f"src/capacity.rs references CollectorSettings.{field}, absent from src/config.rs"
             )
     catalog_path = root / "src/catalog.rs"
-    if catalog_path.exists() and "util::sha256_hex" in catalog_path.read_text(
-        encoding="utf-8"
-    ):
-        util_text = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (root / "src/util").rglob("*.rs")
+    catalog = (
+        mask_rust(catalog_path.read_text(encoding="utf-8"))
+        if catalog_path.exists()
+        else ""
+    )
+    if catalog_path.exists() and "util::sha256_hex" in catalog:
+        util_text = mask_rust(
+            "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in (root / "src/util").rglob("*.rs")
+            )
         )
         if not re.search(r"\bfn\s+sha256_hex\b", util_text):
             errors.append(
                 "src/catalog.rs references util::sha256_hex, but no such function exists under src/util/"
             )
 
-    coordinator = (root / "src/coordinator.rs").read_text(encoding="utf-8")
+    coordinator = mask_rust(
+        (root / "src/coordinator.rs").read_text(encoding="utf-8")
+    )
     required = {
         "capacity startup": "capacity::plan(&settings, &initial_markets)",
         "capacity refresh admission": "capacity::plan_fixed_topology(&settings, &markets, &loads)",
@@ -517,7 +602,7 @@ def reference_app_independence_errors(root: Path = ROOT) -> list[str]:
         if not path.exists():
             errors.append(f"P5 reference source is missing: {rel}")
             continue
-        source = path.read_text(encoding="utf-8")
+        source = mask_rust(path.read_text(encoding="utf-8"))
         for token in REFERENCE_APP_FORBIDDEN_TOKENS:
             if token in source:
                 errors.append(
@@ -651,9 +736,11 @@ def main() -> int:
                 f"required source anchor file is missing: {anchor_path}"
             )
             continue
-        source = file_path.read_text(encoding="utf-8")
+        raw_source = file_path.read_text(encoding="utf-8")
+        source = mask_rust(raw_source)
         for anchor in anchors:
-            if anchor not in source:
+            literal_match = anchor in LITERAL_ANCHORS and anchor in raw_source
+            if anchor not in source and not literal_match:
                 errors.append(
                     f"source anchor `{anchor}` not found in `{anchor_path}`"
                 )

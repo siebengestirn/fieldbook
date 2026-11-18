@@ -19,8 +19,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/gate.sh"
 gate_cd_root
 
 loops=1
-if [[ "${1:-}" == "--loop" ]]; then
-  loops="${2:?--loop requires a repetition count}"
+case "${1:-}" in
+  "") ;;
+  --loop) loops="${2:?--loop requires a repetition count}" ;;
+  *)
+    printf 'unexpected argument: %s\n' "$1" >&2
+    exit 2
+    ;;
+esac
+if (( $# > 2 )); then
+  printf 'unexpected arguments: %s\n' "${*:3}" >&2
+  exit 2
 fi
 if ! [[ "$loops" =~ ^[0-9]+$ ]] || (( loops < 1 )); then
   echo "--loop requires an integer >= 1" >&2
