@@ -14,16 +14,16 @@ Kalshi test, and never writes credentials or account identifiers into evidence.
 
 | Area | Status |
 |---|---|
-| Hyperliquid | Real, direct, read-only mainnet evidence: five retained captures, including two clean `HL_LIVE_OK` runs and one `HL_LIVE_RECOVERY_OK` reconnect drill. See `captures/INDEX.md`. |
+| Hyperliquid | Operator-reported direct, read-only mainnet evidence: five captures, including two clean `HL_LIVE_OK` runs and one `HL_LIVE_RECOVERY_OK` reconnect drill. Artifacts are in the Git-ignored `captures/` directory and are not included in this source export; verify them using `captures/INDEX.md` in the evidence-bearing checkout. |
 | Polymarket | Live connections disabled until permitted access is documented. The preserved live run is a failed capture, not certification. |
 | Kalshi | Opt-in authenticated read-only test exists; no live capture is claimed. |
-| Gates | `cargo xtask ci` PASS on `main` at `1445068`; 850 Rust tests, 35 Python tests, 14 e2e suites. Hosted run `44207462878`. |
+| Gates | Reported PASS on `main` at `e9433fd8ab84c6879399d8449bc8e8093de40d41`: `cargo xtask ci` and `scripts/assurance/polish.sh`; four consecutive locked full-suite runs passed. 850 Rust tests and 37 Python tests. |
 | Evidence | Synthetic loopback is labelled as such. Only independently verified real captures become live evidence. |
 
-Start with the [live evidence index](captures/INDEX.md),
-[live evidence runbook](docs/live-evidence-runbook.md),
+Start with the [live evidence runbook](docs/live-evidence-runbook.md),
 [programme status](docs/programme-status.md), and
-[architecture](docs/architecture.md).
+[architecture](docs/architecture.md). The evidence index at
+`captures/INDEX.md` is operator-local and is not part of this source export.
 
 The central rule separates three domains: a quiet instrument is not an
 unhealthy connection, an unhealthy connection is not proof of a broken book,
@@ -46,7 +46,8 @@ and is not covered by these adapters.
 ## Review path
 
 - [Programme status](docs/programme-status.md) — status by milestone.
-- [Live evidence index](captures/INDEX.md) — real captures with hashes.
+- The live evidence index at `captures/INDEX.md` is operator-local and is
+  omitted from source exports because `captures/` is Git-ignored.
 - [Live evidence runbook](docs/live-evidence-runbook.md) — access rules and
   reproduction commands.
 - [Architecture](docs/architecture.md) — topology and failure model.

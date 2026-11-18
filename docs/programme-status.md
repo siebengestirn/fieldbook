@@ -53,11 +53,29 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `d856ee7` | PR #76 — xtask, Rust style guides and assurance hardening |
 | `e647667` | PR #77 — real Hyperliquid wire decoding and live certification |
 | `23fe17c` | PR #78 — live Hyperliquid reconnect recovery drill |
-| `1445068` | PR #79 — Google/Linux style gates for all languages (current integrated head) |
+| `1445068` | PR #79 — Google/Linux style gates for all languages |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
 twice.
+
+## Current exported head (2026-11-18)
+
+The supplied source export identifies `main` at
+`e9433fd8ab84c6879399d8449bc8e8093de40d41`, following PR #81 (architecture
+anchor masking and polish argument validation) and PR #82 (the bounded D10
+reconnect-drain deadline correction). The export contains the corresponding
+source and tests, but has no `.git` metadata. It therefore cannot independently
+recover the individual merge commit ids or establish remote branch cleanliness
+and push state. Do not treat the last per-PR hash above (`1445068`) as the
+current head.
+
+The supplied verification record reports `cargo xtask ci` and
+`scripts/assurance/polish.sh` passing on this head, 850 Rust tests and 37 Python
+tests passing, and four consecutive locked full-suite runs passing before the
+PR #82 merge. Hosted run identifiers were not included in the export. These
+results are recorded as supplied; this source-only review cannot rerun the Rust
+gates because it has neither the pinned Rust toolchain nor Git metadata.
 
 ## Milestone status
 
@@ -105,14 +123,19 @@ capability.
 
 ## Live validation
 
-`captures/INDEX.md` records five real, direct, read-only Hyperliquid mainnet
-captures with source commits, configurations, raw journals, SBE files,
-verification reports and SHA-256 manifests. Two clean `HL_LIVE_OK` runs and
-one `HL_LIVE_RECOVERY_OK` reconnect drill pass all acceptance criteria: exact
-selected-universe coverage, exchange-originated snapshots, valid SBE
-reconstruction, complete journals, zero decode/writer errors and reconciled
-accounting. The two failed captures are retained as the evidence that exposed
-the wire-shape, precision and accounting defects.
+The operator reports that `captures/INDEX.md` records five real, direct,
+read-only Hyperliquid mainnet captures with source commits, configurations,
+raw journals, SBE files, verification reports and SHA-256 manifests. Two clean
+`HL_LIVE_OK` runs and one `HL_LIVE_RECOVERY_OK` reconnect drill pass all
+acceptance criteria: exact selected-universe coverage, exchange-originated
+snapshots, valid SBE reconstruction, complete journals, zero decode/writer
+errors and reconciled accounting. The two failed captures are retained as
+evidence that exposed the wire-shape, precision and accounting defects.
+
+The `captures/` directory is Git-ignored and is not present in this source
+export. Consequently, the live evidence and its SHA-256 manifests are not
+independently verifiable from this archive; use the evidence-bearing checkout
+and validate each manifest before relying on those claims.
 
 Synthetic loopback (`evidence_class = synthetic-loopback`) is not live
 evidence. Polymarket live connections remain disabled because permitted access
@@ -156,5 +179,4 @@ subscription consumption or the SBE writer. P5 is a deterministic simulator
 plus SQL contract, not a live database integration. P6 adds a **real local
 durable store** and a **PostgreSQL contract plus `SqlExecutor` trait**, but it
 still has no driver and no live database. It is not wired into the market-data
-collector, makes no performance claim, and is not wired into the market-data
-collector.
+collector and makes no performance claim.
