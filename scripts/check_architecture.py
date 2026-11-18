@@ -98,6 +98,7 @@ LITERAL_ANCHORS = frozenset(
 
 # Every tracked Rust source module must have an assigned responsibility.
 SOURCE_RESPONSIBILITIES = {
+    "src/application/network_source.rs": "loopback network source reusing the generic line parser, exact duplicate index and resume anchor",
     "src/cli.rs": "clap command model and CLI-to-settings overrides",
     "src/config.rs": "configuration defaults, deserialization, and validation",
     "src/completeness.rs": "per-symbol feed-completeness accounting for captures: anchored vs unanchored deltas, quiet intervals",

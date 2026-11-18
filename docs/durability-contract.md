@@ -56,7 +56,45 @@ driver or server is involved.
 - Transactional exactly-once coupling between journal position and SBE output.
 - Defined RPO/RTO per failure model beyond local process/host recovery.
 - Cross-run retention or archival policy.
-- Live PostgreSQL durability, migrations or server-side exactly-once behavior.
+
+## Real PostgreSQL target (opt-in)
+
+`src/application/postgres.rs::PgTarget` applies the existing
+`build_commit_transcript` / `SqlExecutor` contract through a real
+`postgres::Client`. It is an additional target, not a replacement for the
+deterministic simulator. `MIGRATION_SQL` creates three tables:
+`canonical_business_events`, `delivery_dispositions` and `target_checkpoints`.
+Database uniqueness on `idempotency_key` (and on
+`(target_id, output_contract_version)` for checkpoints) is the idempotency
+authority; the client never relies on an in-memory set. The event, disposition
+and checkpoint writes are one `BEGIN ... COMMIT` transaction. A failed
+statement triggers `ROLLBACK` and returns an `Uncertain` receipt; a retry with
+the same key is resolved as a duplicate by the database.
+
+`tests/postgres_live.rs` is an ignored, opt-in test against an operator-supplied
+server. It verifies database idempotency, checkpoint progression,
+lost-acknowledgement recovery and restart from the persisted checkpoint. CI
+does not run it because no server is provisioned there.
+
+### Guarantee boundaries
+
+No absolute zero-loss claim is made. The following table states what the real
+target guarantees and what configuration each guarantee requires.
+
+| Failure | Guarantee | Required configuration |
+|---|---|---|
+| Process crash before `COMMIT` | Transaction rolls back; no row and no checkpoint advance | Single transaction; driver returns error; `ROLLBACK` attempted |
+| Process crash after `COMMIT` but before receipt | At-least-once delivery; retry is deduplicated by the database key | `synchronous_commit = on` |
+| Host loss | Committed rows survive if the database server and its storage survive | `synchronous_commit = on`; durable storage with a verified backup |
+| Disk loss on the database host | No local guarantee; requires database redundancy | PostgreSQL replication with a documented RPO/RTO |
+| Database failover | Acknowledged transactions preserved only with synchronous replication | `synchronous_commit = on` and quorum-synchronous standby |
+| Network partition between collector and database | Uncertain receipts; no checkpoint advance in the collector | Fail-closed retry with the same idempotency key |
+| Database restart | Checkpoint row and committed rows persist | Normal PostgreSQL crash recovery |
+
+RPO is zero for transactions acknowledged with synchronous commit only when
+the storage and synchronous replication configuration above hold. RTO is the
+database's own recovery time plus collector restart; this repository does not
+measure or claim either.
 
 ## Failure model
 
@@ -72,6 +110,9 @@ driver or server is involved.
 | P6 changed source bytes | Stale resume anchor is rejected; no checkpoint reuse |
 | P6 unavailable target | Checkpoint and durable store stay unmoved |
 | P6 simulated run | No external write and no durable checkpoint progression |
+| Live PG statement failure | Transaction rolled back; uncertain receipt; no local checkpoint advance |
+| Live PG commit then lost ack | Retry is deduplicated by database key; checkpoint advances once |
+| Live PG restart | Persisted checkpoint reloads and sequence continues monotonically |
 
 Any future replication layer must preserve these boundaries and add explicit
 quorum acknowledgements; it must not silently weaken local durability.

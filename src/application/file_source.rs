@@ -265,6 +265,14 @@ impl SourceIdentity {
         Self::register_with_fingerprint(name, SourceFingerprint::compute(bytes))
     }
 
+    /// Register a network source from an operator-declared stream token. The
+    /// token is a content identity, not a whole-stream hash; a resume anchor
+    /// binds to it rather than claiming completeness of a live stream.
+    #[must_use]
+    pub fn register_token(name: &str, token: &str) -> Self {
+        Self::register_with_fingerprint(name, SourceFingerprint::compute(token.as_bytes()))
+    }
+
     fn register_with_fingerprint(name: &str, fingerprint: SourceFingerprint) -> Self {
         Self {
             name: name.to_owned(),

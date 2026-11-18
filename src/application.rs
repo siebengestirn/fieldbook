@@ -38,6 +38,7 @@ use crate::{
 
 pub mod durable;
 pub mod file_source;
+pub mod network_source;
 pub mod postgres;
 
 /// Schema version accepted by the JSONL reader. A record carrying a different
