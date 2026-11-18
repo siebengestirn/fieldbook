@@ -88,6 +88,28 @@ operator-reported until checked in the canonical Git checkout and evidence
 logs. The opt-in database test has code in the archive; no database transcript
 or server manifest is retained here.
 
+## Current head (7edfb92)
+
+PR #87 (`15d2993`) applied the reviewed PostgreSQL checkpoint-integrity
+hardening: the checksum binds target, position and the last idempotency key;
+competing writers cannot regress a checkpoint; and an event key reused with
+changed canonical content fails closed. PR #88 (`7edfb92`) bounded the loopback
+mock-server socket waits so a loaded host cannot turn a healthy read into an
+uncertain receipt. Both PRs were merged after `cargo xtask ci` and
+`scripts/assurance/polish.sh --loop 2` passed; the live PostgreSQL test passed
+against a real PostgreSQL 18.6 server.
+
+Two retained evidence records are deliberately distinguished:
+
+- `measurements/live/2026-11-18-postgres-checkpoint-integrity/` records the
+  PASS on the earlier source commit `ac33b81`.
+- `measurements/live/2026-11-18-postgres-checkpoint-integrity-head-7edfb92/`
+  records the exact command, output and SHA-256 of the rerun from clean
+  `main` at `7edfb92`.
+
+The earlier record does not prove the later head passed; the second record
+does. Neither is a production certification.
+
 ## Milestone status
 
 | Milestone | Code | CI | Opt-in | Evidence | Live | Perf |
@@ -111,8 +133,8 @@ or server manifest is retained here.
 | Platform M2 identity (Phases 1-3) | Yes | Yes | N/A | 11 identity tests | No | N/A |
 | Platform M3 products (Phase 1) | Yes | Yes | N/A | Product/capability/state-machine tests | No | N/A |
 | Platform M4 canonical events (Phase 1) | Yes | Yes | N/A | Canonical conversion/schema tests | No | N/A |
-| P5 JSONL-to-target | Yes (simulator + synchronous PostgreSQL `PgTarget`) | Yes (operator-reported) | Live PostgreSQL test reported PASS | Code/test retained; no server transcript in this export | Opt-in server test only; no production certification | No |
-| P6 durable file-to-target | Yes (local durable store, file source, `PgTarget`, loopback TCP source) | Yes (operator-reported) | PostgreSQL test reported PASS; loopback reconnect tests in CI | Source/tests retained; DB transcript not retained | Opt-in PostgreSQL test reported PASS; TCP source remains loopback-only; no production certification | No |
+| P5 JSONL-to-target | Yes (simulator + synchronous PostgreSQL `PgTarget`) | Yes | Live PostgreSQL test PASS at `7edfb92` | Exact command, output and hashes retained for current head | Opt-in server test only; no production certification | No |
+| P6 durable file-to-target | Yes (local durable store, file source, `PgTarget`, loopback TCP source) | Yes | PostgreSQL test PASS at `7edfb92`; loopback reconnect tests in CI | Source/tests and live DB output retained for current head | Opt-in PostgreSQL test PASS; TCP source remains loopback-only; no production certification | No |
 
 ## Contract foundation vs live integration
 

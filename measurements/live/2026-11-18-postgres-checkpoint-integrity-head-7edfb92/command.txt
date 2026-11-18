@@ -1,0 +1,1 @@
+NIRNAY_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' cargo test --test postgres_live --offline -- --ignored --nocapture
