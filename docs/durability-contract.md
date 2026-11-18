@@ -78,16 +78,24 @@ id. Rows created by the earlier schema migrate with an empty last key and
 retain legacy checksum validation; they cannot accept an unverifiable
 same-position retry, but can advance to a new position. A zero-row conditional
 update rolls the transaction back. Reusing an event key
-also compares all persisted canonical event columns; the same key with changed
-content is rejected and the transaction is rolled back. The checkpoint
-namespace currently identifies one
-ordered source stream per `target_id`; source identity is not a separate
-checkpoint key, so multiple source streams targeting one database need distinct
-logical target ids until the schema/API adds a source namespace. `PgTarget`
-currently accepts exactly one event per delivery and rejects empty or
-multi-event batches rather than silently dropping records. A failed
-statement triggers `ROLLBACK` and returns an `Uncertain` receipt; a retry with
-the same key is resolved as a duplicate by the database.
+also compares all persisted canonical event columns, including source identity;
+the same key with changed content is rejected and the transaction is rolled
+back.
+
+The checkpoint namespace is
+`(target_id, source_id, output_contract_version)`. One physical database
+target can carry several independent source streams; no adapter has to pretend
+a different source is a different target. The checksum binds all three
+identity components, sequence, byte offset and last idempotency key. Event and
+disposition rows persist `source_id` alongside their canonical provenance.
+Legacy rows migrated from the earlier schema retain the explicit empty-source
+namespace until an operator calls `assign_legacy_checkpoint_source`; ownership
+is never inferred from an event id. `PgTarget::with_source` binds an instance
+to one source identity and rejects an envelope whose source does not match.
+`PgTarget` accepts exactly one event per delivery and rejects empty or
+multi-event batches rather than silently dropping records. A failed statement
+triggers `ROLLBACK` and returns an `Uncertain` receipt; a retry with the same
+key is resolved as a duplicate by the database.
 
 `tests/postgres_live.rs` is an ignored, opt-in test against an operator-supplied
 server. It exercises database idempotency, transaction behavior, checkpoint

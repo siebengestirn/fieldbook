@@ -110,6 +110,21 @@ Two retained evidence records are deliberately distinguished:
 The earlier record does not prove the later head passed; the second record
 does. Neither is a production certification.
 
+## Source-scoped durable delivery (implementation under review)
+
+The PostgreSQL target now namespaces checkpoints by
+`(target_id, source_id, output_contract_version)`. Event and disposition rows
+carry source identity, the checkpoint checksum binds all identity components,
+and `PgTarget::with_source` rejects an envelope from a different source.
+Legacy rows stay in an explicit empty-source namespace and are moved only by
+the operator-controlled `assign_legacy_checkpoint_source` procedure. The
+opt-in live test exercises two sources on one physical target, stale writers,
+exact retries, changed payloads, a failed checkpoint race, explicit legacy
+mapping and concurrent writers. Command, output and hashes are retained in
+`measurements/live/2026-11-18-postgres-source-scoped/`. This is an implemented
+and live-tested integration, not a production certification or a throughput
+claim.
+
 ## Milestone status
 
 | Milestone | Code | CI | Opt-in | Evidence | Live | Perf |
