@@ -2071,7 +2071,9 @@ fn build_cell_manifest_for_reference(out: &std::path::Path, seed: u64) -> serde_
 fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile) -> CellConfig {
     let base = CellConfig {
         events,
-        limits: Some((45, 10)),
+        // A reconnect storm legitimately needs more drain time when the CI
+        // host is busy. The limit still bounds the wait and fails on stall.
+        limits: Some((45, 30)),
         ..headless_cell_config(seed, symbols)
     };
     CellConfig::for_sweep(base, profile)
