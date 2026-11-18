@@ -1,12 +1,14 @@
-//! Bounded-memory streaming file source (Platform P6).
+//! Streaming file source with bounded I/O buffers (Platform P6).
 //!
 //! This is a second source implementation for the non-market-data reference
 //! application. Unlike the in-memory `JsonlSource`, it reads a `BufRead` one
 //! physical line at a time through a fixed-capacity buffer, retains the exact
 //! bytes of each line, and reports the physical byte offset of every line. A
-//! SHA-256 fingerprint of the complete source bytes is computed once, before
-//! streaming, so a resume anchor can be bound to the exact content that was
-//! originally read.
+//! SHA-256 fingerprint of the complete source bytes is computed once with a
+//! fixed-size read buffer, before streaming, so a resume anchor can be bound to
+//! the exact content that was originally read. Exact duplicate-id detection
+//! currently retains one in-memory entry per unique record, so total memory
+//! still grows with source cardinality; only the I/O buffers are bounded.
 //!
 //! No clock, randomness, network, or environment is read. The module imports
 //! only the generic application contract, the opaque identity newtype and the
@@ -16,7 +18,7 @@
 use std::{
     collections::BTreeMap,
     fmt::Write as FmtWrite,
-    io::{BufRead, Read},
+    io::{BufRead, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -33,9 +35,12 @@ use crate::{
 pub const FILE_SCHEMA_VERSION: u32 = 1;
 
 /// Hard cap on one physical line. The reader's reusable buffer never grows
-/// beyond this bound plus the single line delimiter, so an arbitrarily large
-/// input file is processed in bounded memory.
+/// beyond this bound plus the single line delimiter, so each physical line
+/// is processed with a bounded reusable buffer. Duplicate-id state is separate.
 pub const MAX_LINE_BYTES: usize = 1 << 20;
+
+/// Fixed read size used to fingerprint a file without loading it into memory.
+const FINGERPRINT_BUFFER_BYTES: usize = 64 * 1024;
 
 /// SHA-256 of the complete bytes of a source, computed once before streaming.
 /// The text form is `sha256:<64 lowercase hex digits>`.
@@ -49,6 +54,27 @@ impl SourceFingerprint {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         let digest = hasher.finalize();
+        Self::from_digest(&digest)
+    }
+
+    /// Hash a reader using a fixed-size buffer. Interrupted reads are retried;
+    /// every other I/O error is returned without producing a partial digest.
+    pub fn compute_reader<R: Read>(reader: &mut R) -> Result<Self, std::io::Error> {
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; FINGERPRINT_BUFFER_BYTES];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => hasher.update(&buffer[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let digest = hasher.finalize();
+        Ok(Self::from_digest(&digest))
+    }
+
+    fn from_digest(digest: &[u8]) -> Self {
         let mut text = String::with_capacity("sha256:".len() + digest.len() * 2);
         let _ = FmtWrite::write_str(&mut text, "sha256:");
         for byte in digest {
@@ -81,10 +107,14 @@ pub struct SourceIdentity {
 impl SourceIdentity {
     #[must_use]
     pub fn register(name: &str, bytes: &[u8]) -> Self {
+        Self::register_with_fingerprint(name, SourceFingerprint::compute(bytes))
+    }
+
+    fn register_with_fingerprint(name: &str, fingerprint: SourceFingerprint) -> Self {
         Self {
             name: name.to_owned(),
             source_id: OpaqueId::derive("jsonl", "file-source", "registered", name),
-            fingerprint: SourceFingerprint::compute(bytes),
+            fingerprint,
         }
     }
 
@@ -266,6 +296,8 @@ pub enum FileSourceError {
     Open { path: String, message: String },
     #[error("reading source bytes for fingerprint `{path}`: {message}")]
     Fingerprint { path: String, message: String },
+    #[error("rewinding source after fingerprint `{path}`: {message}")]
+    Rewind { path: String, message: String },
     #[error("resume offset {expected} is past end of source")]
     UnexpectedEof { expected: u64 },
     #[error("reading resume prefix at offset {offset}: {message}")]
@@ -460,30 +492,31 @@ impl<R: BufRead> FileSource<R> {
 }
 
 impl FileSource<std::io::BufReader<std::fs::File>> {
-    /// Open a real file, compute its fingerprint over the complete bytes once,
-    /// and return a source positioned at byte zero.
+    /// Open a real file, fingerprint it with bounded reads on one file handle,
+    /// rewind that handle, and return a source positioned at byte zero. The
+    /// source file must remain unchanged while this source is being consumed.
     pub fn open(path: &Path, name: &str) -> Result<Self, FileSourceError> {
         let mut file = std::fs::File::open(path).map_err(|error| FileSourceError::Open {
             path: path.display().to_string(),
             message: error.to_string(),
         })?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|error| FileSourceError::Fingerprint {
-                path: path.display().to_string(),
-                message: error.to_string(),
-            })?;
-        let identity = SourceIdentity::register(name, &bytes);
-        let reader = std::io::BufReader::new(std::fs::File::open(path).map_err(|error| {
-            FileSourceError::Open {
+        let fingerprint = SourceFingerprint::compute_reader(&mut file).map_err(|error| {
+            FileSourceError::Fingerprint {
                 path: path.display().to_string(),
                 message: error.to_string(),
             }
-        })?);
-        Ok(Self::new(reader, identity))
+        })?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| FileSourceError::Rewind {
+                path: path.display().to_string(),
+                message: error.to_string(),
+            })?;
+        let identity = SourceIdentity::register_with_fingerprint(name, fingerprint);
+        Ok(Self::new(std::io::BufReader::new(file), identity))
     }
 
-    /// Open a real file and resume from a verified anchor.
+    /// Open a real file, fingerprint it with bounded reads, then resume from a
+    /// verified anchor using the same open file handle.
     pub fn open_with_resume(
         path: &Path,
         name: &str,
@@ -494,19 +527,19 @@ impl FileSource<std::io::BufReader<std::fs::File>> {
             path: path.display().to_string(),
             message: error.to_string(),
         })?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|error| FileSourceError::Fingerprint {
-                path: path.display().to_string(),
-                message: error.to_string(),
-            })?;
-        let identity = SourceIdentity::register(name, &bytes);
-        let reader = std::io::BufReader::new(std::fs::File::open(path).map_err(|error| {
-            FileSourceError::Open {
+        let fingerprint = SourceFingerprint::compute_reader(&mut file).map_err(|error| {
+            FileSourceError::Fingerprint {
                 path: path.display().to_string(),
                 message: error.to_string(),
             }
-        })?);
+        })?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| FileSourceError::Rewind {
+                path: path.display().to_string(),
+                message: error.to_string(),
+            })?;
+        let identity = SourceIdentity::register_with_fingerprint(name, fingerprint);
+        let reader = std::io::BufReader::new(file);
         Self::with_resume(reader, identity, anchor, target_id)
     }
 }
@@ -606,7 +639,19 @@ fn discard_bytes<R: Read>(reader: &mut R, offset: u64) -> Result<(), FileSourceE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
+
+    struct ReadRequestTracker<R> {
+        inner: R,
+        largest_request: usize,
+    }
+
+    impl<R: Read> Read for ReadRequestTracker<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> Result<usize, std::io::Error> {
+            self.largest_request = self.largest_request.max(buffer.len());
+            self.inner.read(buffer)
+        }
+    }
 
     fn record(id: &str, value: i64) -> String {
         format!(
@@ -620,6 +665,41 @@ mod tests {
             Cursor::new(bytes.clone()),
             SourceIdentity::register("fixture", &bytes),
         )
+    }
+
+    #[test]
+    fn reader_fingerprint_uses_a_fixed_bounded_buffer() {
+        let bytes = vec![0x5a; FINGERPRINT_BUFFER_BYTES * 4 + 17];
+        let mut reader = ReadRequestTracker {
+            inner: Cursor::new(bytes.clone()),
+            largest_request: 0,
+        };
+        let fingerprint =
+            SourceFingerprint::compute_reader(&mut reader).expect("reader fingerprint");
+        assert_eq!(fingerprint, SourceFingerprint::compute(&bytes));
+        assert_eq!(reader.largest_request, FINGERPRINT_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn file_open_fingerprints_and_reads_from_the_same_rewound_handle() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("source.jsonl");
+        let text = format!("{}\n", record("file-open", 7));
+        let bytes = text.as_bytes();
+        let mut file = std::fs::File::create(&path).expect("create source");
+        file.write_all(bytes).expect("write source");
+        drop(file);
+
+        let mut source = FileSource::open(&path, "file-open").expect("open source");
+        assert_eq!(
+            source.identity().fingerprint(),
+            &SourceFingerprint::compute(bytes)
+        );
+        let observation = source
+            .read_one()
+            .expect("read source")
+            .expect("first observation");
+        assert_eq!(observation.record_id, "file-open");
     }
 
     #[test]

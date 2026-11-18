@@ -9,9 +9,9 @@ different target, without touching collector core, exchange adapters, SBE, the
 raw-frame journal, replay or the catalog.
 
 P5 established the in-memory source plus the SQL/simulator contract. **P6 adds a
-real local durable commit path, a bounded streaming file source with a
-content-bound resume anchor, corrected delivery semantics and a database
-executor seam.** It still adds no dependency and no live connection.
+real local durable commit path, a streaming file source with a content-bound
+resume anchor, corrected delivery semantics and a database executor seam.** It
+still adds no dependency and no live connection.
 
 ## Architecture proof
 
@@ -42,7 +42,9 @@ Five boundaries make the independence claim falsifiable:
    The P6 [`FileSource`](../src/application/file_source.rs) does the same with a
    fixed-capacity `BufRead` buffer, adds the physical byte offset of every
    line, and computes a SHA-256 fingerprint of the complete file **once before**
-   streaming.
+   streaming with a fixed 64 KiB read buffer. Exact duplicate-id detection
+   retains one in-memory entry per unique record, so total memory still grows
+   with source cardinality; the I/O buffers, not all source state, are bounded.
 **Payload boundary.** [`CanonicalBusinessEvent`](../src/application.rs) is
    `{ entity_id, kind, value, observed_at }`. It has no price, side, venue,
    instrument, book or market concept. The transform is a pure function of the
@@ -89,7 +91,8 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
   transform.
 `src/application/file_source.rs`: `SourceFingerprint`, `SourceIdentity`,
   `SourceRegistry`, `CheckpointBinding`, `DurableCheckpoint`, `DuplicatePolicy`
-  and the bounded `FileSource` with `open`/`with_resume`.
+  and the fixed-buffer `FileSource` with `open`/`with_resume`. Its exact
+  duplicate-id index grows with the number of unique records.
 `src/application/durable.rs`: `CommitRecord`, `CommitEnvelope`, `CommitStore`,
   `DurableState`, `StoreFault`, `load_state` and `run_streaming_pipeline`.
 `src/application/postgres.rs`: parameterized SQL generation, a deterministic

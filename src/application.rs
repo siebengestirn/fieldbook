@@ -20,7 +20,7 @@
 //! without touching the wrapped target or the durable store, so a simulated run
 //! cannot perform an external side effect or move the durable checkpoint.
 //!
-//! Platform P6 adds three additive modules: [`file_source`] is a bounded-memory
+//! Platform P6 adds three additive modules: [`file_source`] is a bounded-buffer
 //! streaming source with a content fingerprint and a verified resume anchor;
 //! [`durable`] is a real local append-only checksummed commit store; and the
 //! [`postgres`] contract gains an executor seam and a transaction transcript.
