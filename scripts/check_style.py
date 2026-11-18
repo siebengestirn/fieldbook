@@ -33,7 +33,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MAX_LINE = 80
 SKIP_DIRS = frozenset(
-    {".git", "target", "build", "captures", ".pytest_cache", "__pycache__"}
+    {
+        ".git",
+        ".local",
+        "target",
+        "build",
+        "captures",
+        ".pytest_cache",
+        "__pycache__",
+    }
 )
 # Google's long-string-constant exception, mirrored in pyproject.toml Ruff
 # per-file-ignores. These files hold vocabulary, regexes and a responsibility
