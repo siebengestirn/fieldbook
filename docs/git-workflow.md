@@ -1,6 +1,6 @@
 # Git workflow
 
-This checkout is the canonical repository for `engineering-challenge`. ZIP
+The canonical repository is `siebengestirn/fieldbook`. ZIP
 exports are snapshots, never sources of Git history.
 
 ## Model
