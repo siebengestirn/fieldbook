@@ -1,6 +1,6 @@
 # Git workflow
 
-The canonical repository is `siebengestirn/fieldbook`. ZIP
+The canonical repository is `siebensterne/fieldbook`. ZIP
 exports are snapshots, never sources of Git history.
 
 ## Model

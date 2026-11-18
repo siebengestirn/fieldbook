@@ -111,7 +111,7 @@
     ],
     "validate_unmerged_topic_commits_against": "main"
   },
-  "canonical_repository": "siebengestirn/fieldbook",
+  "canonical_repository": "siebensterne/fieldbook",
   "pr_review": {
     "self_review_checklist_required": true,
     "ci_evidence_required": true,
