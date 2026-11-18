@@ -8,7 +8,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
 build = "src/util/build.rs"
-description = "Low-latency prediction-market order-book collector for the Voluntas engineering challenge"
+description = "Read-only multi-venue market-data collector with SBE capture and raw-frame journaling"
 license = "MIT"
 
 [dependencies]

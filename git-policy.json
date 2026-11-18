@@ -54,12 +54,8 @@
     "target_local_branches": [
       "main"
     ],
-    "target_remote_names": [
-      "origin"
-    ],
-    "target_remote_tracking_branches": [
-      "origin/main"
-    ],
+    "target_remote_names": [],
+    "target_remote_tracking_branches": [],
     "target_worktree_count": 1,
     "target_stash_count": 0,
     "target_tracked_generated_count": 0
@@ -111,7 +107,7 @@
     ],
     "validate_unmerged_topic_commits_against": "main"
   },
-  "canonical_repository": "siebengestirn/engineering-challenge-template",
+  "canonical_repository": "engineering-challenge",
   "pr_review": {
     "self_review_checklist_required": true,
     "ci_evidence_required": true,

@@ -1,6 +1,6 @@
 id: 1
 version: 2
-description: Voluntas engineering challenge orderbook update schema.
+description: Engineering challenge orderbook update schema.
 
 messages:
   Snapshot:

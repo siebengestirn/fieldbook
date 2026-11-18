@@ -81,7 +81,7 @@ impl PolymarketExchange {
         let client = crate::egress::http_client(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
              AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 \
-             VoluntasCollector/0.3",
+             EngineeringChallengeCollector/0.3",
             Duration::from_secs(settings.request_timeout_secs),
             &network,
         )
