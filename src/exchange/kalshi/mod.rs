@@ -108,9 +108,8 @@ impl KalshiExchange {
         };
         let client = crate::egress::http_client(
             concat!(
-                "voluntas-collector/",
-                env!("CARGO_PKG_VERSION"),
-                " (+https://github.com/voluntas-io/engineering-challenge)"
+                "engineering-challenge-collector/",
+                env!("CARGO_PKG_VERSION")
             ),
             Duration::from_secs(settings.request_timeout_secs),
             &network,

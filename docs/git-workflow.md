@@ -1,9 +1,7 @@
 # Git workflow
 
-The canonical repository is
-`siebengestirn/engineering-challenge-template`. The ZIP exports and the
-secondary `voluntas-market-data-next` working copy are snapshots, never
-sources of Git history.
+This checkout is the canonical repository for `engineering-challenge`. ZIP
+exports are snapshots, never sources of Git history.
 
 ## Model
 
