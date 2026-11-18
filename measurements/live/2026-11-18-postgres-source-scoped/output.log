@@ -1,4 +1,4 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
      Running tests/postgres_live.rs (target/debug/deps/postgres_live-9b5018bfcef9fc5d)
 
 running 1 test
