@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Lockfile refresh gate: move every dependency to the newest
 # semver-compatible release, then demand the full polish gate before the
 # refresh may survive.

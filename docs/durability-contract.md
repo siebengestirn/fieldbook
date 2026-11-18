@@ -5,11 +5,11 @@
 The collector currently provides a **local, append-only, checksummed journal**
 and a separate SBE output path. The acknowledgement boundaries are:
 
-1. `queued` — record accepted into the bounded journal writer queue.
-2. `written` — record handed to the segment buffer.
-3. `flushed` — removed from the process buffer.
-4. `synced` — covered by `File::sync_all` under the configured policy.
-5. `finalized` — segment footer, manifest entry and directory sync complete.
+`queued` — record accepted into the bounded journal writer queue.
+`written` — record handed to the segment buffer.
+`flushed` — removed from the process buffer.
+`synced` — covered by `File::sync_all` under the configured policy.
+`finalized` — segment footer, manifest entry and directory sync complete.
 
 Only `finalized` is evidence of a complete run. A full queue, write, flush,
 sync, rotation or finalization error fails the run; no frame is silently
@@ -27,27 +27,27 @@ local store in `src/application/durable.rs`. It is **not** the market-data
 journal and reuses none of its types or formats. It is built on the shared
 `write_json_atomic` helper and `sha2`.
 
-- Each commit appends a new, never-rewritten file
+Each commit appends a new, never-rewritten file
   `commit-<12-digit sequence>.json`.
-- One record atomically carries the committed event ids, dispositions and
+One record atomically carries the committed event ids, dispositions and
   quarantine evidence, and the new checkpoint, plus a SHA-256 of the exact
   serialized record.
-- `write_json_atomic` writes a sibling temporary file, fsyncs it, renames it
+`write_json_atomic` writes a sibling temporary file, fsyncs it, renames it
   into place and fsyncs the parent directory. One checksummed file is the
   commit unit (the local analogue of a SQL transaction).
 - Reopen verifies schema version, file position, checksum and checkpoint
   binding. Truncation, corruption, sequence gaps, schema drift and a changed
   source fingerprint or target fail closed.
-- Deterministic fault injection covers fail-before-write, truncated append and
+Deterministic fault injection covers fail-before-write, truncated append and
   wrong checksum; a partial append is rejected on the next open.
-- A resume anchor is bound to `(source identity, SHA-256 of full source bytes,
+A resume anchor is bound to `(source identity, SHA-256 of full source bytes,
   target id)`, records the last terminal sequence and its physical byte offset,
   and is verified before any line is re-read.
 
-This store is local, single-writer and process/host-recovery scoped. It is not
-a database transaction, not replicated, and not a live PostgreSQL connection.
-The PostgreSQL side remains a parameterized transcript plus an executor trait;
-no driver or server is involved.
+This store is local, single-writer and process/host-recovery scoped. It is not a
+database transaction, not replicated, and not a live PostgreSQL connection. The
+PostgreSQL side remains a parameterized transcript plus an executor trait; no
+driver or server is involved.
 
 ## Not implemented
 

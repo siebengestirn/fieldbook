@@ -15,20 +15,20 @@ failover are therefore driven by fixture timestamps and are deterministic.
 
 ## Common conventions
 
-- `received_at_us`: microseconds since the Unix epoch. Required on every record.
-- `source`: `{"shard": 0, "replica": 0}`. Optional; defaults to shard 0,
+`received_at_us`: microseconds since the Unix epoch. Required on every record.
+`source`: `{"shard": 0, "replica": 0}`. Optional; defaults to shard 0,
   replica 0. Replay uses one shard and at least two replicas, so replica 0 and 1
   are both available.
-- `native_symbol`: the exchange wire identifier (Kalshi ticker or Polymarket
+`native_symbol`: the exchange wire identifier (Kalshi ticker or Polymarket
   asset id). It must match a `native_symbol` in the most recent `discovery`.
-- Prices and quantities use the SBE fixed-point scale: `1_000_000` = $1.00 or
+Prices and quantities use the SBE fixed-point scale: `1_000_000` = $1.00 or
   one contract/share.
-- `exchange_ts_us`: optional exchange timestamp. If absent, the core uses the
+`exchange_ts_us`: optional exchange timestamp. If absent, the core uses the
   local `received_at_us` for the SBE `exchange_timestamp`.
-- `seq` and `clock`: optional exchange sequence and clock values. The core does
+`seq` and `clock`: optional exchange sequence and clock values. The core does
   not enforce sequence numbers itself; the live exchange sessions do. They are
   preserved for failover freshness comparisons.
-- `side` accepts `Buy`/`Sell` case-insensitively, plus `bid`/`ask` and
+`side` accepts `Buy`/`Sell` case-insensitively, plus `bid`/`ask` and
   `yes`/`no` aliases.
 
 ## Records
@@ -65,8 +65,8 @@ delta. A crossed or malformed snapshot is rejected by the core.
 
 Changes one price level. Supply exactly one of:
 
-- `quantity`: absolute replacement size (Polymarket semantics).
-- `delta`: signed change to the current size (Kalshi semantics).
+`quantity`: absolute replacement size (Polymarket semantics).
+`delta`: signed change to the current size (Kalshi semantics).
 
 ```json
 {"type":"delta","received_at_us":1700000003000000,

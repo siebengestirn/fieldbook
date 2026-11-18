@@ -1,4 +1,6 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# Verify journal write-failure handling on a real ENOSPC ext4 filesystem.
+# This Linux-only drill is skipped on other platforms.
 set -Eeuo pipefail
 
 if [[ "$(uname -s)" != "Linux" ]]; then

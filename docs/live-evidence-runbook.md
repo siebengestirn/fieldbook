@@ -1,8 +1,8 @@
 # Live market-data evidence runbook
 
-This runbook is for **read-only market-data validation**. The collector does
-not place orders. It connects directly to each venue, discovers a small set of
-open markets, subscribes to one websocket source, records an SBE capture and a
+This runbook is for **read-only market-data validation**. The collector does not
+place orders. It connects directly to each venue, discovers a small set of open
+markets, subscribes to one websocket source, records an SBE capture and a
 raw-frame journal, and verifies both outputs.
 
 ## Access conditions
@@ -18,7 +18,7 @@ establish that read-only market-data access is allowed. Check the current
 official documents and any applicable local law before running; this runbook is
 not legal advice.
 
-- [Polymarket geographic restrictions](https://help.polymarket.com/en/articles/13364163-geographic-restrictions)
+[Polymarket geographic restrictions](https://help.polymarket.com/en/articles/13364163-geographic-restrictions)
   currently lists 40 blocked countries and regions and explicitly prohibits
   VPN-based circumvention. India is not on that list, but that absence does not
   establish permission. An Indian Ministry of Electronics and Information
@@ -28,7 +28,7 @@ not legal advice.
   and intermediaries against facilitating access or circumvention. If you are
   in India, do not run the Polymarket venue unless you have documented
   confirmation that the specific read-only access is permitted.
-- The [Kalshi Member Agreement](https://kalshi.com/docs/kalshi-member-agreement.pdf)
+The [Kalshi Member Agreement](https://kalshi.com/docs/kalshi-member-agreement.pdf)
   (v1.6 at the time of writing) prohibits access, use, or trading where
   applicable law or Kalshi policy prohibits it, but it does not enumerate every
   restricted jurisdiction. The absence of India from its Restricted
@@ -40,22 +40,22 @@ not legal advice.
 
 ## Prerequisites
 
-- Rust toolchain pinned by `rust-toolchain.toml` (1.99.1).
-- `cargo`, `git`, `python3`, Bash, and a direct network path to each venue.
+Rust toolchain pinned by `rust-toolchain.toml` (1.99.1).
+`cargo`, `git`, `python3`, Bash, and a direct network path to each venue.
 - For Kalshi: a valid API key ID and private key, plus confirmation that
   authenticated read-only market-data API use is permitted for the account and
   the machine's location.
 
-Set the two explicit operator attestations only after checking the current
-venue terms and applicable law:
+Set the two explicit operator attestations only after checking the current venue
+terms and applicable law:
 
 ```bash
 export POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1
 export KALSHI_READ_ONLY_ACCESS_CONFIRMED=1
 ```
 
-Kalshi credentials are read from environment variables. Prefer a protected
-PEM file path; a PEM environment variable is also supported:
+Kalshi credentials are read from environment variables. Prefer a protected PEM
+file path; a PEM environment variable is also supported:
 
 ```bash
 export KALSHI_API_KEY_ID='your-api-key-id'
@@ -87,17 +87,17 @@ sequentially. By default a smoke run uses one shard and one websocket replica.
 `LIVE_REPLICAS` may be raised to test redundancy. It creates a timestamped
 directory under `captures/` containing, per venue:
 
-- `orderbook.sbe` — normalized FIX SBE market-data capture;
-- `markets.json` — native-to-normalized symbol metadata;
-- `report.json` — collector run, source counters, and the acknowledged
+`orderbook.sbe` — normalized FIX SBE market-data capture;
+`markets.json` — native-to-normalized symbol metadata;
+`report.json` — collector run, source counters, and the acknowledged
   subscription set;
-- `journal/` — raw websocket frames and checksummed journal manifest;
-- `sbe-verify.json` — snapshot/delta reconstruction verification;
-- `completeness.json` — per-symbol snapshot anchoring verification;
-- `coverage.json` — expected vs acknowledged vs snapshot-anchored per-symbol
+`journal/` — raw websocket frames and checksummed journal manifest;
+`sbe-verify.json` — snapshot/delta reconstruction verification;
+`completeness.json` — per-symbol snapshot anchoring verification;
+`coverage.json` — expected vs acknowledged vs snapshot-anchored per-symbol
   certificate, including explicit missing and extra symbol lists;
-- `journal-verify.json` — journal checksum and finalization verification;
-- `evidence.json` — SHA-256 hashes and summarized run counters.
+`journal-verify.json` — journal checksum and finalization verification;
+`evidence.json` — SHA-256 hashes and summarized run counters.
 
 The root `run-manifest.json` records the source commit, run times, evidence
 tier, scope, venue statuses, and hashes of the two evidence manifests. It
@@ -139,18 +139,18 @@ results.
 
 `coverage.json` enforces one invariant for each venue:
 
-```
+```text
 expected symbols = acknowledged symbols = snapshot-anchored symbols
 ```
 
-- **Expected** comes from `markets.json`, the metadata sidecar for the run's
+**Expected** comes from `markets.json`, the metadata sidecar for the run's
   selected market set.
-- **Acknowledged** is the union of each worker's last successfully applied
+**Acknowledged** is the union of each worker's last successfully applied
   subscription set, recorded in `report.json` and mapped from native exchange
   identifiers to normalized SBE symbols through `markets.json`. It proves the
   session transmitted the subscription request; it is not a claim that the
   venue replied with a wire acknowledgement.
-- **Snapshot-anchored** means the symbol appears in at least one snapshot in
+**Snapshot-anchored** means the symbol appears in at least one snapshot in
   `orderbook.sbe`. A snapshot with an empty book still counts because it
   establishes the baseline. A symbol seen only in price-level updates does not
   count and is listed under `observed_not_anchored`.
@@ -202,17 +202,17 @@ requires `refs/heads/main` and targets the protected GitHub Environment
 environment to allow only `main` and require reviewer approval. Store these as
 environment-scoped secrets/variables rather than general repository secrets:
 
-- Variable `POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1`, set only after checking
+Variable `POLYMARKET_MARKET_DATA_ACCESS_CONFIRMED=1`, set only after checking
   current Polymarket terms and applicable local law.
-- Secret `KALSHI_API_KEY_ID`.
-- Secret `KALSHI_PRIVATE_KEY_PEM`.
-- Variable `KALSHI_READ_ONLY_ACCESS_CONFIRMED=1`, set only after confirming
+Secret `KALSHI_API_KEY_ID`.
+Secret `KALSHI_PRIVATE_KEY_PEM`.
+Variable `KALSHI_READ_ONLY_ACCESS_CONFIRMED=1`, set only after confirming
   that Kalshi permits read-only market-data access for the account and runner
   location.
 
-A self-hosted runner label is an operator control, not a geographic
-verification service. Environment branch restrictions and required reviewers
-must be configured in GitHub Settings; the YAML alone cannot enforce them.
+A self-hosted runner label is an operator control, not a geographic verification
+service. Environment branch restrictions and required reviewers must be
+configured in GitHub Settings; the YAML alone cannot enforce them.
 
 After both venue tests, the workflow runs `scripts/run-live-evidence.sh` and
 uploads the complete `captures/live-*` directory as an artifact named

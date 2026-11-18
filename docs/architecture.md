@@ -152,18 +152,18 @@ implemented behavior, and no websocket, live, latency or capacity claim is made.
 
 Ownership and dependency direction are deliberate:
 
-- adapters depend on the normalized model, not on the collector state machine;
-- `CollectorCore` depends on adapter capabilities and normalized events, not on
+adapters depend on the normalized model, not on the collector state machine;
+`CollectorCore` depends on adapter capabilities and normalized events, not on
   a websocket library;
 - the coordinator owns composition and lifecycle;
-- the writer owns the output file and the journal owns the journal directory;
-- the journal writes schema v2 and stores both application data frames and
+the writer owns the output file and the journal owns the journal directory;
+the journal writes schema v2 and stores both application data frames and
   native transport controls as typed observations with independent
   `receive_seq`, `control_seq`, and `observation_seq` domains. ADR-0002 is
   implemented: controls never advance the application receive fence and are
   visible only through `read_observations()`, while `read_records()` stays
   data-only and v1 journals remain readable;
-- `replay` drives the same `CollectorCore` with fixture timestamps, so the
+`replay` drives the same `CollectorCore` with fixture timestamps, so the
   deterministic path does not depend on the live coordinator.
 
 ```mermaid
@@ -193,13 +193,12 @@ applies to a stale source probe and to a sequence reset. Empty snapshots mark
 retirement boundaries. `apply_discovery` adds and removes symbols without
 mixing their histories.
 
-Journal failures are terminal for the run: the failure latches across
-producers, the writer, and finalization. Shutdown closes admission, drains
-accepted writer and journal work, writes final snapshots, flushes and syncs
-when configured, finalizes segments, writes the manifest, and then reports. A
-bounded deadline prevents a blocked writer or journal thread from hanging
-shutdown indefinitely; the run is reported as failed or incomplete instead of
-being called complete.
+Journal failures are terminal for the run: the failure latches across producers,
+the writer, and finalization. Shutdown closes admission, drains accepted writer
+and journal work, writes final snapshots, flushes and syncs when configured,
+finalizes segments, writes the manifest, and then reports. A bounded deadline
+prevents a blocked writer or journal thread from hanging shutdown indefinitely;
+the run is reported as failed or incomplete instead of being called complete.
 
 ```mermaid
 flowchart LR

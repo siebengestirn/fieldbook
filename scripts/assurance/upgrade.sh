@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Deliberate upgrade gate: move the pinned toolchain forward and every
 # dependency to its newest compatible release, then demand the full polish
 # gate. A failed upgrade restores the toolchain pins and Cargo.lock.
@@ -51,12 +51,14 @@ if ! git diff --quiet HEAD -- "$toolchain_file" "$ci_file" Cargo.lock; then
 fi
 
 restore_pins() {
-  git restore --source=HEAD --staged --worktree -- "$toolchain_file" 2>/dev/null || true
-  git restore --source=HEAD --staged --worktree -- "$ci_file" 2>/dev/null || true
-  git restore --source=HEAD --staged --worktree -- Cargo.lock 2>/dev/null || true
+  git restore --source=HEAD --staged --worktree -- "$toolchain_file" \
+    2>/dev/null || true
+  git restore --source=HEAD --staged --worktree -- "$ci_file" 2>/dev/null || \
+    true
+  git restore --source=HEAD --staged --worktree -- Cargo.lock 2>/dev/null || \
+    true
 }
-upgraded=0
-trap 'if (( upgraded == 0 )); then restore_pins; fi' EXIT
+trap restore_pins EXIT
 
 printf 'upgrading toolchain %s -> %s\n' "$current" "$toolchain"
 sed -i.bak "s/^channel *= *\".*\"/channel = \"${toolchain}\"/" "$toolchain_file"
@@ -96,9 +98,12 @@ if ! scripts/assurance/polish.sh; then
   exit 1
 fi
 
+# The gate passed: disarm the restore trap before any commit or report.
+trap - EXIT
+
 if (( commit != 0 )); then
   git add "$toolchain_file" "$ci_file" Cargo.lock
-  git commit -m "build: upgrade the toolchain to ${toolchain} and refresh dependencies"
+  git commit -m \
+    "build: upgrade the toolchain to ${toolchain} and refresh dependencies"
 fi
-upgraded=1
 printf '\nsuggested commit: build: upgrade the toolchain to %s and refresh dependencies\n' "$toolchain"

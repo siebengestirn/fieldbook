@@ -50,7 +50,7 @@ conditions.
 
 ## Five domain boundaries
 
-```
+```text
 Instrument and Reference Data
             |
 Venue, Listing and Source Identity
@@ -62,8 +62,8 @@ Normalized Market Data Events
 Journal, Replay, Storage and Analytics
 ```
 
-Dependencies point downward. Venue adapters translate into the normalized
-layer. The shared core does not branch on a venue name, a venue ticker, a token
+Dependencies point downward. Venue adapters translate into the normalized layer.
+The shared core does not branch on a venue name, a venue ticker, a token
 identifier, a binary outcome, or a venue-specific sequencing rule.
 
 ### 1. Instrument and reference data
@@ -87,30 +87,30 @@ The target model separates:
 - contract terms, expiry, multiplier, and settlement;
 - price denomination and quantity unit.
 
-External standards are references, not universal keys. Use ISO 6166 (ISIN)
-where an instrument has one, ISO 10962 (CFI) for classification, ISO 10383
-(MIC) for venues and trade-reporting facilities, and ISO 4217 for currencies.
-Do not assume every instrument has an ISIN, and do not collapse currency,
-instrument, listing, and venue identifiers into one namespace. Maintain an
-explicit identifier namespace plus an alias mapping.
+External standards are references, not universal keys. Use ISO 6166 (ISIN) where
+an instrument has one, ISO 10962 (CFI) for classification, ISO 10383 (MIC) for
+venues and trade-reporting facilities, and ISO 4217 for currencies. Do not
+assume every instrument has an ISIN, and do not collapse currency, instrument,
+listing, and venue identifiers into one namespace. Maintain an explicit
+identifier namespace plus an alias mapping.
 
 ### 2. Venue, listing and source identity
 
 The target model distinguishes:
 
-- `Venue`: the legal or regulatory trading facility;
-- `Market`: a venue-operated market or data product;
-- `Listing`: an instrument admitted to trade on a venue, with an optional market segment;
-- `VenueInstrumentMapping`: the venue-assigned symbol or identifier for that listing;
-- `FeedInstrumentMapping`: a provider- or feed-assigned symbol that resolves directly to an instrument, including an instrument without a listing;
-- `Feed`: a named data product with a version and access conditions;
-- `FeedSession`: one connection or subscription instance;
-- `FeedEntitlement`: what the consumer is authorized to receive and retain.
+`Venue`: the legal or regulatory trading facility;
+`Market`: a venue-operated market or data product;
+`Listing`: an instrument admitted to trade on a venue, with an optional market segment;
+`VenueInstrumentMapping`: the venue-assigned symbol or identifier for that listing;
+`FeedInstrumentMapping`: a provider- or feed-assigned symbol that resolves directly to an instrument, including an instrument without a listing;
+`Feed`: a named data product with a version and access conditions;
+`FeedSession`: one connection or subscription instance;
+`FeedEntitlement`: what the consumer is authorized to receive and retain.
 
-Jurisdiction and regulatory-facility classification are part of source
-identity. An ATS in one jurisdiction is not equivalent to a dark pool, an MTF,
-or a dealer quotation system in another. The model must retain that context
-rather than reducing every venue to an exchange.
+Jurisdiction and regulatory-facility classification are part of source identity.
+An ATS in one jurisdiction is not equivalent to a dark pool, an MTF, or a dealer
+quotation system in another. The model must retain that context rather than
+reducing every venue to an exchange.
 
 ### 3. Transport and protocol connectors
 
@@ -120,13 +120,13 @@ Keep four concerns separate:
    mechanisms.
 2. Protocol and encoding: FIX, FIX/SBE, FAST, ITCH/PITCH, and venue-specific
    binary or textual protocols.
-3. Venue adapter: authentication, subscription management, sequencing,
-   recovery rules, and venue-specific eligibility.
+3. Venue adapter: authentication, subscription management, sequencing, recovery
+   rules, and venue-specific eligibility.
 4. Normalization: conversion into the platform's event model.
 
 FIX is a candidate foundation because its application semantics are independent
-of transport and encoding and its scope covers multiple asset classes.
-SBE and FAST are encoding technologies within the protocol landscape; neither
+of transport and encoding and its scope covers multiple asset classes. SBE and
+FAST are encoding technologies within the protocol landscape; neither
 substitutes for the instrument or event model.
 
 Start with compile-time Rust adapters and explicit capability contracts. Do not
@@ -164,8 +164,8 @@ Book semantics and visibility must be explicit:
 - participant-entitled: available only under a feed's access conditions.
 
 Every normalized event retains its source, venue, instrument, receipt and
-exchange timestamps, sequence domain, and raw-data provenance. Sequence scope
-is explicit: a per-session counter is not assumed comparable across replicas or
+exchange timestamps, sequence domain, and raw-data provenance. Sequence scope is
+explicit: a per-session counter is not assumed comparable across replicas or
 venues.
 
 ### 5. Journal, replay, storage and analytics
@@ -176,8 +176,8 @@ and analytics consume normalized events and books without weakening the
 invariants of the ingestion path.
 
 Replay must remain possible without a live venue. A recorded capture, including
-its sequence and timing context, is the primary regression fixture for
-adapters and the core.
+its sequence and timing context, is the primary regression fixture for adapters
+and the core.
 
 ## Numeric and price model
 
@@ -187,13 +187,13 @@ contracts. That is a current-implementation constraint, not a platform rule.
 
 The target model requires:
 
-- exact decimal arithmetic for prices and quantities, never `f64` accounting;
+exact decimal arithmetic for prices and quantities, never `f64` accounting;
 - an explicit price denomination: currency, points, rate, yield, or another
   unit;
-- an explicit quantity unit: shares, contracts, lots, base currency, or
-  physical units;
-- contract multipliers and instrument-specific conversion rules;
-- instrument-specific tick schedules and price bands, without assuming a
+- an explicit quantity unit: shares, contracts, lots, base currency, or physical
+  units;
+contract multipliers and instrument-specific conversion rules;
+instrument-specific tick schedules and price bands, without assuming a
   `[0, 1]` interval.
 
 The supplied SBE schema must remain compatible with existing captures. A
@@ -286,9 +286,8 @@ Before adding a feature, answer these questions:
 6. Can it be replayed and tested without a live venue?
 7. Does it preserve compatibility with existing SBE captures?
 
-Reject a design that makes the shared core understand Kalshi tickers,
-Polymarket token identifiers, binary outcome prices, or one venue's sequencing
-rules.
+Reject a design that makes the shared core understand Kalshi tickers, Polymarket
+token identifiers, binary outcome prices, or one venue's sequencing rules.
 
 ## Current implementation gap
 
@@ -296,11 +295,11 @@ The following current constraints are deliberate: they fit the supplied
 challenge, and removing them is scheduled work rather than an implicit claim of
 general support.
 
-- `ExchangeKind` enumerates only Kalshi and Polymarket.
-- `MarketInfo` carries prediction-market fields such as `outcome`.
-- `ExchangeCapabilities` models only whether a comparable sequence clock exists.
-- `Exchange` assumes discovery and a session factory.
-- The challenge SBE schema encodes USDC prices and share-or-contract quantities
+`ExchangeKind` enumerates only Kalshi and Polymarket.
+`MarketInfo` carries prediction-market fields such as `outcome`.
+`ExchangeCapabilities` models only whether a comparable sequence clock exists.
+`Exchange` assumes discovery and a session factory.
+The challenge SBE schema encodes USDC prices and share-or-contract quantities
   at six decimal places; conversion to/from instrument scales is exact or
   rejected (`src/util/numeric.rs`).
 

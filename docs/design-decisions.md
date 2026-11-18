@@ -79,9 +79,8 @@ integer values directly.
 each adapter.
 
 **Consequences.** Comparisons, aggregation, and serialization are exact and
-reproducible. Malformed or over-precise input is rejected at the boundary.
-Every conversion must go through the fixed-point helpers rather than ad hoc
-parsing.
+reproducible. Malformed or over-precise input is rejected at the boundary. Every
+conversion must go through the fixed-point helpers rather than ad hoc parsing.
 
 **Implementation.** `src/fixed.rs`, `src/orderbook.rs`,
 `src/util/dtos.rs`, `src/util/orderbook_schema.rs`.
@@ -275,8 +274,8 @@ until a later implementation PR. This decision adds no code and no dependency.
 non-goals are in
 [ADR 0001](adr/0001-instrument-and-venue-reference-model.md).
 
-**Verification.** Documentation review against the ADR acceptance criteria;
-the requirement matrix and architecture inventory are unchanged.
+**Verification.** Documentation review against the ADR acceptance criteria; the
+requirement matrix and architecture inventory are unchanged.
 
 ## 10. Kalshi subscription acknowledgement folding
 
@@ -327,10 +326,10 @@ as is a venue that puts `sid` only on `subscribed`.
 
 **Context.** A collector may legitimately need a controlled egress path —
 corporate network policy, a proxy appliance, a venue that restricts where its
-feed is consumed — and silently routing market data through an unverified
-route is unacceptable for an evidence-first system. The collector previously
-dialed the venue directly with no declared route, and REST discovery and
-websocket sessions had no shared transport policy.
+feed is consumed — and silently routing market data through an unverified route
+is unacceptable for an evidence-first system. The collector previously dialed
+the venue directly with no declared route, and REST discovery and websocket
+sessions had no shared transport policy.
 
 **Decision.** `src/egress.rs` owns the route. `direct` is the default and is
 unchanged: direct sockets never inherit unrelated shell proxy variables. A
@@ -412,20 +411,20 @@ Lifecycle sockets are charged to the capacity plan's connection budget
 (`max_total_connections`), and carry no order-book subscriptions into the
 subscription universe.
 
-**Alternatives.** Per-socket lifecycle subscriptions (status quo — fan-out
-and misattribution); one lifecycle socket with no redundancy; subscribing
-book replicas anyway and filtering client-side; or treating periodic REST
-as the only lifecycle signal (up to a full reconciliation interval of
-staleness for terminal events).
+**Alternatives.** Per-socket lifecycle subscriptions (status quo — fan-out and
+misattribution); one lifecycle socket with no redundancy; subscribing book
+replicas anyway and filtering client-side; or treating periodic REST as the only
+lifecycle signal (up to a full reconciliation interval of staleness for terminal
+events).
 
-**Consequences.** One (or a few) supervised control sockets replace every
-book shard subscribing. Duplicate deliveries across lifecycle replicas are
-applied once. The subscription universe can still temporarily diverge from
-the truth when the venue creates a market mid-interval, but the divergence
-is surfaced (counter and a forced reconciliation), never silent. Lifecycle
-sockets consume the shared connection ceiling; operators budget for them the
-same as book sockets. Polymarket is unaffected: it publishes lifecycle
-notifications on the market channel, not a separate one.
+**Consequences.** One (or a few) supervised control sockets replace every book
+shard subscribing. Duplicate deliveries across lifecycle replicas are applied
+once. The subscription universe can still temporarily diverge from the truth
+when the venue creates a market mid-interval, but the divergence is surfaced
+(counter and a forced reconciliation), never silent. Lifecycle sockets consume
+the shared connection ceiling; operators budget for them the same as book
+sockets. Polymarket is unaffected: it publishes lifecycle notifications on the
+market channel, not a separate one.
 
 **Implementation.** `src/exchange/kalshi/session.rs` (`SessionMode`,
 `LifecycleSessionFactory`), `src/exchange/kalshi/mod.rs` (optional
@@ -446,10 +445,10 @@ reconciliation request, untracked terminal accounting, out-of-book-plane
 status), `src/capacity.rs` (Kalshi connection budget including the plane),
 `tests/session_recovery.rs`, `scripts/check_architecture.py`.
 
-**Semantic ordering rules.** Lifecycle correctness does not stop at
-delivery. Three rules make the merge semantics explicit:
+**Semantic ordering rules.** Lifecycle correctness does not stop at delivery.
+Three rules make the merge semantics explicit:
 
-1. **Canonical event identity.** Kalshi's per-subscription `seq` cannot name
+**Canonical event identity.** Kalshi's per-subscription `seq` cannot name
    the same notification across replicas, so the deduplication key is
    `(market, kind, exchange timestamp, payload fingerprint)`. The fingerprint
    is a SHA-256 over the normalized payload (order-independent price ranges,
@@ -461,14 +460,14 @@ delivery. Three rules make the merge semantics explicit:
    indistinguishable from redelivery by construction and is applied once.
    Events without an exchange timestamp are never deduplicated (all
    application paths are idempotent).
-2. **Cross-replica monotonicity.** Every applied notification advances a
+**Cross-replica monotonicity.** Every applied notification advances a
    per-market high-water mark on exchange order (venue timestamp, falling
    back to local receive time). Nonterminal notifications older than the
    mark are stale replica backfill and are dropped and counted
    (`lifecycle_stale_dropped`). Terminal and deactivation notifications are
    never dropped: they only ever remove a market, so applying one
    out-of-order can never resurrect or corrupt state.
-3. **Reconciliation barrier.** A discovery round carries the local timestamp
+**Reconciliation barrier.** A discovery round carries the local timestamp
    at which its venue snapshot was taken. If a terminal lifecycle
    notification applied during or after the snapshot, the round may not
    re-add that market (`lifecycle_discovery_vetoes`) — a stale REST response

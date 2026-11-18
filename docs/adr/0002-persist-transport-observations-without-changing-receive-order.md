@@ -2,13 +2,13 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-16
-- **Decision owner:** Project maintainers
-- **Implementation status:** Implemented (S1a and S1b). Writers emit schema v2
+**Decision owner:** Project maintainers
+**Implementation status:** Implemented (S1a and S1b). Writers emit schema v2
   with typed transport observations; `read_records()` remains data-only and
   `read_observations()` exposes data plus native controls. v1 journals and the
   v1 golden fixture remain readable by this build. The normative content below
   is unchanged; only this status line moved from "pending" to "implemented".
-- **Related:** [Raw-frame journal](../raw-frame-journal.md),
+**Related:** [Raw-frame journal](../raw-frame-journal.md),
   [requirement/test matrix](../requirement-test-matrix.md),
   [architecture](../architecture.md),
   [programme status](../programme-status.md).
@@ -29,16 +29,16 @@ therefore cannot preserve the adapter's interpretation or heartbeat mechanism.
 
 There are also transport-boundary losses and classification errors:
 
-1. `ws::next_payload()` automatically answers an inbound native Ping and
+`ws::next_payload()` automatically answers an inbound native Ping and
    returns `Idle`, discarding the Ping payload before the adapter or worker can
    retain it.
-2. Kalshi's native Pong is represented as `FrameKind::Binary`, even though
+Kalshi's native Pong is represented as `FrameKind::Binary`, even though
    it is a native WebSocket control frame and not a binary data frame.
-3. Polymarket's native Pong is transport plumbing, not an acknowledgement of
+Polymarket's native Pong is transport plumbing, not an acknowledgement of
    Polymarket's application-text heartbeat. Its native Pong is currently
    discarded; Polymarket's application heartbeat is the text `PING`/`PONG`
    exchange.
-4. `SessionSignal` and the mechanism selected by each adapter are not persisted
+`SessionSignal` and the mechanism selected by each adapter are not persisted
    in journal v1. Reconstructing them later from bytes is not a reliable
    substitute for the adapter's typed observation.
 5. The requirement matrix records transport idle events as out of scope. That
@@ -77,16 +77,16 @@ test.
 Move serializable, adapter-independent protocol semantics into a small shared
 `src/protocol.rs` module. It owns only:
 
-- `SessionSignal` (including the required `PeerPong` variant for an outbound response);
-- `HeartbeatMechanism` (`ApplicationText`, `WebSocketControl`, `Disabled`);
-- `FrameDirection` (`Inbound`, `Outbound`);
-- `FrameClassification` (`Data { frame_kind }` or `Control { opcode }`);
-- `ControlOpcode` (`Ping`, `Pong`).
+`SessionSignal` (including the required `PeerPong` variant for an outbound response);
+`HeartbeatMechanism` (`ApplicationText`, `WebSocketControl`, `Disabled`);
+`FrameDirection` (`Inbound`, `Outbound`);
+`FrameClassification` (`Data { frame_kind }` or `Control { opcode }`);
+`ControlOpcode` (`Ping`, `Pong`).
 
 The adapter remains responsible for assigning the signal and heartbeat
 mechanism. The journal serializes those facts; it must not infer them from the
-payload. Adapter-specific JSON decoding and exchange-event semantics stay in
-the adapters.
+payload. Adapter-specific JSON decoding and exchange-event semantics stay in the
+adapters.
 
 Every v2 observation contains at least:
 
@@ -185,10 +185,10 @@ market-data event and do not update an instrument's activity timestamp.
 
 This ADR does **not** weaken or supersede:
 
-- exact-once accounting of every delivered application data payload;
-- contiguous per-source inbound `receive_seq` for data observations;
-- rejection journaling for malformed or protocol-rejected data payloads;
-- the protected assertion that transport controls do not appear in
+exact-once accounting of every delivered application data payload;
+contiguous per-source inbound `receive_seq` for data observations;
+rejection journaling for malformed or protocol-rejected data payloads;
+the protected assertion that transport controls do not appear in
   `read_records()` and do not consume `receive_seq`;
 - the rule that market data cannot satisfy a heartbeat;
 - source/epoch recovery fencing and stale-generation rejection;
@@ -205,16 +205,16 @@ S1a and S1b form one evidence increment. Neither is complete in isolation.
 
 ### S1a — Preserve transport observations
 
-1. Change `WsPayload` to surface typed Text, Binary, Ping, and Pong frames with
+Change `WsPayload` to surface typed Text, Binary, Ping, and Pong frames with
    the original payload bytes. Do not collapse native controls into `Idle`.
 2. Keep the WebSocket layer responsible only for transporting frames. The
    adapter classifies the venue-specific heartbeat semantics.
-3. On an inbound Ping, return both the inbound Ping and matching outbound Pong
+On an inbound Ping, return both the inbound Ping and matching outbound Pong
    observations, including the Pong send result.
-4. Carry `SessionSignal`, `HeartbeatMechanism`, direction, classification,
+Carry `SessionSignal`, `HeartbeatMechanism`, direction, classification,
    opcode, and correlation data to the worker. Keep control observations
    separate from `ExchangeEvent` decoding.
-5. Move the shared protocol types listed in §2.1 into `src/protocol.rs` to avoid
+Move the shared protocol types listed in §2.1 into `src/protocol.rs` to avoid
    making the journal depend on the session module.
 6. Capture outbound heartbeat sends (Polymarket text PING and Kalshi native
    Ping) only after the send succeeds; preserve direction and send result.
@@ -225,10 +225,10 @@ transport must not produce a market-data event for a native control frame.
 
 ### S1b — Persist and read observations
 
-1. Bump writers to journal schema v2 and add typed v2 observation headers.
-2. Preserve v1 readers and add the v2 `read_observations()` API.
-3. Keep `read_records()` data-only and preserve its existing count semantics.
-4. Preserve per-source ordering validation, with independent continuity checks
+Bump writers to journal schema v2 and add typed v2 observation headers.
+Preserve v1 readers and add the v2 `read_observations()` API.
+Keep `read_records()` data-only and preserve its existing count semantics.
+Preserve per-source ordering validation, with independent continuity checks
    for `receive_seq`, `control_seq`, and `observation_seq` within each epoch.
 5. Preserve checksums, segment rotation, manifest accounting, queue
    backpressure, failure latching, and bounded shutdown semantics for both
@@ -244,10 +244,11 @@ Required journal tests:
 - read a v2 segment with Polymarket text heartbeats;
 - validate checksums and all sequence domains;
 - reject unsupported versions, malformed/truncated records, and corruption;
-- replay matching v1/v2 application data into identical core state;
-- prove that control observations never become `ExchangeEvent`s; and
-- prove `journal_accounts_for_control_observations_without_advancing_receive_seq`
-  with inbound Ping, outbound Pong, inbound Pong, and ordinary data in one epoch.
+replay matching v1/v2 application data into identical core state;
+prove that control observations never become `ExchangeEvent`s; and
+prove `journal_accounts_for_control_observations_without_advancing_receive_seq`
+  with inbound Ping, outbound Pong, inbound Pong, and ordinary data in one
+epoch.
 
 The protected `journal_accounts_for_every_delivered_payload` test remains
 unchanged in meaning and must continue to pass.
@@ -273,9 +274,9 @@ acceptance evidence after S1a/S1b.
 
 After S1a/S1b are green, proceed with the existing feed-continuity sequence:
 
-1. S2 — consolidate transport state only after all current write/read sites
-   and consumers are enumerated;
-2. M3.1 — introduce typed `RecoveryAction` and `RecoveryCause`;
+S2 — consolidate transport state only after all current write/read sites and
+   consumers are enumerated;
+M3.1 — introduce typed `RecoveryAction` and `RecoveryCause`;
 3. M3.2 — separate instrument and source recovery queues;
 4. M3.3 — scope acknowledgements and fences to exact instrument generations;
 5. M4 — prove one-source and multi-replica recovery blast radius, including
@@ -284,5 +285,5 @@ After S1a/S1b are green, proceed with the existing feed-continuity sequence:
    and persist recovery/host evidence; and
 7. M7 — run the full offline assurance gate and staged live validation.
 
-No later phase may weaken a protected test or reinterpret a previously
-accepted fence contract without a new ADR.
+No later phase may weaken a protected test or reinterpret a previously accepted
+fence contract without a new ADR.

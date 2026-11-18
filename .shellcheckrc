@@ -1,0 +1,5 @@
+# Google Shell Style Guide: bash only, shellcheck required for every script.
+# Follow sourced libraries so SC1091 is not suppressed by omission.
+shell=bash
+external-sources=true
+source-path=scripts/assurance

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # The polish gate: bring the tree to the state CI expects and prove it.
 #
 # Usage:
@@ -69,13 +69,15 @@ run_step "python unit tests (scripts)" \
 run_step "python unit tests (scripts/assurance)" \
   python3 -m unittest discover -s scripts/assurance -p 'test_*.py'
 run_step "requirement-matrix references" python3 scripts/check_matrix_tests.py
-run_step "architecture traceability" python3 scripts/check_architecture.py --check
+run_step "architecture traceability" python3 scripts/check_architecture.py \
+  --check
 run_step "generated-path policy" python3 scripts/check_generated_paths.py
 if cargo audit --version >/dev/null 2>&1; then
   run_step "cargo audit" cargo audit
 else
   GATE_STEPS+=("cargo audit|SKIP|0")
-  printf '== cargo audit: skipped (cargo-audit is not installed; install it for full coverage)\n'
+  printf \
+    '== cargo audit: skipped (cargo-audit is not installed; install it for full coverage)\n'
 fi
 
 # ---- phase 1: the CI-parity build-and-verify core, iterated --------------
@@ -87,18 +89,22 @@ while (( iteration <= loops )); do
     run_step "cargo fmt (apply)" cargo fmt --all
   fi
   run_step "cargo fmt --check" cargo fmt --all -- --check
-  run_step "cargo clippy -D warnings" cargo clippy --workspace --all-targets --locked -- -D warnings
-  run_step "cargo test (all targets)" cargo test --workspace --all-targets --locked
+  run_step "cargo clippy -D warnings" cargo clippy --workspace --all-targets \
+    --locked -- -D warnings
+  run_step "cargo test (all targets)" cargo test --workspace --all-targets \
+    --locked
   run_step "cargo test (doc)" cargo test --workspace --doc --locked
   run_step "cargo build (release)" cargo build --release --locked
   if [[ "$(uname -s)" == "Linux" ]]; then
     run_step "journal ENOSPC drill" scripts/verify-journal-enospc.sh
   else
     GATE_STEPS+=("journal ENOSPC drill|SKIP|0")
-    printf '== journal ENOSPC drill: skipped on %s (Linux-only CI step)\n' "$(uname -s)"
+    printf '== journal ENOSPC drill: skipped on %s (Linux-only CI step)\n' \
+      "$(uname -s)"
   fi
   run_step "english audit (advisory)" scripts/assurance/run_audit.sh
-  run_step "english audit strict" python3 scripts/assurance/english_audit.py --repo . --strict
+  run_step "english audit strict" python3 scripts/assurance/english_audit.py \
+    --repo . --strict
 
   fingerprint_now="$(tree_fingerprint)"
   if [[ "$fingerprint_now" == "$fingerprint_start" ]]; then

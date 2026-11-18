@@ -92,16 +92,20 @@ their exact commits are recorded in
 
 ## Not claimed
 
-- **Hyperliquid live validation and capacity.** H1 is loopback-only telemetry; H2 adds
-  loopback-only selected-book and trade evidence; H3 adds loopback-only synthetic capacity
+**Hyperliquid live validation and capacity.** H1 is loopback-only telemetry; H2
+adds
+  loopback-only selected-book and trade evidence; H3 adds loopback-only
+synthetic capacity
   cells at ten instruments. `allMids` and `fastAssetCtxs` are statistics, not depth;
   `l2Book`/trade decode, exact selected coverage, zero `LevelChange`, recovery re-anchoring and
   the H3 ledger/coverage queues are proved only against a local mock. No `assetCtxs`
-  subscription, spot book, full-universe subscription, live capacity result, latency
-  percentile/performance result, or Hyperliquid live claim is made. H3 evidence is explicitly
+  subscription, spot book, full-universe subscription, live capacity result,
+latency
+  percentile/performance result, or Hyperliquid live claim is made. H3 evidence
+is explicitly
   **not live certification** and makes no capacity claim. See
   `docs/hyperliquid-integration-plan.md`.
-- **OKX live validation, websocket or capacity.** H0 decodes one offline
+**OKX live validation, websocket or capacity.** H0 decodes one offline
   `instruments` fixture into reference data only. It opens no socket, subscribes
   to no channel and produces no `Snapshot`/`LevelChange`, so there is no live
   capture, depth, coverage, recovery, telemetry, capacity or latency evidence.
@@ -112,29 +116,29 @@ their exact commits are recorded in
 - **Full-universe simultaneous subscription.** The 548,942-token sweep is a
   discovery result. The tested subscription envelope is the 1,000-symbol
   loopback E2E above; the configured limits are separate.
-- **Global chronological output.** The writer preserves processing order and
-  actual receive timestamps. There is no bounded reordering buffer, and no
-  claim that sorting by timestamp reconstructs the books.
-- **Stage-timing accuracy and performance targets.** Stage durations are stored
+**Global chronological output.** The writer preserves processing order and
+  actual receive timestamps. There is no bounded reordering buffer, and no claim
+  that sorting by timestamp reconstructs the books.
+**Stage-timing accuracy and performance targets.** Stage durations are stored
   in nanoseconds but bounded by host clock resolution and instrumentation
   overhead; percentiles are bucket-resolution nearest-rank estimates. No p50,
   p95, p99 or p99.9 latency target, throughput claim, CPU/RSS target, or
   cross-host comparison is certified by the M5.6 histograms. See
   `docs/performance-methodology.md`.
-- **Extension 4 causality.** The four latency files are single 60-second
+**Extension 4 causality.** The four latency files are single 60-second
   observations. Source-port/CDN hashing and Nagle/delayed-ACK explanations are
   hypotheses, not isolated mechanisms.
-- **JSONL-to-PostgreSQL live delivery or performance.** P5 implements a
+**JSONL-to-PostgreSQL live delivery or performance.** P5 implements a
   parameterized SQL contract and a deterministic in-memory simulator only. No
   PostgreSQL driver is linked, no database is contacted, and no throughput,
   latency, durability or live-DB result is claimed. The market-data collector,
   `ExchangeEvent`, SBE, journal, replay and catalog are unchanged. See
   `docs/jsonl-postgres-reference.md`.
-- **Live journal durability.** The raw-frame journal is verified by deterministic
-  fault injection and mock-exchange scenarios, including a latched
-  failure-state contract, deadline-bounded shutdown, exact per-payload
-  ingress accounting, and isolated ext4 ENOSPC behavior. It has not been
-  soaked on a live feed, filled a production volume, or exercised a
-  power-loss boundary; retention and disk-watermark policies are not
-  implemented. A checksum-valid journal proves the integrity of recorded
-  payloads, not that the venue delivered every event.
+- **Live journal durability.** The raw-frame journal is verified by
+  deterministic fault injection and mock-exchange scenarios, including a latched
+  failure-state contract, deadline-bounded shutdown, exact per-payload ingress
+  accounting, and isolated ext4 ENOSPC behavior. It has not been soaked on a
+  live feed, filled a production volume, or exercised a power-loss boundary;
+  retention and disk-watermark policies are not implemented. A checksum-valid
+  journal proves the integrity of recorded payloads, not that the venue
+  delivered every event.

@@ -7,6 +7,7 @@ integration anchors, falsifiable source anchors, required traceability text,
 and the structural shape of the Mermaid diagrams. It is not a substitute for
 Mermaid's syntax parser.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -106,110 +107,211 @@ SOURCE_RESPONSIBILITIES = {
 # Anchors that make the main structural claims falsifiable against code.
 REQUIRED_ANCHORS = {
     "src/main.rs": [
-        "Command::Collect", "Command::Replay", "Command::Inspect",
-        "Command::Verify", "Command::Latency", "Command::Discover",
+        "Command::Collect",
+        "Command::Replay",
+        "Command::Inspect",
+        "Command::Verify",
+        "Command::Latency",
+        "Command::Discover",
         "Command::Journal",
     ],
     "src/coordinator.rs": [
-        "run_with_shutdown", "discover_with_retry", "process_worker_event",
-        "dispatch_controls", "tokio::select!", "core.finalize",
+        "run_with_shutdown",
+        "discover_with_retry",
+        "process_worker_event",
+        "dispatch_controls",
+        "tokio::select!",
+        "core.finalize",
         "writer.shutdown_with_stats",
     ],
     "src/capacity.rs": [
-        "derive_shard_count", "pub fn plan", "CapacityPlan",
+        "derive_shard_count",
+        "pub fn plan",
+        "CapacityPlan",
     ],
     "src/collector/state.rs": [
-        "apply_discovery", "handle_event", "handle_snapshot",
-        "handle_level_change", "handle_lifecycle", "handle_stream_reset",
-        "handle_status", "pub fn tick", "pub fn finalize", "fn reseat",
+        "apply_discovery",
+        "handle_event",
+        "handle_snapshot",
+        "handle_level_change",
+        "handle_lifecycle",
+        "handle_stream_reset",
+        "handle_status",
+        "pub fn tick",
+        "pub fn finalize",
+        "fn reseat",
     ],
     "src/session.rs": [
-        "pub trait MarketDataSession", "pub trait SessionFactory",
-        "pub async fn run_worker", "backoff_or_stop", "handle_control",
+        "pub trait MarketDataSession",
+        "pub trait SessionFactory",
+        "pub async fn run_worker",
+        "backoff_or_stop",
+        "handle_control",
     ],
     "src/writer.rs": [
-        "pub struct WriterHandle", "pub async fn send", "shutdown_inner",
-        "blocking_recv", "sync_on_close",
+        "pub struct WriterHandle",
+        "pub async fn send",
+        "shutdown_inner",
+        "blocking_recv",
+        "sync_on_close",
     ],
     "src/exchange/kalshi/auth.rs": ["pub struct KalshiAuth", "pub fn headers"],
     "src/exchange/kalshi/discovery.rs": ["fetch_markets", "fetch_page"],
-    "src/exchange/kalshi/session.rs": ["struct SequenceTracker", "on_snapshot", "on_delta"],
-    "src/exchange/polymarket/discovery.rs": ["fetch_markets", "fetch_page", "identifier_kind"],
-    "src/exchange/polymarket/codec.rs": ["price_change", "unknown_event_types_are_counted_but_not_fatal"],
-    "src/exchange/polymarket/session.rs": ["send_initial", "next_frame", "send_keepalive"],
+    "src/exchange/kalshi/session.rs": [
+        "struct SequenceTracker",
+        "on_snapshot",
+        "on_delta",
+    ],
+    "src/exchange/polymarket/discovery.rs": [
+        "fetch_markets",
+        "fetch_page",
+        "identifier_kind",
+    ],
+    "src/exchange/polymarket/codec.rs": [
+        "price_change",
+        "unknown_event_types_are_counted_but_not_fatal",
+    ],
+    "src/exchange/polymarket/session.rs": [
+        "send_initial",
+        "next_frame",
+        "send_keepalive",
+    ],
     "src/exchange/coinbase/mod.rs": ["CoinbaseExchange", "capabilities"],
-    "src/exchange/coinbase/codec.rs": ["parse_reference_document", "parse_products"],
+    "src/exchange/coinbase/codec.rs": [
+        "parse_reference_document",
+        "parse_products",
+    ],
     "src/exchange/coinbase/discovery.rs": ["discover_with_stats"],
     "src/exchange/coinbase/session.rs": ["CoinbaseSessionFactory"],
     "src/exchange/hyperliquid/mod.rs": ["HyperliquidExchange", "capabilities"],
-    "src/exchange/hyperliquid/codec.rs": ["parse_reference_document", "parse_spot_meta"],
+    "src/exchange/hyperliquid/codec.rs": [
+        "parse_reference_document",
+        "parse_spot_meta",
+    ],
     "src/exchange/hyperliquid/discovery.rs": ["discover_with_stats"],
     "src/exchange/hyperliquid/books.rs": [
-        "CHANNEL_L2_BOOK", "CHANNEL_TRADES", "decode_l2_book", "decode_trades",
-        "into_snapshot", "selected_symbols", "subscription_request",
+        "CHANNEL_L2_BOOK",
+        "CHANNEL_TRADES",
+        "decode_l2_book",
+        "decode_trades",
+        "into_snapshot",
+        "selected_symbols",
+        "subscription_request",
     ],
     "src/exchange/hyperliquid/telemetry.rs": [
-        "decode_telemetry", "CHANNEL_ALL_MIDS", "CHANNEL_FAST_ASSET_CTXS",
+        "decode_telemetry",
+        "CHANNEL_ALL_MIDS",
+        "CHANNEL_FAST_ASSET_CTXS",
         "CHANNEL_ASSET_CTXS_NOT_SUBSCRIBED",
     ],
     "src/exchange/hyperliquid/session.rs": [
-        "HyperliquidSessionFactory", "apply_subscriptions", "next_frame", "ProtocolControl",
-        "decode_l2_book", "selected_books", "request_snapshot",
+        "HyperliquidSessionFactory",
+        "apply_subscriptions",
+        "next_frame",
+        "ProtocolControl",
+        "decode_l2_book",
+        "selected_books",
+        "request_snapshot",
     ],
     "src/exchange/kraken/mod.rs": ["KrakenExchange", "capabilities"],
-    "src/exchange/kraken/codec.rs": ["parse_asset_pairs", "decode_pair", "parse_reference_document"],
+    "src/exchange/kraken/codec.rs": [
+        "parse_asset_pairs",
+        "decode_pair",
+        "parse_reference_document",
+    ],
     "src/exchange/kraken/discovery.rs": ["discover_with_stats"],
     "src/exchange/kraken/session.rs": ["KrakenSessionFactory"],
-    "src/exchange/okx/mod.rs": ["OkxExchange", "capabilities", "pub const fn kind"],
+    "src/exchange/okx/mod.rs": [
+        "OkxExchange",
+        "capabilities",
+        "pub const fn kind",
+    ],
     "src/exchange/okx/codec.rs": [
-        "parse_instruments_document", "tickSz", "lotSz", "state", "native_symbol",
+        "parse_instruments_document",
+        "tickSz",
+        "lotSz",
+        "state",
+        "native_symbol",
     ],
     "src/exchange/okx/discovery.rs": ["discover_with_stats"],
     "src/exchange/okx/session.rs": [
-        "OkxSessionFactory", "OkxNoNetworkSession", "fn heartbeat_spec", "Disabled",
+        "OkxSessionFactory",
+        "OkxNoNetworkSession",
+        "fn heartbeat_spec",
+        "Disabled",
     ],
     "src/exchange/binance/mod.rs": ["BinanceExchange", "capabilities", "kind"],
     "src/exchange/binance/codec.rs": [
-        "parse_reference_document", "parse_section", "exact_step", "parse_decimal",
+        "parse_reference_document",
+        "parse_section",
+        "exact_step",
+        "parse_decimal",
     ],
     "src/exchange/binance/discovery.rs": [
-        "discover_with_stats", "reference_fixture", "network discovery is not implemented",
+        "discover_with_stats",
+        "reference_fixture",
+        "network discovery is not implemented",
     ],
     "src/exchange/binance/session.rs": [
-        "BinanceSessionFactory", "BinanceSession", "heartbeat_spec", "HeartbeatSpec::disabled",
+        "BinanceSessionFactory",
+        "BinanceSession",
+        "heartbeat_spec",
+        "HeartbeatSpec::disabled",
     ],
     "src/verify.rs": ["pub fn run"],
     "src/identity.rs": [
-        "pub struct InstrumentId", "pub struct ReferenceCatalog", "pub fn venue_mappings_from_markets",
+        "pub struct InstrumentId",
+        "pub struct ReferenceCatalog",
+        "pub fn venue_mappings_from_markets",
     ],
     "src/products.rs": [
-        "pub enum DataProduct", "pub enum ProductKind", "pub struct SubscriptionSet",
-        "pub struct SourceCapabilities", "pub fn from_legacy", "pub enum SubscriptionState",
+        "pub enum DataProduct",
+        "pub enum ProductKind",
+        "pub struct SubscriptionSet",
+        "pub struct SourceCapabilities",
+        "pub fn from_legacy",
+        "pub enum SubscriptionState",
         "pub struct SubscriptionLease",
     ],
     "src/canonical.rs": [
-        "pub const CANONICAL_SCHEMA_VERSION", "pub struct EventId",
-        "pub struct SequenceMetadata", "pub enum CanonicalKind",
-        "pub enum CanonicalEvent", "pub struct CanonicalEnvelope",
-        "pub struct NormalizationContext", "pub struct CanonicalReader",
-        "pub trait NormalizedStore", "pub struct InMemoryNormalizedStore",
+        "pub const CANONICAL_SCHEMA_VERSION",
+        "pub struct EventId",
+        "pub struct SequenceMetadata",
+        "pub enum CanonicalKind",
+        "pub enum CanonicalEvent",
+        "pub struct CanonicalEnvelope",
+        "pub struct NormalizationContext",
+        "pub struct CanonicalReader",
+        "pub trait NormalizedStore",
+        "pub struct InMemoryNormalizedStore",
     ],
     "src/exchange/mod.rs": [
-        "pub fn capabilities_for", "pub fn source_capabilities_for",
+        "pub fn capabilities_for",
+        "pub fn source_capabilities_for",
         "fn source_capabilities(&self) -> SourceCapabilities",
     ],
     "src/journal.rs": [
-        "pub struct JournalHandle", "pub fn verify_run", "pub fn read_records",
-        "pub fn read_observations", "struct Manifest", "struct SegmentFooter", "RunState::Finalized",
+        "pub struct JournalHandle",
+        "pub fn verify_run",
+        "pub fn read_records",
+        "pub fn read_observations",
+        "struct Manifest",
+        "struct SegmentFooter",
+        "RunState::Finalized",
     ],
     "src/protocol.rs": [
-        "pub enum SessionSignal", "pub enum FrameClassification",
+        "pub enum SessionSignal",
+        "pub enum FrameClassification",
         "pub struct TransportObservation",
     ],
     "src/recovery.rs": [
-        "pub enum RecoveryAction", "pub enum RecoveryCause",
-        "pub fn decide", "pub struct RecoveryTarget", "pub struct RecoveryFence",
-        "pub struct InstrumentRecoveryQueue", "pub struct SourceRecoveryQueue",
+        "pub enum RecoveryAction",
+        "pub enum RecoveryCause",
+        "pub fn decide",
+        "pub struct RecoveryTarget",
+        "pub struct RecoveryFence",
+        "pub struct InstrumentRecoveryQueue",
+        "pub struct SourceRecoveryQueue",
         "pub struct RecoveryCoordinator",
     ],
     "src/util/build.rs": ["generate_str_to_out_dir", "GenerationConfig"],
@@ -301,8 +403,12 @@ REFERENCE_APP_FORBIDDEN_TOKENS = (
 )
 
 MERMAID_RE = re.compile(r"```mermaid\s*\n(.*?)\n```", re.DOTALL)
-NODE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\n]*\]|\([^\n]*\)|\{[^\n]*\})\s*$")
-EDGE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+-->\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+NODE_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\n]*\]|\([^\n]*\)|\{[^\n]*\})\s*$"
+)
+EDGE_RE = re.compile(
+    r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+-->\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"
+)
 
 
 MODULE_DECL_RE = re.compile(
@@ -318,7 +424,11 @@ def collect_module_reachability(root: Path = ROOT) -> set[str]:
     are not treated as separate files.
     """
     # `src/util/build.rs` is Cargo's configured build-script crate root (`build = ...` in Cargo.toml).
-    roots = [root / "src/lib.rs", root / "src/main.rs", root / "src/util/build.rs"]
+    roots = [
+        root / "src/lib.rs",
+        root / "src/main.rs",
+        root / "src/util/build.rs",
+    ]
     reachable: set[str] = set()
     pending = [path for path in roots if path.exists()]
     while pending:
@@ -334,8 +444,13 @@ def collect_module_reachability(root: Path = ROOT) -> set[str]:
             module_dir = current.parent / current.stem
         for match in MODULE_DECL_RE.finditer(content):
             name = match.group(1)
-            candidates = [module_dir / f"{name}.rs", module_dir / name / "mod.rs"]
-            found = [candidate for candidate in candidates if candidate.exists()]
+            candidates = [
+                module_dir / f"{name}.rs",
+                module_dir / name / "mod.rs",
+            ]
+            found = [
+                candidate for candidate in candidates if candidate.exists()
+            ]
             if len(found) == 1:
                 pending.append(found[0])
     return reachable
@@ -350,16 +465,31 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
     capacity_path = root / "src/capacity.rs"
     if capacity_path.exists():
         capacity = capacity_path.read_text(encoding="utf-8")
-        collector_struct = re.search(r"pub struct CollectorSettings\s*\{(.*?)\n\}", config, re.DOTALL)
-        declared = set(re.findall(r"pub\s+(\w+)\s*:", collector_struct.group(1))) if collector_struct else set()
+        collector_struct = re.search(
+            r"pub struct CollectorSettings\s*\{(.*?)\n\}", config, re.DOTALL
+        )
+        declared = (
+            set(re.findall(r"pub\s+(\w+)\s*:", collector_struct.group(1)))
+            if collector_struct
+            else set()
+        )
         referenced = set(re.findall(r"settings\.collector\.(\w+)", capacity))
         for field in sorted(referenced - declared):
-            errors.append(f"src/capacity.rs references CollectorSettings.{field}, absent from src/config.rs")
+            errors.append(
+                f"src/capacity.rs references CollectorSettings.{field}, absent from src/config.rs"
+            )
     catalog_path = root / "src/catalog.rs"
-    if catalog_path.exists() and "util::sha256_hex" in catalog_path.read_text(encoding="utf-8"):
-        util_text = "\n".join(path.read_text(encoding="utf-8") for path in (root / "src/util").rglob("*.rs"))
+    if catalog_path.exists() and "util::sha256_hex" in catalog_path.read_text(
+        encoding="utf-8"
+    ):
+        util_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (root / "src/util").rglob("*.rs")
+        )
         if not re.search(r"\bfn\s+sha256_hex\b", util_text):
-            errors.append("src/catalog.rs references util::sha256_hex, but no such function exists under src/util/")
+            errors.append(
+                "src/catalog.rs references util::sha256_hex, but no such function exists under src/util/"
+            )
 
     coordinator = (root / "src/coordinator.rs").read_text(encoding="utf-8")
     required = {
@@ -373,7 +503,9 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
     }
     for name, anchor in required.items():
         if anchor not in coordinator:
-            errors.append(f"runtime integration missing: {name} anchor `{anchor}`")
+            errors.append(
+                f"runtime integration missing: {name} anchor `{anchor}`"
+            )
     return errors
 
 
@@ -388,12 +520,17 @@ def reference_app_independence_errors(root: Path = ROOT) -> list[str]:
         source = path.read_text(encoding="utf-8")
         for token in REFERENCE_APP_FORBIDDEN_TOKENS:
             if token in source:
-                errors.append(f"{rel} contains market-data dependency token {token!r}")
+                errors.append(
+                    f"{rel} contains market-data dependency token {token!r}"
+                )
     return errors
 
 
 def collect_sources() -> list[str]:
-    return sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "src").rglob("*.rs"))
+    """Exercise collect sources."""
+    return sorted(
+        p.relative_to(ROOT).as_posix() for p in (ROOT / "src").rglob("*.rs")
+    )
 
 
 def check_mermaid_structure(document: str) -> list[str]:
@@ -401,32 +538,46 @@ def check_mermaid_structure(document: str) -> list[str]:
     errors: list[str] = []
     blocks = MERMAID_RE.findall(document)
     if len(blocks) < 3:
-        errors.append(f"expected at least 3 Mermaid diagrams, found {len(blocks)}")
+        errors.append(
+            f"expected at least 3 Mermaid diagrams, found {len(blocks)}"
+        )
     # Mermaid edge variants used here: --> and -->|edge label|. Keep each edge on one line.
     arrow_re = re.compile(r"-->(?:\|[^|]+\|)?")
     side_re = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)(.*)$")
     shaped_re = re.compile(r"^\s*(?:\[[^\n]*\]|\([^\n]*\)|\{[^\n]*\})")
     for index, body in enumerate(blocks, start=1):
         lines = body.splitlines()
-        if not lines or not re.match(r"^\s*flowchart\s+(?:LR|RL|TB|TD|BT)\s*$", lines[0]):
-            errors.append(f"diagram {index}: first line must be a supported flowchart direction")
+        if not lines or not re.match(
+            r"^\s*flowchart\s+(?:LR|RL|TB|TD|BT)\s*$", lines[0]
+        ):
+            errors.append(
+                f"diagram {index}: first line must be a supported flowchart direction"
+            )
             continue
         declared: set[str] = set()
         edges: list[tuple[str, str, int]] = []
         for line_number, line in enumerate(lines[1:], start=2):
             stripped = line.strip()
-            if not stripped or stripped.startswith("%%") or stripped.startswith("subgraph ") or stripped == "end":
+            if (
+                not stripped
+                or stripped.startswith(("%%", "subgraph "))
+                or stripped == "end"
+            ):
                 continue
             if arrow_re.search(line):
                 parts = arrow_re.split(line, maxsplit=1)
                 if len(parts) != 2:
-                    errors.append(f"diagram {index}, line {line_number}: malformed edge: {stripped}")
+                    errors.append(
+                        f"diagram {index}, line {line_number}: malformed edge: {stripped}"
+                    )
                     continue
                 lhs, rhs = parts
                 left = side_re.match(lhs)
                 right = side_re.match(rhs)
                 if not left or not right:
-                    errors.append(f"diagram {index}, line {line_number}: cannot parse edge endpoints: {stripped}")
+                    errors.append(
+                        f"diagram {index}, line {line_number}: cannot parse edge endpoints: {stripped}"
+                    )
                     continue
                 source_id, source_tail = left.group(1), left.group(2)
                 target_id, target_tail = right.group(1), right.group(2)
@@ -441,15 +592,20 @@ def check_mermaid_structure(document: str) -> list[str]:
             if node:
                 declared.add(node.group(1))
                 continue
-            errors.append(f"diagram {index}, line {line_number}: unsupported/unparsed Mermaid statement: {stripped}")
+            errors.append(
+                f"diagram {index}, line {line_number}: unsupported/unparsed Mermaid statement: {stripped}"
+            )
         for source, target, line_number in edges:
             for node_id in (source, target):
                 if node_id not in declared:
-                    errors.append(f"diagram {index}, line {line_number}: edge references undeclared node {node_id}")
+                    errors.append(
+                        f"diagram {index}, line {line_number}: edge references undeclared node {node_id}"
+                    )
     return errors
 
 
 def main() -> int:
+    """Exercise main."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--check",
@@ -458,7 +614,9 @@ def main() -> int:
     )
     args = parser.parse_args()
     if not args.check:
-        parser.error("this repository only supports read-only architecture checks; use --check")
+        parser.error(
+            "this repository only supports read-only architecture checks; use --check"
+        )
 
     errors: list[str] = []
     errors.extend(module_integration_errors())
@@ -470,9 +628,15 @@ def main() -> int:
     reachable = collect_module_reachability()
     unreachable = sorted(actual_sources - reachable)
     if missing_docs:
-        errors.append("source files need reviewed responsibility mappings: " + ", ".join(missing_docs))
+        errors.append(
+            "source files need reviewed responsibility mappings: "
+            + ", ".join(missing_docs)
+        )
     if stale_docs:
-        errors.append("source responsibility mappings point to removed files: " + ", ".join(stale_docs))
+        errors.append(
+            "source responsibility mappings point to removed files: "
+            + ", ".join(stale_docs)
+        )
     if unreachable:
         errors.append("unreachable source files: " + ", ".join(unreachable))
     if not DOC.exists():
@@ -483,12 +647,16 @@ def main() -> int:
     for anchor_path, anchors in REQUIRED_ANCHORS.items():
         file_path = ROOT / anchor_path
         if not file_path.exists():
-            errors.append(f"required source anchor file is missing: {anchor_path}")
+            errors.append(
+                f"required source anchor file is missing: {anchor_path}"
+            )
             continue
         source = file_path.read_text(encoding="utf-8")
         for anchor in anchors:
             if anchor not in source:
-                errors.append(f"source anchor `{anchor}` not found in `{anchor_path}`")
+                errors.append(
+                    f"source anchor `{anchor}` not found in `{anchor_path}`"
+                )
     for required_text in [
         "docs/requirement-test-matrix.md",
         "docs/canonical-event-model.md",
@@ -497,7 +665,9 @@ def main() -> int:
         "not a production certification",
     ]:
         if required_text not in document:
-            errors.append(f"architecture document is missing required traceability text: {required_text!r}")
+            errors.append(
+                f"architecture document is missing required traceability text: {required_text!r}"
+            )
     errors.extend(check_mermaid_structure(document))
 
     if errors:
@@ -510,7 +680,9 @@ def main() -> int:
         f"{len(reachable)} files reachable from crate roots, and "
         f"{len(MERMAID_RE.findall(document))} structurally checked Mermaid diagrams."
     )
-    print("Note: actual Mermaid grammar is parsed in the separate GitHub Actions Mermaid-validation job.")
+    print(
+        "Note: actual Mermaid grammar is parsed in the separate GitHub Actions Mermaid-validation job."
+    )
     return 0
 
 

@@ -35,7 +35,7 @@ flowchart LR
 
 Five boundaries make the independence claim falsifiable:
 
-1. **Source boundary.** [`SourceAdapter`](../src/application.rs) returns one
+**Source boundary.** [`SourceAdapter`](../src/application.rs) returns one
    `RawObservation` at a time with exact retained bytes, a local sequence and a
    stable provenance pointer. The in-memory `JsonlSource` rejects malformed
    JSON, unsupported schema versions and duplicate record ids with evidence.
@@ -43,7 +43,7 @@ Five boundaries make the independence claim falsifiable:
    fixed-capacity `BufRead` buffer, adds the physical byte offset of every
    line, and computes a SHA-256 fingerprint of the complete file **once before**
    streaming.
-2. **Payload boundary.** [`CanonicalBusinessEvent`](../src/application.rs) is
+**Payload boundary.** [`CanonicalBusinessEvent`](../src/application.rs) is
    `{ entity_id, kind, value, observed_at }`. It has no price, side, venue,
    instrument, book or market concept. The transform is a pure function of the
    observation: no clock, environment or randomness is read, and the event id
@@ -52,19 +52,19 @@ Five boundaries make the independence claim falsifiable:
    `receive_time` comes from an explicit `received_at` when supplied (legacy
    inputs without `received_at` fall back to `observed_at`, documented rather
    than silently conflated).
-3. **Target boundary.** [`TargetConnector`](../src/application.rs) accepts a
+**Target boundary.** [`TargetConnector`](../src/application.rs) accepts a
    batch with an idempotency key and returns a receipt reported in six
    categories: `Delivered`, `DurableCommitted`, `Simulated`, `Outstanding`,
    `Uncertain`, `Rejected`. `Accepted` is a legacy non-terminal variant reported
    as `Delivered`. Non-terminal outcomes leave a `DeliveryObligation` and refuse
    to advance the checkpoint. `DurableCommitted` and `Rejected` are terminal
    only after the local store has accepted the atomic commit record.
-4. **Execution boundary.** [`ExecutionMode`](../src/application.rs) is `Live`,
+**Execution boundary.** [`ExecutionMode`](../src/application.rs) is `Live`,
    `DryRun` or `Replay`. Simulated modes report `Simulated`, never
    `DurableCommitted`, do not call a real target and do not move the durable
    checkpoint. `ReplayConnector` is explicitly marked simulation-safe so its
    receipts can still be recorded without touching the wrapped target.
-5. **Durability boundary.** [`CommitStore`](../src/application/durable.rs)
+**Durability boundary.** [`CommitStore`](../src/application/durable.rs)
    writes each commit as a separate, never-rewritten checksummed JSON file via
    `write_json_atomic` (sibling temporary file, fsync, rename, parent-directory
    fsync). One record atomically contains the committed event ids, the
@@ -83,16 +83,16 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
 
 ## Implemented
 
-- `src/application.rs`: unchanged `JsonlSource`, plus `ExecutionMode`,
+`src/application.rs`: unchanged `JsonlSource`, plus `ExecutionMode`,
   `ReceiptCategory`, `CommitIntent`, `DispositionRecord`, `QuarantineRecord`,
   `CommitSink`, `NoopCommitSink`, the corrected runner and the time-separated
   transform.
-- `src/application/file_source.rs`: `SourceFingerprint`, `SourceIdentity`,
+`src/application/file_source.rs`: `SourceFingerprint`, `SourceIdentity`,
   `SourceRegistry`, `CheckpointBinding`, `DurableCheckpoint`, `DuplicatePolicy`
   and the bounded `FileSource` with `open`/`with_resume`.
-- `src/application/durable.rs`: `CommitRecord`, `CommitEnvelope`, `CommitStore`,
+`src/application/durable.rs`: `CommitRecord`, `CommitEnvelope`, `CommitStore`,
   `DurableState`, `StoreFault`, `load_state` and `run_streaming_pipeline`.
-- `src/application/postgres.rs`: parameterized SQL generation, a deterministic
+`src/application/postgres.rs`: parameterized SQL generation, a deterministic
   in-memory simulator, target-specific `IdempotencyKey`, `CommitTranscript`,
   `SqlExecutor`, `RecordingExecutor` and fault injections. No COMMIT is emitted
   for a non-terminal receipt.
@@ -103,7 +103,7 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
 
 ## Planned, not implemented
 
-- A real PostgreSQL driver (`tokio-postgres`) and connection pool. Wiring one
+A real PostgreSQL driver (`tokio-postgres`) and connection pool. Wiring one
   to [`SqlExecutor`](../src/application/postgres.rs) is a **separate dependency
   decision**; this work adds no dependency and no `Cargo.toml` change.
 - A live database, migrations executed against a real server, and production

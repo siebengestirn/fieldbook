@@ -10,44 +10,44 @@ stress laboratory design is in [`stress-lab-design.md`](stress-lab-design.md).
 Capacity stages and their opt-in rules are summarised in this document; status
 and retained evidence are in [`programme-status.md`](programme-status.md).
 
-The current combined scenario schema is **v16** (M5.2 burst = 6, M5.3 = 7,
-M5.4 = 8, M5.5 backpressure = 9, M5.6 stage timing = 10, M5.7 capacity = 11,
-M5.8 = 12; v13 was the combined integrated schema that folded the lifecycle
-scenarios and universe-epoch coverage together with the disconnect, burst,
-backpressure and capacity profiles; v14 additionally carried the M5.6
-stage-timing performance block; v15 folds in the M5.7 capacity characterization
-stages, the three workload models and their manifest evidence; v16 integrates the
+The current combined scenario schema is **v16** (M5.2 burst = 6, M5.3 = 7, M5.4
+= 8, M5.5 backpressure = 9, M5.6 stage timing = 10, M5.7 capacity = 11, M5.8 =
+12; v13 was the combined integrated schema that folded the lifecycle scenarios
+and universe-epoch coverage together with the disconnect, burst, backpressure
+and capacity profiles; v14 additionally carried the M5.6 stage-timing
+performance block; v15 folds in the M5.7 capacity characterization stages, the
+three workload models and their manifest evidence; v16 integrates the
 Hyperliquid H3 synthetic loopback capacity cells on the same manifest schema).
 Earlier v3-v15 evidence files are retained byte-for-byte and are never
 overwritten by a v16 run; cell ids carry the scenario version suffix.
 
 ## Invariants
 
-- Synthetic generation passes through the **production** ingestion path: loopback
+Synthetic generation passes through the **production** ingestion path: loopback
   Kalshi REST discovery, real `KalshiExchange`, real coordinator, real SBE writer
   and real journal. The harness never calls `CollectorCore` directly.
 - One root seed drives distinct derived streams for universe generation, book
   seeding, and publishing. Changing workload shape must not perturb the other
   streams.
-- Workload roles are assigned by the harness, never inferred from payload bytes
+Workload roles are assigned by the harness, never inferred from payload bytes
   by the collector.
-- Acceptance is fail-closed. A cell may only publish `success` when anchoring,
+Acceptance is fail-closed. A cell may only publish `success` when anchoring,
   drain, exact coverage, SBE verification, completeness, journal finalization,
   decoy exclusion and the two-sided event ledger all pass inside the runner.
-- Stage timing is measured only at boundaries that exist in the current code,
+Stage timing is measured only at boundaries that exist in the current code,
   with `Instant`, one shared fixed-bucket histogram per boundary, and explicit
   sample counts. Unexercised boundaries stay `unavailable` with a reason, never
   zero. CPU, throughput, RSS and disk fields remain `unavailable`. Synthetic
   mock send timestamps are not used as measured latency. See
   [`performance-methodology.md`](performance-methodology.md).
-- Backpressure admission is boundary-specific. A cell declares its boundary
+Backpressure admission is boundary-specific. A cell declares its boundary
   before the run; the manifest records capacity, admission rule, timeout,
   drop/reject policy, recovery path and five distinct terminal-state counters.
   `accepted_but_waiting`, `rejected`, `dropped`, `completed` and
   `uncertain_acknowledgement` are never collapsed into a generic error. A cell
   whose declared disposition cannot be evidenced is rejected by the same
   fail-closed path as a ledger gap.
-- A backpressure cell that dies before capture verification still publishes a
+A backpressure cell that dies before capture verification still publishes a
   failure manifest: the journal rejection latch is preserved as a journal
   `failed` state with the collector's terminal error, and unavailable SBE
   evidence is rendered as an explicit `unavailable` marker rather than zero.
@@ -105,17 +105,17 @@ still run once over the whole cell, so no check is weakened.
 
 The manifest records the explicit schedule under `workload_schedule`:
 
-- `workload_id` — `{profile}-seed-{seed:04x}-{symbols}`;
-- `profile` — `steady | step | impulse | repeated_impulses | ramp`;
-- `seed`, `instrument_count`, `eligible_count`;
-- `hot_set` — `fraction_ppm`, `member_count`, `selection`, `event_share_pct` and
+`workload_id` — `{profile}-seed-{seed:04x}-{symbols}`;
+`profile` — `steady | step | impulse | repeated_impulses | ramp`;
+`seed`, `instrument_count`, `eligible_count`;
+`hot_set` — `fraction_ppm`, `member_count`, `selection`, `event_share_pct` and
   the canonical `sha256` of the sorted hot set;
-- `phases` — per-phase `name`, `events`, `target_rate_per_tick`,
+`phases` — per-phase `name`, `events`, `target_rate_per_tick`,
   `rate_multiplier`;
-- `expected_total_events` — sum of all phase counts;
-- `fault_schedule` — empty for M5.2 burst cells (no fault injection is
+`expected_total_events` — sum of all phase counts;
+`fault_schedule` — empty for M5.2 burst cells (no fault injection is
   scheduled);
-- `delivery.phases` — actual per-phase `published_events`,
+`delivery.phases` — actual per-phase `published_events`,
   `cumulative_expected` and `drain_completed`.
 
 Scenario `scenario_version` was bumped to **6** for the burst increment
@@ -163,17 +163,16 @@ the observed disposition does not match the declared one.
 
 ### State semantics
 
-- **accepted_but_waiting** — admitted to a bounded queue; `in_flight` or
+**accepted_but_waiting** — admitted to a bounded queue; `in_flight` or
   `writer.queue_depth` shows it has not completed. Not a drop.
-- **rejected** — the boundary refused admission and returned an error
-  (journal enqueue timeout, writer send timeout). Not a completed write.
-- **dropped** — accepted for transmission but discarded with a counter
+**rejected** — the boundary refused admission and returned an error (journal
+  enqueue timeout, writer send timeout). Not a completed write.
+**dropped** — accepted for transmission but discarded with a counter
   (`queue_saturated`). Not a rejection and not an acknowledgement.
 - **completed** — socket send, writer message or journal record completed and
   was independently observed.
-- **uncertain_acknowledgement** — shutdown ended observation before the fate
-  of an offered frame could be established. Never claimed as dropped or
-  completed.
+- **uncertain_acknowledgement** — shutdown ended observation before the fate of
+  an offered frame could be established. Never claimed as dropped or completed.
 
 ### Evidence contract
 
@@ -215,50 +214,50 @@ capacity certification.
 
 **Discovery success is not capacity certification.** Pagination of the full
 universe establishes metadata coverage only; it does not establish that a
-stage's books can be anchored, its deltas applied, or its events persisted.
-All capacity evidence is synthetic/loopback, bounded to one stage and one
+stage's books can be anchored, its deltas applied, or its events persisted. All
+capacity evidence is synthetic/loopback, bounded to one stage and one
 observation window, and makes no throughput claim.
 
 ## Stage accounting
 
 The ledger must distinguish, at minimum:
 
-```
+```text
 generated -> transmitted -> received -> decoded -> applied
           -> writer accepted -> SBE persisted -> journaled
 ```
 
-The certified accounting model uses monotonic counters sampled at baseline
-and final, with both directional discrepancies computed for every comparable
-stage pair:
+The certified accounting model uses monotonic counters sampled at baseline and
+final, with both directional discrepancies computed for every comparable stage
+pair:
 
-- `shortfall = max(0, expected - observed)`
-- `excess = max(0, observed - expected)`
+`shortfall = max(0, expected - observed)`
+`excess = max(0, observed - expected)`
 
 Missing evidence stays `None` and blocks certification; it is never zero.
 
 Independently sourced counters:
 
-- `enqueued_deltas` — mock outbound-queue admission counter.
-- `transmitted_deltas` — mock websocket send completion counter.
-- `received_frames` — `collector_data_frames_received_total`, accumulated in
+`enqueued_deltas` — mock outbound-queue admission counter.
+`transmitted_deltas` — mock websocket send completion counter.
+`received_frames` — `collector_data_frames_received_total`, accumulated in
   the collector core across reconnects.
-- `delta_events_decoded` — `collector_delta_events_decoded_total`, one count
+`delta_events_decoded` — `collector_delta_events_decoded_total`, one count
   per decoded `LevelChange` event, also core-accumulated.
-- `writer_delta_admissions` — `collector_writer_delta_admissions_total`, the
+`writer_delta_admissions` — `collector_writer_delta_admissions_total`, the
   queue-admission boundary.
-- `writer_delta_writes` — `collector_writer_delta_messages_total`, successful
+`writer_delta_writes` — `collector_writer_delta_messages_total`, successful
   SBE delta writes. This is distinct from total writer messages because the
   output also contains snapshots.
-- `sbe_deltas` — independent decode of the persisted capture.
-- `journaled_records` — independent journal verification.
+`sbe_deltas` — independent decode of the persisted capture.
+`journaled_records` — independent journal verification.
 
 Certified adjacent gaps:
 
-- `enqueue_transmit_shortfall` / `enqueue_transmit_excess`
-- `transmit_decode_shortfall` / `transmit_decode_excess`
-- `writer_admission_shortfall` / `writer_admission_excess`
-- `writer_write_shortfall` / `writer_write_excess`
+`enqueue_transmit_shortfall` / `enqueue_transmit_excess`
+`transmit_decode_shortfall` / `transmit_decode_excess`
+`writer_admission_shortfall` / `writer_admission_excess`
+`writer_write_shortfall` / `writer_write_excess`
 
 Replica fan-out appears on both transmit and decode sides, so no dedup
 arithmetic is needed for that comparison. Duplicate suppression remains a
@@ -287,7 +286,7 @@ The v5 ledger certifies that every decoded delta has exactly one terminal
 outcome. `DeltaDisposition` defines eleven mutually exclusive variants, and
 `CollectorStats` carries a counter for each. The acceptance path verifies:
 
-```
+```text
 decoded deltas = emitted + suppressed replica + no active source
                + unknown symbol + non-live + unassigned source
                + invalid book + shadow clock regression
@@ -449,7 +448,8 @@ latency or live performance claim.
 `stage_timing_cell_records_real_writer_write_latency` proves the writer SBE
 write and journal append boundaries record non-zero samples in a real cell;
 the histogram unit tests in `src/histogram.rs` pin percentile correctness,
-merge-by-raw-counts and sample-count rules. Previously published v3/v4/v5 manifests remain unchanged as
+merge-by-raw-counts and sample-count rules. Previously published v3/v4/v5
+manifests remain unchanged as
 historical evidence; v16 manifests use a new cell-id suffix and never overwrite
 them.
 

@@ -3,11 +3,11 @@
 - **Status:** Accepted
 - **Date:** 2026-11-07
 - **Accepted:** 2026-11-07
-- **Revision:** 2 — scenario 8.2 mapping resolution separated from
-  cross-listing instrument identity; status Accepted.
-- **Scope:** Documentation and design decision only. No Rust types, catalog,
+- **Revision:** 2 — scenario 8.2 mapping resolution separated from cross-listing
+  instrument identity; status Accepted.
+**Scope:** Documentation and design decision only. No Rust types, catalog,
   database, schema, or adapter changes.
-- **Related:** [Platform charter](../platform-charter.md),
+**Related:** [Platform charter](../platform-charter.md),
   [architecture](../architecture.md), [design decisions](../design-decisions.md).
 
 ## 1. Status and context
@@ -90,11 +90,11 @@ event as one selected market.
 
 Consequences today:
 
-- `CapacityPlan.selected_markets` and `Catalog.selected_markets` can undercount
+`CapacityPlan.selected_markets` and `Catalog.selected_markets` can undercount
   Kalshi markets that share an event.
-- Shard sizing is not affected because it uses `outcome_symbols`, not
+Shard sizing is not affected because it uses `outcome_symbols`, not
   `selected_markets`.
-- Kalshi discovery statistics currently set `selected_markets` to
+Kalshi discovery statistics currently set `selected_markets` to
   `markets.len()`, which counts market records directly. Capacity and catalog
   therefore use a different counting rule from discovery.
 
@@ -151,9 +151,9 @@ Do not use one generic `outcome` field as the identity model. An outcome label i
 metadata on an instrument or contract, not its identity.
 
 Instrument relationships are separate from identity: underlying, outcome-of,
-deliverable, related instrument, share class, and contract family. A relationship
-does not make two legally or economically distinct contracts the same
-instrument.
+deliverable, related instrument, share class, and contract family. A
+relationship does not make two legally or economically distinct contracts the
+same instrument.
 
 ### InstrumentIdentifier
 
@@ -181,14 +181,14 @@ have different roles:
 | ISO 10383 | Market and facility identification through MICs |
 | ISO 4217 | Currency identification |
 
-MICs identify facilities and trade-reporting locations, not instruments. The
-ISO 10383 model distinguishes operating MICs and segment MICs; preserve that
+MICs identify facilities and trade-reporting locations, not instruments. The ISO
+10383 model distinguishes operating MICs and segment MICs; preserve that
 hierarchy. An operating MIC may identify the venue operator's facility, while a
 segment MIC identifies a market segment. Do not flatten both into one venue
 field.
 
-**Decision:** never use a ticker, CFI code, currency code, or MIC as the internal
-instrument primary key.
+**Decision:** never use a ticker, CFI code, currency code, or MIC as the
+internal instrument primary key.
 
 ### Venue and VenueOperator
 
@@ -315,21 +315,21 @@ do not require a listing.
 
 Cardinalities:
 
-- One `VenueOperator` operates one or more `Venue` records.
-- One `Venue` has zero or more `MarketSegment` records and one or more
+One `VenueOperator` operates one or more `Venue` records.
+One `Venue` has zero or more `MarketSegment` records and one or more
   `Listing` records when it publishes listings.
-- One `Instrument` has zero or more `Listing` records.
-- One `Listing` belongs to exactly one `Venue` and may belong to zero or one
+One `Instrument` has zero or more `Listing` records.
+One `Listing` belongs to exactly one `Venue` and may belong to zero or one
   `MarketSegment` during its validity period.
-- One `Listing` has zero or more venue-assigned mappings across feeds and
+One `Listing` has zero or more venue-assigned mappings across feeds and
   protocols.
-- One `Instrument` has zero or more provider/feed-assigned mappings.
-- One provider/feed mapping resolves directly to one `Instrument` and is scoped
+One `Instrument` has zero or more provider/feed-assigned mappings.
+One provider/feed mapping resolves directly to one `Instrument` and is scoped
   to one `DataProvider` and, when the provider partitions symbols, one `Feed`.
-- One `DataProvider` supplies one or more `Feed` records.
-- One `Feed` has one or more `FeedSession` records and zero or more
+One `DataProvider` supplies one or more `Feed` records.
+One `Feed` has one or more `FeedSession` records and zero or more
   `Entitlement` records; public data still carries an explicit access policy.
-- One `Feed` may carry events originating from many venues.
+One `Feed` may carry events originating from many venues.
 - A venue may have no public market-data feed; a feed may have no venue.
 
 These are conceptual cardinalities. The implementation encoding, storage, and
@@ -352,8 +352,8 @@ identifier type are deferred.
 
 The internal instrument identity should be opaque and platform-assigned. It must
 not be a hash of mutable fields, a ticker, an ISIN, a CFI code, a MIC, a
-Polymarket token ID, or a Kalshi ticker. The concrete representation is deferred;
-this ADR adds no UUID or ULID dependency.
+Polymarket token ID, or a Kalshi ticker. The concrete representation is
+deferred; this ADR adds no UUID or ULID dependency.
 
 Output symbols remain a compatibility concern. The current SBE output must keep
 working, so the output symbol is a serialization mapping to a listing or
@@ -436,7 +436,8 @@ worker/replica identity:
 SourceId { shard, replica }
 ```
 
-It identifies one websocket source worker. It is not an external source. A later,
+It identifies one websocket source worker. It is not an external source. A
+later,
 separate change should rename it to `SourceWorkerId` or `ReplicaId`; this ADR
 does not rename it.
 
@@ -553,7 +554,7 @@ is metadata, not identity.
 
 ## 9. Alternatives considered
 
-1. **Keep `MarketInfo` as the universal identity.** Rejected: it conflates
+**Keep `MarketInfo` as the universal identity.** Rejected: it conflates
    instrument, listing, venue, feed, and output symbol, and makes cross-venue
    consolidation ambiguous.
 2. **Use the venue symbol as the primary key.** Rejected: tickers are reused,
@@ -561,10 +562,10 @@ is metadata, not identity.
 3. **Use the ISIN as a universal key.** Rejected: not every instrument has one,
    one instrument can have multiple listings, and an ISIN is a namespaced
    assertion rather than a platform identity.
-4. **Model every venue as an exchange and every listing as a market.** Rejected:
+**Model every venue as an exchange and every listing as a market.** Rejected:
    it cannot represent ATSs, dark pools, OTC dealers, or trade-reporting
    facilities without inventing a public book.
-5. **Extend `ExchangeKind` into a global venue list.** Rejected: it would turn
+**Extend `ExchangeKind` into a global venue list.** Rejected: it would turn
    connector selection into a maintenance-heavy venue registry. Connectors must
    be reusable across venues.
 6. **Treat a Kalshi event or Polymarket condition as the instrument.** Rejected:
@@ -582,7 +583,7 @@ is metadata, not identity.
 
 ### Consequences
 
-- The reference model becomes more explicit, with more entities and more
+The reference model becomes more explicit, with more entities and more
   validation than the current `MarketInfo` record.
 - A listing is anchored to a venue; a market segment remains optional metadata
   rather than a precondition. This avoids inventing segments for venues that do
@@ -604,8 +605,8 @@ is metadata, not identity.
 
 ### Migration sequence (later PRs, not this one)
 
-1. Accept this ADR and review the identity invariant.
-2. Introduce internal instrument, venue, optional market segment, listing,
+Accept this ADR and review the identity invariant.
+Introduce internal instrument, venue, optional market segment, listing,
    venue-assigned mapping, provider/feed mapping, provider, and feed types
    alongside `MarketInfo`, without changing output behavior.
 3. Have each adapter emit explicit identity assertions in addition to its
@@ -613,8 +614,8 @@ is metadata, not identity.
 4. Add as-of resolution and ambiguity states behind a read-only interface.
 5. Fix selected-market counting to use the reviewed market identity, and align
    discovery, capacity, and catalog accounting.
-6. Version the catalog schema and migrate records with history preserved.
-7. Rename the runtime `SourceId` to a worker/replica identity in a separate,
+Version the catalog schema and migrate records with history preserved.
+Rename the runtime `SourceId` to a worker/replica identity in a separate,
    mechanical change.
 8. Only then consider changing the numeric and event models.
 
@@ -625,11 +626,11 @@ separate schema-evolution decision.
 
 This ADR does not:
 
-- add Rust structs or enums;
-- change `MarketInfo`;
-- change `ExchangeKind`;
-- change `SourceId`;
-- change `Catalog`;
+add Rust structs or enums;
+change `MarketInfo`;
+change `ExchangeKind`;
+change `SourceId`;
+change `Catalog`;
 - add a database;
 - add UUID or ULID dependencies;
 - change the SBE schema;
@@ -664,5 +665,5 @@ This ADR was accepted on 2026-11-07. The identity invariant in section 1 and the
 worked scenarios in section 8 are the accepted semantics. Revision 2 corrected
 scenario 8.2 so venue identifiers resolve to their listings while cross-listing
 instrument identity remains unresolved or ambiguous without authoritative
-evidence. Implementation begins under the migration sequence in section 10,
-with the numeric model considered separately.
+evidence. Implementation begins under the migration sequence in section 10, with
+the numeric model considered separately.
