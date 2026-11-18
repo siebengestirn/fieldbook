@@ -176,6 +176,8 @@ fn style_commands() -> Vec<Cmd> {
         Cmd::new("python3 -m ruff check --no-cache ."),
         Cmd::new("python3 -m pyink --check --config pyproject.toml scripts"),
         Cmd::new("python3 scripts/check_shellcheck.py"),
+        Cmd::new("python3 scripts/check_no_cross_pollution.py"),
+        Cmd::new("python3 scripts/check_rust_style.py --self-test"),
     ]
 }
 

@@ -38,6 +38,9 @@ def main() -> int:
         print("shellcheck not installed; run `make tools`", file=sys.stderr)
         return 1
     scripts = sorted((ROOT / "scripts").rglob("*.sh"))
+    if not scripts:
+        print("shellcheck: no shell scripts in this repository")
+        return 0
     result = subprocess.run(
         [binary, "-x", *(str(path) for path in scripts)], cwd=ROOT
     )
