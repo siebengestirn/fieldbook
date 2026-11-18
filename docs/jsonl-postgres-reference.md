@@ -11,8 +11,17 @@ raw-frame journal, replay or the catalog.
 P5 established the in-memory source plus the SQL/simulator contract. **P6 adds a
 real local durable commit path, a streaming file source with a content-bound
 resume anchor, corrected delivery semantics and a database executor seam.**
-A real PostgreSQL target now applies the same transcript through a driver; it
-is opt-in and requires an operator-supplied server.
+A real PostgreSQL target now applies the same transcript through a synchronous
+driver; it is opt-in and requires an operator-supplied server. Its checkpoint
+namespace is currently one ordered input stream per logical target id. Database
+checkpoint writes require strict sequence/offset advancement, except for an
+identical-position retry of the same event id; competing events at one source
+position are rejected transactionally. The current checkpoint checksum binds
+the target, position and last event id. Older rows migrate with no known last
+key and retain legacy checksum validation until they advance. Reusing an event
+key with changed canonical content is rejected after a full persisted-row
+comparison. The live target rejects multi-event delivery requests rather than
+silently truncating them.
 
 ## Independent network source
 
@@ -39,6 +48,7 @@ flowchart LR
     ENV --> RUNNER[run_jsonl_to_target_with_mode: accounting, mode, quarantine-before-progression]
     RUNNER --> TARGET[TargetConnector: idempotency keyed by event id]
     TARGET --> SQL[CommitTranscript: BEGIN, INSERT event, INSERT disposition, UPSERT checkpoint, COMMIT only on durable commit]
+    SQL --> PG[PgTarget: synchronous PostgreSQL execution and explicit schema]
     TARGET --> SIM[PostgresSimulator: in-memory commit state]
     RUNNER --> STORE[CommitStore: one checksummed fsync record with ids, dispositions, checkpoint]
     STORE --> ANCHOR[DurableCheckpoint: source id + fingerprint + target id + offset]
@@ -112,28 +122,41 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
   `DurableState`, `StoreFault`, `load_state` and `run_streaming_pipeline`.
 `src/application/postgres.rs`: parameterized SQL generation, a deterministic
   in-memory simulator, target-specific `IdempotencyKey`, `CommitTranscript`,
-  `SqlExecutor`, `RecordingExecutor` and fault injections. No COMMIT is emitted
-  for a non-terminal receipt.
+  `SqlExecutor`, `RecordingExecutor`, `PgExecutor`, `PgTarget` and explicit
+  migrations. The live target executes the transcript through the synchronous
+  `postgres` driver; only a durable receipt emits COMMIT.
 - Deterministic offline tests for bounded reads and offsets, fingerprint-bound
   resume, duplicate/malformed evidence, restart from a durable store, quarantine
   before progression, DB-unavailable checkpoint stability, independent target
   obligations, simulated modes, partial/corrupt commit records and SQL shape.
 
-## Planned, not implemented
+## Implemented live integration and remaining limits
 
-A real PostgreSQL driver (`tokio-postgres`) and connection pool. Wiring one
-  to [`SqlExecutor`](../src/application/postgres.rs) is a **separate dependency
-  decision**; this work adds no dependency and no `Cargo.toml` change.
-- A live database, migrations executed against a real server, and production
-  durability or recovery testing. The local store is single-writer and has no
-  replication, quorum, multi-site or retention policy.
-- Any performance, throughput, latency, scale or live-environment claim. The
-  simulator is in-memory and all tests are local and deterministic. SQL text is
-  checked for shape only; no query plan or server behavior is exercised.
+The synchronous `postgres` dependency is wired through `PgExecutor` and
+`PgTarget`. `apply_migrations` applies the explicit schema, and the ignored
+`tests/postgres_live.rs::postgres_live_checkpoint_and_idempotency` test drives
+an operator-supplied database. The operator reports that test passed against
+PostgreSQL 18.6. It is not run by CI, and no server transcript or evidence
+manifest is retained in this source export.
+
+The TCP source in `src/application/network_source.rs` is deliberately a small
+loopback reference protocol. Its tests exercise a local server, clean-disconnect
+resume, malformed-line quarantine and a 2,000-record reconnect soak. It is not
+a production authenticated network connector or proof of arbitrary remote
+source continuity; its declared token identifies a stream but is not a
+whole-stream content hash.
+
+Still not implemented or certified: connection pooling and production
+connection lifecycle management; replicated or quorum durability; multi-site
+recovery; target failover/soak evidence; production network-source security and
+continuity; and reproducible throughput, latency or scale claims. The local
+commit store remains single-writer and local-filesystem scoped.
 
 ## Compatibility
 
 No existing market-data source file was changed other than the additive module
 declarations. `ExchangeEvent`, `MarketInfo`, the SBE schema and writer, journal
 format, replay format, catalog, coordinator and collector state are untouched.
-No dependency was added and all existing P5 and market-data tests remain.
+The synchronous `postgres` crate is an added application-layer dependency.
+Existing market-data contracts and formats remain unchanged; P5/P6 tests are
+additive.

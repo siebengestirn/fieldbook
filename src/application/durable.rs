@@ -15,8 +15,9 @@
 //! schema versions and checkpoint-binding mismatches fail closed.
 //!
 //! The store is local and single-writer. It does **not** provide replication,
-//! a database transaction, or a live PostgreSQL connection. The SQL executor
-//! seam in the sibling `postgres` module is a contract only.
+//! a database transaction, or a live PostgreSQL connection. The sibling
+//! `postgres` module has a separate opt-in live target; it is not this local
+//! commit store and does not change this store's failure boundaries.
 
 use std::path::{Path, PathBuf};
 
