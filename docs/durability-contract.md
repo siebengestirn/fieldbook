@@ -67,17 +67,18 @@ explicit migration. Its live-server test is opt-in and is not run by CI.
 deterministic simulator. `MIGRATION_SQL` creates three tables:
 `canonical_business_events`, `delivery_dispositions` and `target_checkpoints`.
 Database uniqueness on `idempotency_key` (and on
-`(target_id, output_contract_version)` for checkpoints) is the idempotency
-authority; the client never relies on an in-memory set. The event, disposition
-and checkpoint writes are one `BEGIN ... COMMIT` transaction. Checkpoint updates
-must advance both sequence and byte offset. An exact retry at the current
-position is allowed only when its event id matches the persisted
+`(target_id, source_id, output_contract_version)` for checkpoints) is the
+idempotency authority; the client never relies on an in-memory set. The event,
+disposition and checkpoint writes are one `BEGIN ... COMMIT` transaction.
+Checkpoint updates must advance both sequence and byte offset. An exact retry at
+the current position is allowed only when its event id matches the persisted
 `last_idempotency_key`; a different event cannot claim the same position. The
-current SHA-256 checkpoint checksum binds the target, position and last event
-id. Rows created by the earlier schema migrate with an empty last key and
-retain legacy checksum validation; they cannot accept an unverifiable
-same-position retry, but can advance to a new position. A zero-row conditional
-update rolls the transaction back. Reusing an event key
+SHA-256 checkpoint checksum binds target, source, output contract version,
+sequence, byte offset and last idempotency key. Rows created by the earlier
+schema migrate into the empty-source namespace with an empty last key; they
+cannot accept an unverifiable same-position retry, but can advance to a new
+position. A zero-row conditional update rolls the transaction back. Reusing an
+event key
 also compares all persisted canonical event columns, including source identity;
 the same key with changed content is rejected and the transaction is rolled
 back.
@@ -90,8 +91,10 @@ identity components, sequence, byte offset and last idempotency key. Event and
 disposition rows persist `source_id` alongside their canonical provenance.
 Legacy rows migrated from the earlier schema retain the explicit empty-source
 namespace until an operator calls `assign_legacy_checkpoint_source`; ownership
-is never inferred from an event id. `PgTarget::with_source` binds an instance
-to one source identity and rejects an envelope whose source does not match.
+is never inferred from an event id. That procedure also rebinds the checksum to
+the claimed source in the same transaction, so a mapped position can be reloaded
+and resumed. `PgTarget::with_source` binds an instance to one source identity
+and rejects an envelope whose source does not match.
 `PgTarget` accepts exactly one event per delivery and rejects empty or
 multi-event batches rather than silently dropping records. A failed statement
 triggers `ROLLBACK` and returns an `Uncertain` receipt; a retry with the same

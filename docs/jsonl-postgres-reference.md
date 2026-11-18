@@ -137,10 +137,11 @@ or concept tokens; `scripts/check_architecture.py` enforces the same rule.
 
 The synchronous `postgres` dependency is wired through `PgExecutor` and
 `PgTarget`. `apply_migrations` applies the explicit schema, and the ignored
-`tests/postgres_live.rs::postgres_live_source_scoped_delivery` test drives
-an operator-supplied database. The operator reports that test passed against
-PostgreSQL 18.6. It is not run by CI, and no server transcript or evidence
-manifest is retained in this source export.
+`tests/postgres_live.rs::postgres_live_source_scoped_delivery` test drives an
+operator-supplied database. It passed against PostgreSQL 18.6; the exact
+command, output and SHA-256 hashes are retained in
+`measurements/live/2026-11-18-postgres-source-scoped/`, with `source_commit`
+naming the exact code commit tested. It is an opt-in test, not run by CI.
 
 The TCP source in `src/application/network_source.rs` is deliberately a small
 loopback reference protocol. Its tests exercise a local server, clean-disconnect

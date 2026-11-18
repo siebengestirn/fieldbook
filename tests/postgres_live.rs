@@ -17,8 +17,11 @@ use std::str::FromStr;
 
 use engineering_challenge::{
     application::{
-        CanonicalBusinessEvent, DeliveryRequest, DeliveryState, TargetConnector,
-        postgres::{PgCheckpoint, PgTarget, apply_migrations, assign_legacy_checkpoint_source},
+        CanonicalBusinessEvent, DeliveryReceipt, DeliveryRequest, DeliveryState, TargetConnector,
+        postgres::{
+            OUTPUT_CONTRACT_VERSION, PgCheckpoint, PgTarget, apply_migrations,
+            assign_legacy_checkpoint_source,
+        },
     },
     canonical::{CANONICAL_SCHEMA_VERSION, CanonicalEnvelope, EventId},
     identity::OpaqueId,
@@ -165,10 +168,9 @@ fn postgres_live_source_scoped_delivery() {
         persisted_b.source_id, source_b,
         "verified by the source-scoped integration contract"
     );
-    assert_ne!(
-        persisted_a.checksum, persisted_b.checksum,
-        "source checksums differ"
-    );
+    let checksum_a = persisted_a.checksum;
+    let checksum_b = persisted_b.checksum;
+    assert_ne!(checksum_a, checksum_b, "source checksums differ");
 
     // 3. A stale writer for A cannot regress A or mutate B.
     {
@@ -176,7 +178,7 @@ fn postgres_live_source_scoped_delivery() {
             &target_id,
             &source_a,
             &mut client,
-            PgCheckpoint::initial_for_source(&target_id, SOURCE_A),
+            PgCheckpoint::initial_for_source(&target_id, &source_a),
         );
         stale.set_position(1, 10);
         let stale_receipt = stale.deliver(&request(envelope("evt-a2", SOURCE_A, 12)));
@@ -204,6 +206,35 @@ fn postgres_live_source_scoped_delivery() {
                 .sequence,
             1,
             "verified by the source-scoped integration contract"
+        );
+    }
+
+    // 3b. A target bound to A rejects an envelope from source B without any
+    // row or checkpoint mutation.
+    {
+        let mut a = PgTarget::with_source(&target_id, &source_a, &mut client);
+        let before = a
+            .source_committed_count()
+            .expect("count before foreign envelope");
+        let receipt = a.deliver(&request(envelope("evt-foreign", SOURCE_B, 999)));
+        assert_eq!(receipt.state(), DeliveryState::Rejected, "{receipt:?}");
+        assert!(
+            matches!(&receipt, DeliveryReceipt::Rejected { reason, .. } if reason.contains("does not match target source")),
+            "the rejection must name the source mismatch"
+        );
+        assert_eq!(
+            a.source_committed_count()
+                .expect("count after foreign envelope"),
+            before,
+            "a foreign-source envelope must not commit a row"
+        );
+        assert_eq!(
+            a.persisted_checkpoint()
+                .expect("A checkpoint")
+                .unwrap()
+                .sequence,
+            1,
+            "a foreign-source envelope must not move the checkpoint"
         );
     }
 
@@ -262,7 +293,7 @@ fn postgres_live_source_scoped_delivery() {
             &target_id,
             &source_a,
             &mut client,
-            PgCheckpoint::initial_for_source(&target_id, SOURCE_A),
+            PgCheckpoint::initial_for_source(&target_id, &source_a),
         );
         stale.set_position(1, 10);
         let receipt = stale.deliver(&racing);
@@ -292,10 +323,7 @@ fn postgres_live_source_scoped_delivery() {
              (target_id, source_id, output_contract_version, last_committed_sequence, \
               last_committed_offset, checkpoint_checksum, last_idempotency_key) \
              VALUES ($1, '', $2, 1, 10, 'sha256:legacy', '')",
-            &[
-                &legacy_target,
-                &(i64::from(engineering_challenge::application::postgres::OUTPUT_CONTRACT_VERSION)),
-            ],
+            &[&legacy_target, &i64::from(OUTPUT_CONTRACT_VERSION)],
         )
         .expect("legacy checkpoint row");
     apply_migrations(&mut client).expect("migration preserves legacy rows");
@@ -311,8 +339,13 @@ fn postgres_live_source_scoped_delivery() {
         "verified by the source-scoped integration contract"
     );
     assert!(
-        assign_legacy_checkpoint_source(&mut client, &legacy_target, &source_a)
-            .expect("explicit legacy mapping"),
+        assign_legacy_checkpoint_source(
+            &mut client,
+            &legacy_target,
+            &source_a,
+            OUTPUT_CONTRACT_VERSION
+        )
+        .expect("explicit legacy mapping"),
         "an explicit operator mapping must move the legacy row exactly once"
     );
     let mapped_source: String = client
@@ -326,6 +359,32 @@ fn postgres_live_source_scoped_delivery() {
         mapped_source, source_a,
         "verified by the source-scoped integration contract"
     );
+    // The mapped row must be resumable: its checksum was rebound to the new
+    // source by the mapping procedure, so PgTarget can validate and reload it.
+    {
+        let mut mapped = PgTarget::with_source(&legacy_target, &source_a, &mut client);
+        let reloaded = mapped
+            .persisted_checkpoint()
+            .expect("mapped checkpoint reload")
+            .expect("mapped checkpoint exists");
+        assert_eq!(reloaded.sequence, 1, "mapped position must be preserved");
+        assert_eq!(reloaded.offset, 10, "mapped offset must be preserved");
+        assert_eq!(
+            reloaded.source_id, source_a,
+            "mapped source must be claimed"
+        );
+    }
+    let remapped = assign_legacy_checkpoint_source(
+        &mut client,
+        &legacy_target,
+        &source_a,
+        OUTPUT_CONTRACT_VERSION,
+    )
+    .expect("repeated mapping is a no-op");
+    assert!(
+        !remapped,
+        "an already-mapped checkpoint must not be remapped"
+    ); // a second operator claim must be a no-op
 
     // 8. Two independent connections cannot violate per-source monotonicity.
     let concurrent_target = format!("pg-concurrent-{}", std::process::id());

@@ -54,6 +54,16 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `e647667` | PR #77 — real Hyperliquid wire decoding and live certification |
 | `23fe17c` | PR #78 — live Hyperliquid reconnect recovery drill |
 | `1445068` | PR #79 — Google/Linux style gates for all languages |
+| `8fd25c0` | PR #80 — documentation opening refresh |
+| `219f6c1` | PR #81 — audit anchor masking |
+| `e9433fd` | PR #82 — stress drain timeout correction |
+| `29456b3` | PR #83 — bounded fingerprint and visible xtask failures |
+| `0e69638` | PR #84 — bounded duplicate index |
+| `b3c45c4` | PR #85 — generic pipeline, PostgreSQL target and loopback TCP source |
+| `ac33b81` | PR #86 — portable policy gates with strict isolation |
+| `15d2993` | PR #87 — PostgreSQL checkpoint integrity hardening |
+| `7edfb92` | PR #88 — bounded loopback socket waits |
+| `a6f9fcb` | PR #89 — reconcile current head and live PostgreSQL evidence |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -69,58 +79,61 @@ reconnect-drain deadline correction). Its verification record reported
 37 Python tests passing, and four consecutive locked full-suite runs passing
 before the PR #82 merge. Hosted run identifiers were not included.
 
-## Subsequent integrations (operator-reported)
+## Subsequent integrations (reconciled in canonical Git)
 
-The operator reports that PRs #83, #84 and #85 were merged in order: #83 adds
-the disk-backed exact duplicate index and visible xtask failure output; #84
-adds the synchronous PostgreSQL target, migrations and opt-in live-server test;
-PR #85 adds the independent loopback TCP source and reconnect/accounting tests.
-The operator reports `cargo xtask ci` and `scripts/assurance/polish.sh` passing
-on `main` at `b3c45c4a1da1cfc6e0d04682468a2e3fbabeb404`, with a clean, pushed
-worktree.
+The integration history table above is now sourced from the canonical Git
+checkout, not only operator report. PRs #83-#85 added the disk-backed exact
+duplicate index, the synchronous PostgreSQL target with migrations and the
+opt-in live-server test, and the independent loopback TCP source with
+reconnect/accounting tests. PR #86 adopted portable policy gates; PR #87
+hardened PostgreSQL checkpoint integrity; PR #88 bounded loopback socket waits;
+PR #89 reconciled the head and live evidence records. Each is identified by its
+exact merge commit in the table above.
 
-The accompanying `engineering-challenge-template-ac33b81.zip` contains the
-implementation and tests for these changes but has no `.git` metadata. The
-archive cannot independently establish that it is byte-for-byte the reported
-`b3c45c4` checkout, recover PR merge commits, verify remote branch cleanliness,
-or reproduce the operator's PostgreSQL run. Treat those points as
-operator-reported until checked in the canonical Git checkout and evidence
-logs. The opt-in database test has code in the archive; no database transcript
-or server manifest is retained here.
+The source export `engineering-challenge-template-ac33b81.zip` has no `.git`
+metadata and cannot by itself establish PR merge commits, branch cleanliness or
+the operator's PostgreSQL run. Those facts are taken from the canonical Git
+checkout and the retained evidence records instead of from the archive.
 
-## Current head (7edfb92)
+## Current integrated head (a6f9fcb)
 
-PR #87 (`15d2993`) applied the reviewed PostgreSQL checkpoint-integrity
-hardening: the checksum binds target, position and the last idempotency key;
-competing writers cannot regress a checkpoint; and an event key reused with
-changed canonical content fails closed. PR #88 (`7edfb92`) bounded the loopback
-mock-server socket waits so a loaded host cannot turn a healthy read into an
-uncertain receipt. Both PRs were merged after `cargo xtask ci` and
-`scripts/assurance/polish.sh --loop 2` passed; the live PostgreSQL test passed
-against a real PostgreSQL 18.6 server.
+`a6f9fcb` is the integration of PR #89. PR #87 (`15d2993`) hardened PostgreSQL
+checkpoint integrity: the checksum binds target, position and the last
+idempotency key; competing writers cannot regress a checkpoint; and an event
+key reused with changed canonical content fails closed. PR #88 (`7edfb92`)
+bounded loopback mock-server socket waits so a loaded host cannot turn a
+healthy read into an uncertain receipt. Both PRs were merged after
+`cargo xtask ci` and `scripts/assurance/polish.sh --loop 2` passed; the live
+PostgreSQL test passed against a real PostgreSQL 18.6 server.
 
-Two retained evidence records are deliberately distinguished:
+Three retained evidence records are deliberately distinguished:
 
 - `measurements/live/2026-11-18-postgres-checkpoint-integrity/` records the
   PASS on the earlier source commit `ac33b81`.
 - `measurements/live/2026-11-18-postgres-checkpoint-integrity-head-7edfb92/`
   records the exact command, output and SHA-256 of the rerun from clean
   `main` at `7edfb92`.
+- `measurements/live/2026-11-18-postgres-source-scoped/` records the
+  source-scoped live test on the PR #90 branch, with `source_commit` naming the
+  exact code commit that was executed.
 
-The earlier record does not prove the later head passed; the second record
-does. Neither is a production certification.
+The earlier record does not prove a later head passed; each head-specific
+record proves only its own source commit. None is a production certification.
 
-## Source-scoped durable delivery (implementation under review)
+## Source-scoped durable delivery (PR #90, under review)
 
-The PostgreSQL target now namespaces checkpoints by
+The PostgreSQL target namespaces checkpoints by
 `(target_id, source_id, output_contract_version)`. Event and disposition rows
-carry source identity, the checkpoint checksum binds all identity components,
-and `PgTarget::with_source` rejects an envelope from a different source.
-Legacy rows stay in an explicit empty-source namespace and are moved only by
-the operator-controlled `assign_legacy_checkpoint_source` procedure. The
-opt-in live test exercises two sources on one physical target, stale writers,
-exact retries, changed payloads, a failed checkpoint race, explicit legacy
-mapping and concurrent writers. Command, output and hashes are retained in
+carry source identity, and the checksum binds all three identity dimensions
+plus sequence, byte offset and the last idempotency key. `PgTarget::with_source`
+rejects an envelope from a different source. Legacy rows stay in an explicit
+empty-source namespace and are moved only by the operator-controlled
+`assign_legacy_checkpoint_source` procedure, which rebinds the checksum to the
+claimed source so the mapped position remains resumable. The opt-in live test
+exercises two sources on one physical target, per-source restart reload, stale
+writers, foreign-source envelopes, exact retries, changed payloads, a failed
+checkpoint race, resumable legacy mapping and concurrent writers. Command,
+output and hashes are retained in
 `measurements/live/2026-11-18-postgres-source-scoped/`. This is an implemented
 and live-tested integration, not a production certification or a throughput
 claim.
@@ -148,8 +161,8 @@ claim.
 | Platform M2 identity (Phases 1-3) | Yes | Yes | N/A | 11 identity tests | No | N/A |
 | Platform M3 products (Phase 1) | Yes | Yes | N/A | Product/capability/state-machine tests | No | N/A |
 | Platform M4 canonical events (Phase 1) | Yes | Yes | N/A | Canonical conversion/schema tests | No | N/A |
-| P5 JSONL-to-target | Yes (simulator + synchronous PostgreSQL `PgTarget`) | Yes | Live PostgreSQL test PASS at `7edfb92` | Exact command, output and hashes retained for current head | Opt-in server test only; no production certification | No |
-| P6 durable file-to-target | Yes (local durable store, file source, `PgTarget`, loopback TCP source) | Yes | PostgreSQL test PASS at `7edfb92`; loopback reconnect tests in CI | Source/tests and live DB output retained for current head | Opt-in PostgreSQL test PASS; TCP source remains loopback-only; no production certification | No |
+| P5 JSONL-to-target | Yes (simulator + source-scoped synchronous PostgreSQL `PgTarget`) | Yes | Live source-scoped PostgreSQL test PASS on the PR #90 code commit | Exact command, output and hashes retained in the source-scoped evidence record | Opt-in server test only; no production certification | No |
+| P6 durable file-to-target | Yes (local durable store, file source, `PgTarget`, loopback TCP source) | Yes | Source-scoped PostgreSQL test PASS; loopback reconnect tests in CI | Source/tests and source-scoped live DB output retained | Opt-in PostgreSQL test PASS; TCP source remains loopback-only; no production certification | No |
 
 ## Contract foundation vs live integration
 
@@ -162,10 +175,10 @@ capability.
 | Persistent identity | Implemented (`src/identity.rs`) | Partial/not migrated into collector ownership | No |
 | Typed products | Implemented (`src/products.rs`) | Not consumed by legacy session `apply_subscriptions` | No |
 | Canonical events | Implemented (`src/canonical.rs`) | Not authoritative live pipeline | No |
-| JSONL-to-target | Generic source/target runner with deterministic simulator and real `PgTarget` (`postgres::Client`) | Operator reports opt-in live PostgreSQL test passed; no server transcript retained in this export | No production certification |
+| JSONL-to-target | Generic source/target runner with deterministic simulator and source-scoped real `PgTarget` (`postgres::Client`) | Opt-in live source-scoped PostgreSQL PASS with command, output and hashes retained in `measurements/live/2026-11-18-postgres-source-scoped/` | No production certification |
 | Local reference commit store | Implemented (`src/application/durable.rs`): append-only checksummed fsync records, reopen verification, fault injection | Single-writer local filesystem only; no replication or multi-host durability | No |
 | Streaming file source | Implemented (`src/application/file_source.rs`): bounded `BufRead`, exact bytes/offsets, fingerprint-bound resume | File ingestion plus a loopback TCP source; network-source tests use a local server and do not certify a production network adapter | No |
-| PostgreSQL execution | Synchronous `postgres` driver, `PgExecutor`, `PgTarget`, explicit migration and database idempotency/checkpoint tables; one event per delivery | Opt-in live server test reported PASS; monotonic target-scoped checkpoint; no connection pool, failover soak or replication | No |
+| PostgreSQL execution | Synchronous `postgres` driver, `PgExecutor`, `PgTarget`, explicit migration and database idempotency/checkpoint tables; one event per delivery | Opt-in live server test PASS with retained transcript; per-source monotonic checkpoints; no connection pool, failover soak or replication | No |
 | Hyperliquid | H0-H3 implemented; H1/H2 wire codecs fixed from real frames | Read-only mainnet captures in `captures/`, including a reconnect drill; no orders | No |
 | Additional H0 venues | Reference data only | No live product integration | No |
 

@@ -170,8 +170,19 @@ pub fn apply_migrations(client: &mut Client) -> Result<(), ExecutorError> {
         .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
     // Re-key an existing legacy table into the empty-source namespace. This
     // is done in Rust, not a procedural SQL block, so no server-side language
-    // extension is required. It is idempotent and never infers a source.
-    let has_source_in_pk: bool = client
+    // extension is required. It is idempotent and never infers a source. The
+    // catalog check and the ALTER share one transaction behind an advisory
+    // lock, so concurrent migrations cannot both observe an unkeyed table and
+    // leave it briefly primary-key-free.
+    let mut tx = client
+        .transaction()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('target_checkpoints')::bigint)",
+        &[],
+    )
+    .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    let has_source_in_pk: bool = tx
         .query_one(
             concat!(
                 "SELECT EXISTS (SELECT 1 FROM pg_constraint c ",
@@ -184,15 +195,16 @@ pub fn apply_migrations(client: &mut Client) -> Result<(), ExecutorError> {
         .map(|row| row.get(0))
         .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
     if !has_source_in_pk {
-        client
-            .batch_execute(concat!(
-                "ALTER TABLE target_checkpoints ",
-                "DROP CONSTRAINT IF EXISTS target_checkpoints_pkey; ",
-                "ALTER TABLE target_checkpoints ",
-                "ADD PRIMARY KEY (target_id, source_id, output_contract_version);"
-            ))
-            .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+        tx.batch_execute(concat!(
+            "ALTER TABLE target_checkpoints ",
+            "DROP CONSTRAINT IF EXISTS target_checkpoints_pkey; ",
+            "ALTER TABLE target_checkpoints ",
+            "ADD PRIMARY KEY (target_id, source_id, output_contract_version);"
+        ))
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
     }
+    tx.commit()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
     Ok(())
 }
 
@@ -204,26 +216,82 @@ pub fn assign_legacy_checkpoint_source(
     client: &mut Client,
     target_id: &str,
     source_id: &str,
+    output_contract_version: u32,
 ) -> Result<bool, ExecutorError> {
     if source_id.is_empty() {
         return Err(ExecutorError::Failed(
             "legacy checkpoint mapping requires a non-empty source id".to_owned(),
         ));
     }
-    let existing = client
+    // An advisory lock per target serializes concurrent claims of the same
+    // legacy row. The row checks, checksum rewrite and primary-key move are
+    // therefore one atomic, operator-controlled step.
+    let mut tx = client
+        .transaction()
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    tx.execute(
+        "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+        &[&target_id],
+    )
+    .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    let legacy = tx
         .query_opt(
-            "SELECT 1 FROM target_checkpoints WHERE target_id = $1 AND source_id = $2",
-            &[&target_id, &source_id],
+            concat!(
+                "SELECT last_committed_sequence, last_committed_offset, ",
+                "last_idempotency_key, output_contract_version FROM target_checkpoints ",
+                "WHERE target_id = $1 AND source_id = '' AND output_contract_version = $2 ",
+                "FOR UPDATE"
+            ),
+            &[&target_id, &i64::from(output_contract_version)],
         )
         .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
-    if existing.is_some() {
+    let Some(legacy) = legacy else {
+        return Ok(false);
+    };
+    let claimed = tx
+        .query_opt(
+            concat!(
+                "SELECT 1 FROM target_checkpoints ",
+                "WHERE target_id = $1 AND source_id = $2 AND output_contract_version = $3"
+            ),
+            &[&target_id, &source_id, &i64::from(output_contract_version)],
+        )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    if claimed.is_some() {
         return Ok(false);
     }
-    let updated = client
+    let sequence = u64::try_from(legacy.get::<_, i64>(0))
+        .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+    let offset = u64::try_from(legacy.get::<_, i64>(1))
+        .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+    let last_idempotency_key: String = legacy.get(2);
+    let stored_version = u32::try_from(legacy.get::<_, i64>(3))
+        .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+    // The legacy checksum was computed under the empty source. Rebinding it to
+    // the claimed source is what makes the mapped checkpoint resumable.
+    let checksum = checkpoint_checksum(
+        target_id,
+        source_id,
+        stored_version,
+        sequence,
+        offset,
+        &last_idempotency_key,
+    );
+    let updated = tx
         .execute(
-            "UPDATE target_checkpoints SET source_id = $2 WHERE target_id = $1 AND source_id = '' AND NOT EXISTS (SELECT 1 FROM target_checkpoints WHERE target_id = $1 AND source_id = $2)",
-            &[&target_id, &source_id],
+            concat!(
+                "UPDATE target_checkpoints SET source_id = $2, checkpoint_checksum = $3 ",
+                "WHERE target_id = $1 AND source_id = '' AND output_contract_version = $4"
+            ),
+            &[
+                &target_id,
+                &source_id,
+                &checksum,
+                &i64::from(output_contract_version),
+            ],
         )
+        .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
+    tx.commit()
         .map_err(|error| ExecutorError::Failed(format!("{error:?}")))?;
     Ok(updated == 1)
 }
@@ -375,7 +443,7 @@ impl PgCheckpoint {
         Self {
             sequence: 0,
             offset: 0,
-            checksum: checkpoint_checksum(target_id, source_id, 0, 0, ""),
+            checksum: checkpoint_checksum(target_id, source_id, OUTPUT_CONTRACT_VERSION, 0, 0, ""),
             last_idempotency_key: None,
             source_id: source_id.to_owned(),
         }
@@ -385,6 +453,7 @@ impl PgCheckpoint {
         checkpoint_checksum(
             target_id,
             &self.source_id,
+            OUTPUT_CONTRACT_VERSION,
             self.sequence,
             self.offset,
             self.last_idempotency_key.as_deref().unwrap_or(""),
@@ -401,12 +470,17 @@ impl Default for PgCheckpoint {
 fn checkpoint_checksum(
     target_id: &str,
     source_id: &str,
+    output_contract_version: u32,
     sequence: u64,
     offset: u64,
     last_idempotency_key: &str,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"pg-checkpoint-v3\0");
+    hasher.update(b"pg-checkpoint-v4\0");
+    // The output contract version is part of the checkpoint identity. Binding
+    // it here means a changed projection invalidates every persisted checksum
+    // instead of being silently reused under the same position.
+    hasher.update(output_contract_version.to_le_bytes());
     hasher.update(
         u64::try_from(target_id.len())
             .unwrap_or(u64::MAX)
@@ -659,6 +733,7 @@ impl TargetConnector for PgTarget<'_> {
         let next_checksum = checkpoint_checksum(
             &self.target_id,
             &self.source_id,
+            OUTPUT_CONTRACT_VERSION,
             self.next_sequence,
             self.next_offset,
             &key,
@@ -1543,8 +1618,10 @@ mod tests {
             key_b.as_text(),
             "verified by the source-scoped integration contract"
         );
-        let checksum_a = checkpoint_checksum("pg-a", "src-a", 1, 10, "evt-1");
-        let checksum_b = checkpoint_checksum("pg-a", "src-b", 1, 10, "evt-1");
+        let checksum_a =
+            checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION, 1, 10, "evt-1");
+        let checksum_b =
+            checkpoint_checksum("pg-a", "src-b", OUTPUT_CONTRACT_VERSION, 1, 10, "evt-1");
         assert_ne!(
             checksum_a, checksum_b,
             "verified by the source-scoped integration contract"
@@ -1562,6 +1639,17 @@ mod tests {
             checkpoint.expected_checksum("pg-a"),
             checksum_a,
             "verified by the source-scoped integration contract"
+        );
+    }
+
+    #[test]
+    fn checkpoint_checksum_binds_output_contract_version() {
+        let current = checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION, 1, 10, "evt-1");
+        let next =
+            checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION + 1, 1, 10, "evt-1");
+        assert_ne!(
+            current, next,
+            "changing only the output contract version must change the checkpoint checksum"
         );
     }
 
@@ -1604,7 +1692,8 @@ mod tests {
 
     #[test]
     fn checkpoint_checksum_binds_the_last_event_id() {
-        let checksum = checkpoint_checksum("pg-a", "src-a", 7, 700, "evt-a");
+        let checksum =
+            checkpoint_checksum("pg-a", "src-a", OUTPUT_CONTRACT_VERSION, 7, 700, "evt-a");
         let checkpoint = PgCheckpoint {
             sequence: 7,
             offset: 700,
@@ -1627,7 +1716,7 @@ mod tests {
         let legacy_checkpoint = PgCheckpoint {
             sequence: 7,
             offset: 700,
-            checksum: checkpoint_checksum("pg-a", "", 7, 700, ""),
+            checksum: checkpoint_checksum("pg-a", "", OUTPUT_CONTRACT_VERSION, 7, 700, ""),
             last_idempotency_key: None,
             source_id: String::new(),
         };
