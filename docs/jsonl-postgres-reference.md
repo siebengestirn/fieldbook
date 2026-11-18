@@ -10,8 +10,21 @@ raw-frame journal, replay or the catalog.
 
 P5 established the in-memory source plus the SQL/simulator contract. **P6 adds a
 real local durable commit path, a streaming file source with a content-bound
-resume anchor, corrected delivery semantics and a database executor seam.** It
-still adds no dependency and no live connection.
+resume anchor, corrected delivery semantics and a database executor seam.**
+A real PostgreSQL target now applies the same transcript through a driver; it
+is opt-in and requires an operator-supplied server.
+
+## Independent network source
+
+`src/application/network_source.rs` supplies a second `SourceAdapter` over a
+loopback TCP stream. It speaks a minimal handshake (`HELLO` / `TOKEN`) and then
+reuses the same line parser, exact duplicate index and resume anchor as the
+file source. The declared token identifies the stream; it is not a
+whole-stream hash, so a resume anchor does not claim content completeness.
+`tests/network_source.rs` runs a local server that replays the declared stream,
+closes it early to force a reconnect, injects a malformed line, and soaks
+2,000 records across disconnects. The generic pipeline, commit store and
+target need no market-data dependency.
 
 ## Architecture proof
 

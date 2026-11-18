@@ -1,20 +1,24 @@
-//! PostgreSQL delivery contract without a database dependency (Platform P5).
+//! PostgreSQL delivery contract and a real synchronous target (Platform P5/P6).
 //!
-//! This module implements a *contract*, not a live connection. It generates
-//! deterministic parameterized SQL (`INSERT ... ON CONFLICT (event_id) DO
-//! NOTHING` inside explicit transaction markers) and provides a deterministic
-//! in-memory [`PostgresSimulator`] that enforces idempotency by event id,
-//! transaction commit/rollback, and two reproducible failure injections:
-//! "server unavailable" (no response, no side effect) and "ack lost" (commit
-//! happened, receipt unknown).
+//! The module keeps the deterministic SQL contract and in-memory
+//! [`PostgresSimulator`] for offline fault injection, and adds [`PgTarget`],
+//! which applies the same [`SqlExecutor`] transcript through a real
+//! `postgres::Client`. Migrations are explicit SQL; idempotency is enforced by
+//! database uniqueness on the target-specific key; event, disposition and
+//! checkpoint writes share one transaction.
 //!
-//! No driver is linked and no network is touched. Wiring `tokio-postgres` to
-//! this contract is a separate dependency decision and is **not** implemented
-//! here. No live database, throughput, latency or durability claim is made.
+//! The simulator never touches a database. The real target requires an
+//! operator-supplied connection and an applied migration; it makes no claim
+//! about latency, throughput or absolute zero loss.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Write as FmtWrite,
+};
 
+use postgres::{Client, types::ToSql};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
@@ -108,6 +112,284 @@ pub fn rollback_statement() -> ParameterizedStatement {
     ParameterizedStatement {
         sql: ROLLBACK_SQL.to_owned(),
         params: Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real PostgreSQL target (opt-in, operator-supplied connection)
+// ---------------------------------------------------------------------------
+
+/// Explicit schema applied before any live delivery. All writes are
+/// parameterized; uniqueness is enforced by the database, not by the client.
+pub const MIGRATION_SQL: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS canonical_business_events (",
+    "idempotency_key TEXT PRIMARY KEY, ",
+    "event_id TEXT NOT NULL, ",
+    "target_id TEXT NOT NULL, ",
+    "entity_id TEXT NOT NULL, ",
+    "kind TEXT NOT NULL, ",
+    "value BIGINT NOT NULL, ",
+    "observed_at BIGINT NOT NULL, ",
+    "raw_observation TEXT NOT NULL, ",
+    "schema_version BIGINT NOT NULL",
+    "); ",
+    "CREATE TABLE IF NOT EXISTS delivery_dispositions (",
+    "idempotency_key TEXT PRIMARY KEY, ",
+    "event_id TEXT NOT NULL, ",
+    "target_id TEXT NOT NULL, ",
+    "disposition TEXT NOT NULL, ",
+    "reason TEXT NOT NULL, ",
+    "raw_observation TEXT NOT NULL",
+    "); ",
+    "CREATE TABLE IF NOT EXISTS target_checkpoints (",
+    "target_id TEXT NOT NULL, ",
+    "output_contract_version BIGINT NOT NULL, ",
+    "last_committed_sequence BIGINT NOT NULL, ",
+    "last_committed_offset BIGINT NOT NULL, ",
+    "checkpoint_checksum TEXT NOT NULL, ",
+    "PRIMARY KEY (target_id, output_contract_version)",
+    ");"
+);
+
+/// Apply the idempotent migration to a connected database.
+pub fn apply_migrations(client: &mut Client) -> Result<(), ExecutorError> {
+    client
+        .batch_execute(MIGRATION_SQL)
+        .map_err(|error| ExecutorError::Failed(error.to_string()))
+}
+
+/// Execute one statement at a time through a real client and retain affected
+/// row counts. A failed statement rolls the transaction back before the error
+/// is reported, so a rejected batch cannot leave a partial commit behind.
+pub struct PgExecutor<'a> {
+    client: &'a mut Client,
+    affected: Vec<u64>,
+}
+
+impl<'a> PgExecutor<'a> {
+    #[must_use]
+    pub const fn new(client: &'a mut Client) -> Self {
+        Self {
+            client,
+            affected: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn affected(&self) -> &[u64] {
+        &self.affected
+    }
+}
+
+impl SqlExecutor for PgExecutor<'_> {
+    fn execute(&mut self, statement: &ParameterizedStatement) -> Result<u64, ExecutorError> {
+        let params: Vec<&(dyn ToSql + Sync)> = statement
+            .params
+            .iter()
+            .map(|value| match value {
+                SqlValue::Text(text) => text as &(dyn ToSql + Sync),
+                SqlValue::Int(number) => number as &(dyn ToSql + Sync),
+            })
+            .collect();
+        match self.client.execute(&statement.sql, &params) {
+            Ok(rows) => {
+                self.affected.push(rows);
+                Ok(rows)
+            }
+            Err(error) => {
+                let _ = self.client.execute(ROLLBACK_SQL, &[]);
+                Err(ExecutorError::Failed(error.to_string()))
+            }
+        }
+    }
+}
+
+/// Checkpoint state owned by the live target between deliveries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PgCheckpoint {
+    pub sequence: u64,
+    pub offset: u64,
+    pub checksum: String,
+}
+
+impl Default for PgCheckpoint {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            offset: 0,
+            checksum: checkpoint_checksum("pg-local", 0, 0),
+        }
+    }
+}
+
+fn checkpoint_checksum(target_id: &str, sequence: u64, offset: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(target_id.as_bytes());
+    hasher.update(sequence.to_le_bytes());
+    hasher.update(offset.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut text = String::with_capacity(7 + digest.len() * 2);
+    let _ = FmtWrite::write_str(&mut text, "sha256:");
+    for byte in digest {
+        let _ = FmtWrite::write_fmt(&mut text, format_args!("{byte:02x}"));
+    }
+    text
+}
+
+/// A real PostgreSQL target. It shares the simulator's SQL contract and
+/// receipts, but executes the transcript against an applied schema. The
+/// caller declares the source position before each delivery; without that
+/// position no checkpoint can be advanced.
+pub struct PgTarget<'a> {
+    target_id: String,
+    client: &'a mut Client,
+    checkpoint: PgCheckpoint,
+    next_sequence: u64,
+    next_offset: u64,
+    uncertain_once: std::collections::BTreeSet<String>,
+    receipts: Vec<DeliveryReceipt>,
+}
+
+impl<'a> PgTarget<'a> {
+    #[must_use]
+    pub fn new(target_id: &str, client: &'a mut Client) -> Self {
+        Self::with_checkpoint(target_id, client, PgCheckpoint::default())
+    }
+
+    #[must_use]
+    pub fn with_checkpoint(
+        target_id: &str,
+        client: &'a mut Client,
+        checkpoint: PgCheckpoint,
+    ) -> Self {
+        Self {
+            target_id: target_id.to_owned(),
+            client,
+            next_sequence: checkpoint.sequence,
+            next_offset: checkpoint.offset,
+            checkpoint,
+            uncertain_once: std::collections::BTreeSet::new(),
+            receipts: Vec::new(),
+        }
+    }
+
+    /// Declare the source position that a successful delivery will commit.
+    pub fn set_position(&mut self, sequence: u64, offset: u64) {
+        self.next_sequence = sequence;
+        self.next_offset = offset;
+    }
+
+    #[must_use]
+    pub const fn checkpoint(&self) -> &PgCheckpoint {
+        &self.checkpoint
+    }
+
+    #[must_use]
+    pub fn receipts(&self) -> &[DeliveryReceipt] {
+        &self.receipts
+    }
+
+    /// Inject one lost acknowledgement: the transaction commits, but the
+    /// receipt is `Uncertain` and the local checkpoint does not advance. The
+    /// next delivery with the same key is resolved as a duplicate by the
+    /// database. This is an explicit recovery drill, not a transport fault.
+    pub fn inject_uncertain_ack(&mut self, key: &str) {
+        self.uncertain_once.insert(key.to_owned());
+    }
+
+    /// Count committed rows for this target in the live database.
+    pub fn committed_count(&mut self) -> Result<i64, ExecutorError> {
+        self.client
+            .query_one(
+                "SELECT count(*) FROM canonical_business_events WHERE target_id = $1",
+                &[&self.target_id],
+            )
+            .map(|row| row.get::<_, i64>(0))
+            .map_err(|error| ExecutorError::Failed(error.to_string()))
+    }
+
+    /// Read the persisted checkpoint for this target from the database.
+    pub fn persisted_checkpoint(&mut self) -> Result<Option<PgCheckpoint>, ExecutorError> {
+        self.client
+            .query_opt(
+                concat!(
+                    "SELECT last_committed_sequence, last_committed_offset, ",
+                    "checkpoint_checksum FROM target_checkpoints ",
+                    "WHERE target_id = $1 AND output_contract_version = $2"
+                ),
+                &[&self.target_id, &(i64::from(OUTPUT_CONTRACT_VERSION))],
+            )
+            .map(|row| {
+                row.map(|row| PgCheckpoint {
+                    sequence: row.get::<_, i64>(0) as u64,
+                    offset: row.get::<_, i64>(1) as u64,
+                    checksum: row.get::<_, String>(2),
+                })
+            })
+            .map_err(|error| ExecutorError::Failed(error.to_string()))
+    }
+}
+
+impl TargetConnector for PgTarget<'_> {
+    fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt {
+        let key = request.idempotency_key.clone();
+        let provisional = DeliveryReceipt::DurableCommitted {
+            idempotency_key: key.clone(),
+            target_id: self.target_id.clone(),
+            duplicate: false,
+        };
+        let mut transcript = build_commit_transcript(
+            &request.events[0],
+            &self.target_id,
+            OUTPUT_CONTRACT_VERSION,
+            self.next_sequence,
+            self.next_offset,
+            &self.checkpoint.checksum,
+            "durable_committed",
+            "",
+        );
+        finalize_transcript(&mut transcript, &provisional);
+        let mut executor = PgExecutor::new(self.client);
+        if let Err(error) = execute_transcript(&mut executor, &transcript) {
+            let receipt = DeliveryReceipt::Uncertain {
+                idempotency_key: key,
+                target_id: self.target_id.clone(),
+                reason: format!("SQL executor failed: {error}"),
+            };
+            self.receipts.push(receipt.clone());
+            return receipt;
+        }
+        let duplicate = executor.affected().get(1).copied() == Some(0);
+        let receipt = if self.uncertain_once.remove(&key) {
+            DeliveryReceipt::Uncertain {
+                idempotency_key: key,
+                target_id: self.target_id.clone(),
+                reason: "acknowledgement lost after commit".to_owned(),
+            }
+        } else {
+            DeliveryReceipt::DurableCommitted {
+                idempotency_key: key,
+                target_id: self.target_id.clone(),
+                duplicate,
+            }
+        };
+        if receipt.category() == ReceiptCategory::DurableCommitted {
+            self.checkpoint = PgCheckpoint {
+                sequence: self.next_sequence,
+                offset: self.next_offset,
+                checksum: checkpoint_checksum(
+                    &self.target_id,
+                    self.next_sequence,
+                    self.next_offset,
+                ),
+            };
+        }
+        self.receipts.push(receipt.clone());
+        receipt
     }
 }
 

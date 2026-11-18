@@ -172,11 +172,14 @@ inventory is `main` only; one worktree; zero stashes. See
 ## Not claimed
 
 Replicated/multi-site durability, end-to-end exactly-once to external targets,
-live PostgreSQL driver/live DB, distributed runtime, nanosecond clock accuracy,
+distributed runtime, nanosecond clock accuracy,
 or any live venue certification. Platform M2/M3/M4 are additive contract
 foundations (Phases 1-3 / Phase 1): they do not yet rewire collector ownership,
 subscription consumption or the SBE writer. P5 is a deterministic simulator
-plus SQL contract, not a live database integration. P6 adds a **real local
-durable store** and a **PostgreSQL contract plus `SqlExecutor` trait**, but it
-still has no driver and no live database. It is not wired into the market-data
-collector and makes no performance claim.
+plus SQL contract with an opt-in real driver and live-server test. P6 adds a
+**real local durable store**, a **PostgreSQL contract plus `SqlExecutor`
+trait**, and a real `PgTarget` that applies the same transcript with database
+uniqueness, transactions and checkpoint progression. It is not wired into the
+market-data collector and makes no performance or replication claim. An
+independent loopback network source now uses the same pipeline boundary, with
+fault-injected reconnect, malformed-line quarantine and a 2,000-record soak.
