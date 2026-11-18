@@ -1,0 +1,16 @@
+{
+  "classification": "real-live-postgresql-integration-test",
+  "created_at_utc": "2026-11-18T11:03:14.719196+00:00",
+  "source_branch": "fix/postgres-checkpoint-integrity",
+  "source_commit": "ac33b8103a667e5a81ea36e0e46aed252e5c6fe2",
+  "command": "NIRNAY_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' cargo test --test postgres_live --offline -- --ignored --nocapture",
+  "server": "PostgreSQL 18.6, local socket /tmp:5432, database postgres",
+  "outcome": "PASS: checkpoint checksum binds target, position and last event id; stale writer rejected; exact-position retry accepted; conflicting position and changed payload rejected; restart from persisted checkpoint",
+  "files": [
+    {
+      "path": "collector.log",
+      "bytes": 324,
+      "sha256": "7a63aeb2ee106e39f7ce9e04c754045197a766fa9c0dea97f2aab9a3aa758131"
+    }
+  ]
+}

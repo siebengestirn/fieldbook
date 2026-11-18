@@ -65,6 +65,10 @@ impl MockServer {
                     }
                     Err(_) => break,
                 };
+                // A client may stop reading early. Bound every socket wait so
+                // server teardown can never block on an abandoned connection.
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                 let mut hello = [0_u8; 64];
                 let _ = stream.read(&mut hello);
                 let _ = stream.write_all(format!("TOKEN {TOKEN}\n").as_bytes());

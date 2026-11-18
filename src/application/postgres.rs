@@ -147,8 +147,11 @@ pub const MIGRATION_SQL: &str = concat!(
     "last_committed_sequence BIGINT NOT NULL, ",
     "last_committed_offset BIGINT NOT NULL, ",
     "checkpoint_checksum TEXT NOT NULL, ",
+    "last_idempotency_key TEXT NOT NULL DEFAULT '', ",
     "PRIMARY KEY (target_id, output_contract_version)",
-    ");"
+    "); ",
+    "ALTER TABLE target_checkpoints ADD COLUMN IF NOT EXISTS ",
+    "last_idempotency_key TEXT NOT NULL DEFAULT ''"
 );
 
 /// Apply the idempotent migration to a connected database.
@@ -192,6 +195,32 @@ impl SqlExecutor for PgExecutor<'_> {
             })
             .collect();
         match self.client.execute(&statement.sql, &params) {
+            Ok(0) if statement.sql == INSERT_EVENT_WITH_KEY_SQL => {
+                let existing_matches = self.existing_event_matches(statement);
+                match existing_matches {
+                    Ok(true) => {
+                        self.affected.push(0);
+                        Ok(0)
+                    }
+                    Ok(false) => {
+                        let _ = self.client.execute(ROLLBACK_SQL, &[]);
+                        Err(ExecutorError::Failed(
+                            "idempotency key was reused with different canonical event content"
+                                .to_owned(),
+                        ))
+                    }
+                    Err(error) => {
+                        let _ = self.client.execute(ROLLBACK_SQL, &[]);
+                        Err(error)
+                    }
+                }
+            }
+            Ok(rows) if statement.sql == UPSERT_CHECKPOINT_SQL && rows != 1 => {
+                let _ = self.client.execute(ROLLBACK_SQL, &[]);
+                Err(ExecutorError::Failed(format!(
+                    "checkpoint regression or source-position conflict rejected by database: update affected {rows} rows"
+                )))
+            }
             Ok(rows) => {
                 self.affected.push(rows);
                 Ok(rows)
@@ -204,21 +233,87 @@ impl SqlExecutor for PgExecutor<'_> {
     }
 }
 
+impl PgExecutor<'_> {
+    fn existing_event_matches(
+        &mut self,
+        statement: &ParameterizedStatement,
+    ) -> Result<bool, ExecutorError> {
+        let [
+            SqlValue::Text(idempotency_key),
+            SqlValue::Text(event_id),
+            SqlValue::Text(target_id),
+            SqlValue::Text(entity_id),
+            SqlValue::Text(kind),
+            SqlValue::Int(value),
+            SqlValue::Int(observed_at),
+            SqlValue::Text(raw_observation),
+            SqlValue::Int(schema_version),
+        ] = statement.params.as_slice()
+        else {
+            return Err(ExecutorError::Failed(
+                "event insert has an invalid parameter shape".to_owned(),
+            ));
+        };
+        let query_params: [&(dyn ToSql + Sync); 1] = [idempotency_key];
+        let row = self
+            .client
+            .query_opt(
+                concat!(
+                    "SELECT idempotency_key, event_id, target_id, entity_id, kind, ",
+                    "value, observed_at, raw_observation, schema_version ",
+                    "FROM canonical_business_events WHERE idempotency_key = $1"
+                ),
+                &query_params,
+            )
+            .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        Ok(row.get::<_, String>(0) == *idempotency_key
+            && row.get::<_, String>(1) == *event_id
+            && row.get::<_, String>(2) == *target_id
+            && row.get::<_, String>(3) == *entity_id
+            && row.get::<_, String>(4) == *kind
+            && row.get::<_, i64>(5) == *value
+            && row.get::<_, i64>(6) == *observed_at
+            && row.get::<_, String>(7) == *raw_observation
+            && row.get::<_, i64>(8) == *schema_version)
+    }
+}
+
 /// Checkpoint state owned by the live target between deliveries.
+/// `last_idempotency_key` fences a same-position retry from a different event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PgCheckpoint {
     pub sequence: u64,
     pub offset: u64,
     pub checksum: String,
+    pub last_idempotency_key: Option<String>,
+}
+
+impl PgCheckpoint {
+    /// Create the genesis checkpoint for one target namespace.
+    #[must_use]
+    pub fn initial(target_id: &str) -> Self {
+        Self {
+            sequence: 0,
+            offset: 0,
+            checksum: checkpoint_checksum(target_id, 0, 0),
+            last_idempotency_key: None,
+        }
+    }
+
+    fn expected_checksum(&self, target_id: &str) -> String {
+        match self.last_idempotency_key.as_deref() {
+            Some(key) => checkpoint_checksum_for_event(target_id, self.sequence, self.offset, key),
+            None => checkpoint_checksum(target_id, self.sequence, self.offset),
+        }
+    }
 }
 
 impl Default for PgCheckpoint {
     fn default() -> Self {
-        Self {
-            sequence: 0,
-            offset: 0,
-            checksum: checkpoint_checksum("pg-local", 0, 0),
-        }
+        Self::initial("pg-local")
     }
 }
 
@@ -227,6 +322,35 @@ fn checkpoint_checksum(target_id: &str, sequence: u64, offset: u64) -> String {
     hasher.update(target_id.as_bytes());
     hasher.update(sequence.to_le_bytes());
     hasher.update(offset.to_le_bytes());
+    format_checksum(hasher)
+}
+
+fn checkpoint_checksum_for_event(
+    target_id: &str,
+    sequence: u64,
+    offset: u64,
+    last_idempotency_key: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"pg-checkpoint-v2\0");
+    hasher.update(
+        u64::try_from(target_id.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(target_id.as_bytes());
+    hasher.update(sequence.to_le_bytes());
+    hasher.update(offset.to_le_bytes());
+    hasher.update(
+        u64::try_from(last_idempotency_key.len())
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(last_idempotency_key.as_bytes());
+    format_checksum(hasher)
+}
+
+fn format_checksum(hasher: Sha256) -> String {
     let digest = hasher.finalize();
     let mut text = String::with_capacity(7 + digest.len() * 2);
     let _ = FmtWrite::write_str(&mut text, "sha256:");
@@ -253,7 +377,7 @@ pub struct PgTarget<'a> {
 impl<'a> PgTarget<'a> {
     #[must_use]
     pub fn new(target_id: &str, client: &'a mut Client) -> Self {
-        Self::with_checkpoint(target_id, client, PgCheckpoint::default())
+        Self::with_checkpoint(target_id, client, PgCheckpoint::initial(target_id))
     }
 
     #[must_use]
@@ -308,25 +432,41 @@ impl<'a> PgTarget<'a> {
             .map_err(|error| ExecutorError::Failed(error.to_string()))
     }
 
-    /// Read the persisted checkpoint for this target from the database.
+    /// Read and validate the persisted checkpoint and its same-position retry key.
     pub fn persisted_checkpoint(&mut self) -> Result<Option<PgCheckpoint>, ExecutorError> {
-        self.client
+        let row = self
+            .client
             .query_opt(
                 concat!(
                     "SELECT last_committed_sequence, last_committed_offset, ",
-                    "checkpoint_checksum FROM target_checkpoints ",
+                    "checkpoint_checksum, last_idempotency_key FROM target_checkpoints ",
                     "WHERE target_id = $1 AND output_contract_version = $2"
                 ),
                 &[&self.target_id, &(i64::from(OUTPUT_CONTRACT_VERSION))],
             )
-            .map(|row| {
-                row.map(|row| PgCheckpoint {
-                    sequence: row.get::<_, i64>(0) as u64,
-                    offset: row.get::<_, i64>(1) as u64,
-                    checksum: row.get::<_, String>(2),
-                })
-            })
-            .map_err(|error| ExecutorError::Failed(error.to_string()))
+            .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let sequence = u64::try_from(row.get::<_, i64>(0))
+            .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        let offset = u64::try_from(row.get::<_, i64>(1))
+            .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        let last_idempotency_key: String = row.get(3);
+        let checkpoint = PgCheckpoint {
+            sequence,
+            offset,
+            checksum: row.get::<_, String>(2),
+            last_idempotency_key: (!last_idempotency_key.is_empty())
+                .then_some(last_idempotency_key),
+        };
+        if checkpoint.checksum != checkpoint.expected_checksum(&self.target_id) {
+            return Err(ExecutorError::Failed(
+                "persisted checkpoint checksum does not match target, position and last event id"
+                    .to_owned(),
+            ));
+        }
+        Ok(Some(checkpoint))
     }
 }
 
@@ -337,18 +477,70 @@ impl TargetConnector for PgTarget<'_> {
 
     fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt {
         let key = request.idempotency_key.clone();
+        let invalid_reason = match request.events.as_slice() {
+            [] => Some("PostgreSQL target requires one event per delivery".to_owned()),
+            [event] if event.event_id.as_str() != key.as_str() => {
+                Some("delivery idempotency key does not match the canonical event id".to_owned())
+            }
+            [event] => {
+                let position_advances = self.next_sequence > self.checkpoint.sequence
+                    && self.next_offset > self.checkpoint.offset;
+                let exact_position_retry = self.next_sequence == self.checkpoint.sequence
+                    && self.next_offset == self.checkpoint.offset
+                    && self.checkpoint.last_idempotency_key.as_deref() == Some(key.as_str());
+                event_validation_error(event).or_else(|| {
+                    if self.checkpoint.checksum
+                        != self.checkpoint.expected_checksum(&self.target_id)
+                    {
+                        Some(
+                            "checkpoint checksum does not match target, position and last event id"
+                                .to_owned(),
+                        )
+                    } else if self.next_sequence > i64::MAX as u64
+                        || self.next_offset > i64::MAX as u64
+                    {
+                        Some("checkpoint position exceeds PostgreSQL BIGINT range".to_owned())
+                    } else if position_advances || exact_position_retry {
+                        None
+                    } else {
+                        Some(
+                            "checkpoint position must advance, except for an exact same-key retry"
+                                .to_owned(),
+                        )
+                    }
+                })
+            }
+            _ => Some(
+                "PostgreSQL target currently accepts exactly one event per delivery".to_owned(),
+            ),
+        };
+        if let Some(reason) = invalid_reason {
+            let receipt = DeliveryReceipt::Rejected {
+                idempotency_key: key,
+                target_id: self.target_id.clone(),
+                reason,
+            };
+            self.receipts.push(receipt.clone());
+            return receipt;
+        }
         let provisional = DeliveryReceipt::DurableCommitted {
             idempotency_key: key.clone(),
             target_id: self.target_id.clone(),
             duplicate: false,
         };
+        let next_checksum = checkpoint_checksum_for_event(
+            &self.target_id,
+            self.next_sequence,
+            self.next_offset,
+            &key,
+        );
         let mut transcript = build_commit_transcript(
             &request.events[0],
             &self.target_id,
             OUTPUT_CONTRACT_VERSION,
             self.next_sequence,
             self.next_offset,
-            &self.checkpoint.checksum,
+            &next_checksum,
             "durable_committed",
             "",
         );
@@ -356,7 +548,7 @@ impl TargetConnector for PgTarget<'_> {
         let mut executor = PgExecutor::new(self.client);
         if let Err(error) = execute_transcript(&mut executor, &transcript) {
             let receipt = DeliveryReceipt::Uncertain {
-                idempotency_key: key,
+                idempotency_key: key.clone(),
                 target_id: self.target_id.clone(),
                 reason: format!("SQL executor failed: {error}"),
             };
@@ -366,13 +558,13 @@ impl TargetConnector for PgTarget<'_> {
         let duplicate = executor.affected().get(1).copied() == Some(0);
         let receipt = if self.uncertain_once.remove(&key) {
             DeliveryReceipt::Uncertain {
-                idempotency_key: key,
+                idempotency_key: key.clone(),
                 target_id: self.target_id.clone(),
                 reason: "acknowledgement lost after commit".to_owned(),
             }
         } else {
             DeliveryReceipt::DurableCommitted {
-                idempotency_key: key,
+                idempotency_key: key.clone(),
                 target_id: self.target_id.clone(),
                 duplicate,
             }
@@ -381,11 +573,8 @@ impl TargetConnector for PgTarget<'_> {
             self.checkpoint = PgCheckpoint {
                 sequence: self.next_sequence,
                 offset: self.next_offset,
-                checksum: checkpoint_checksum(
-                    &self.target_id,
-                    self.next_sequence,
-                    self.next_offset,
-                ),
+                checksum: next_checksum,
+                last_idempotency_key: Some(key.clone()),
             };
         }
         self.receipts.push(receipt.clone());
@@ -447,12 +636,18 @@ pub const INSERT_DISPOSITION_SQL: &str = concat!(
 
 pub const UPSERT_CHECKPOINT_SQL: &str = concat!(
     "INSERT INTO target_checkpoints ",
-    "(target_id, output_contract_version, last_committed_sequence, last_committed_offset, checkpoint_checksum) ",
-    "VALUES ($1, $2, $3, $4, $5) ",
+    "(target_id, output_contract_version, last_committed_sequence, last_committed_offset, checkpoint_checksum, last_idempotency_key) ",
+    "VALUES ($1, $2, $3, $4, $5, $6) ",
     "ON CONFLICT (target_id, output_contract_version) DO UPDATE SET ",
     "last_committed_sequence = EXCLUDED.last_committed_sequence, ",
     "last_committed_offset = EXCLUDED.last_committed_offset, ",
-    "checkpoint_checksum = EXCLUDED.checkpoint_checksum",
+    "checkpoint_checksum = EXCLUDED.checkpoint_checksum, ",
+    "last_idempotency_key = EXCLUDED.last_idempotency_key ",
+    "WHERE (target_checkpoints.last_committed_sequence < EXCLUDED.last_committed_sequence ",
+    "AND target_checkpoints.last_committed_offset < EXCLUDED.last_committed_offset) ",
+    "OR (target_checkpoints.last_committed_sequence = EXCLUDED.last_committed_sequence ",
+    "AND target_checkpoints.last_committed_offset = EXCLUDED.last_committed_offset ",
+    "AND target_checkpoints.last_idempotency_key = EXCLUDED.last_idempotency_key)",
 );
 
 /// One `BEGIN ... COMMIT` transcript. `COMMIT` is present only for a terminal
@@ -539,6 +734,7 @@ pub fn build_commit_transcript(
                 SqlValue::Int(i64::try_from(last_committed_sequence).unwrap_or(i64::MAX)),
                 SqlValue::Int(i64::try_from(last_committed_offset).unwrap_or(i64::MAX)),
                 SqlValue::Text(checkpoint_checksum.to_owned()),
+                SqlValue::Text(event.event_id.as_str().to_owned()),
             ],
         },
     ];
@@ -564,8 +760,8 @@ pub fn finalize_transcript(transcript: &mut CommitTranscript, receipt: &Delivery
     }
 }
 
-/// Errors returned by an executor. No driver is linked and no network is used
-/// by this module; an implementor decides how to map a real driver's errors.
+/// Errors returned by the offline recorder or the live PostgreSQL executor.
+/// Driver-specific errors are converted to stable, displayable messages.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ExecutorError {
     #[error("SQL executor unavailable: {0}")]
@@ -574,12 +770,9 @@ pub enum ExecutorError {
     Failed(String),
 }
 
-/// Minimal executor seam.
-///
-/// Wiring a real `tokio-postgres` driver to this trait is a **separate
-/// dependency decision**: it requires adding a dependency, migrations and a
-/// live server, none of which this repository does here. This trait and the
-/// transcript contract deliberately make no claim of a real connection.
+/// Minimal executor seam shared by the deterministic recorder and the live
+/// synchronous PostgreSQL executor. The trait keeps transaction transcript
+/// construction independent of driver-specific connection behavior.
 pub trait SqlExecutor {
     /// Execute one parameterized statement and return the affected-row count.
     fn execute(&mut self, statement: &ParameterizedStatement) -> Result<u64, ExecutorError>;
@@ -809,9 +1002,9 @@ impl TargetConnector for PostgresSimulator {
     }
 }
 
-/// SQL-generating, receipt-recording facade over the simulator. This is the
-/// seam a real `tokio-postgres` implementation would replace without changing
-/// the runner or the source.
+/// SQL-generating, receipt-recording facade over the deterministic simulator.
+/// Use [`PgTarget`] when statements must execute against a real PostgreSQL
+/// connection; both targets preserve the same runner and source boundaries.
 #[derive(Debug)]
 pub struct PostgresTarget {
     target_id: String,
@@ -1080,6 +1273,22 @@ mod tests {
         assert_eq!(sqls[1], INSERT_EVENT_WITH_KEY_SQL);
         assert_eq!(sqls[2], INSERT_DISPOSITION_SQL);
         assert_eq!(sqls[3], UPSERT_CHECKPOINT_SQL);
+        assert!(
+            UPSERT_CHECKPOINT_SQL.contains(
+                "target_checkpoints.last_idempotency_key = EXCLUDED.last_idempotency_key"
+            ),
+            "same-position checkpoint updates must require the same event id"
+        );
+        assert_eq!(
+            transcript.statements[3].params.len(),
+            6,
+            "checkpoint upsert must include its last idempotency key"
+        );
+        assert_eq!(
+            transcript.statements[3].params[5],
+            SqlValue::Text(event.event_id.as_str().to_owned()),
+            "checkpoint position must be bound to the canonical event id"
+        );
         assert!(!transcript.has_commit());
         assert!(!transcript.has_rollback());
 
@@ -1121,6 +1330,40 @@ mod tests {
         assert_eq!(
             transcript.statements.last().map(|item| item.sql.as_str()),
             Some(COMMIT_SQL)
+        );
+    }
+
+    #[test]
+    fn checkpoint_checksum_binds_the_last_event_id() {
+        let checksum = checkpoint_checksum_for_event("pg-a", 7, 700, "evt-a");
+        let checkpoint = PgCheckpoint {
+            sequence: 7,
+            offset: 700,
+            checksum: checksum.clone(),
+            last_idempotency_key: Some("evt-a".to_owned()),
+        };
+        assert_eq!(
+            checkpoint.expected_checksum("pg-a"),
+            checksum,
+            "the checkpoint checksum must validate its stored event id"
+        );
+        let mut changed_key = checkpoint;
+        changed_key.last_idempotency_key = Some("evt-b".to_owned());
+        assert_ne!(
+            changed_key.expected_checksum("pg-a"),
+            changed_key.checksum,
+            "changing the stored event id must invalidate the checkpoint checksum"
+        );
+        let legacy_checkpoint = PgCheckpoint {
+            sequence: 7,
+            offset: 700,
+            checksum: checkpoint_checksum("pg-a", 7, 700),
+            last_idempotency_key: None,
+        };
+        assert_eq!(
+            legacy_checkpoint.expected_checksum("pg-a"),
+            legacy_checkpoint.checksum,
+            "rows migrated without an event key must retain legacy checksum validation"
         );
     }
 

@@ -45,9 +45,11 @@ A resume anchor is bound to `(source identity, SHA-256 of full source bytes,
   and is verified before any line is re-read.
 
 This store is local, single-writer and process/host-recovery scoped. It is not a
-database transaction, not replicated, and not a live PostgreSQL connection. The
-PostgreSQL side remains a parameterized transcript plus an executor trait; no
-driver or server is involved.
+database transaction, not replicated, and not a live PostgreSQL connection.
+The separate PostgreSQL target is implemented in
+`src/application/postgres.rs::PgTarget` using the synchronous `postgres` crate;
+it executes the parameterized transcript through `PgExecutor` against the
+explicit migration. Its live-server test is opt-in and is not run by CI.
 
 ## Not implemented
 
@@ -67,14 +69,32 @@ deterministic simulator. `MIGRATION_SQL` creates three tables:
 Database uniqueness on `idempotency_key` (and on
 `(target_id, output_contract_version)` for checkpoints) is the idempotency
 authority; the client never relies on an in-memory set. The event, disposition
-and checkpoint writes are one `BEGIN ... COMMIT` transaction. A failed
+and checkpoint writes are one `BEGIN ... COMMIT` transaction. Checkpoint updates
+must advance both sequence and byte offset. An exact retry at the current
+position is allowed only when its event id matches the persisted
+`last_idempotency_key`; a different event cannot claim the same position. The
+current SHA-256 checkpoint checksum binds the target, position and last event
+id. Rows created by the earlier schema migrate with an empty last key and
+retain legacy checksum validation; they cannot accept an unverifiable
+same-position retry, but can advance to a new position. A zero-row conditional
+update rolls the transaction back. Reusing an event key
+also compares all persisted canonical event columns; the same key with changed
+content is rejected and the transaction is rolled back. The checkpoint
+namespace currently identifies one
+ordered source stream per `target_id`; source identity is not a separate
+checkpoint key, so multiple source streams targeting one database need distinct
+logical target ids until the schema/API adds a source namespace. `PgTarget`
+currently accepts exactly one event per delivery and rejects empty or
+multi-event batches rather than silently dropping records. A failed
 statement triggers `ROLLBACK` and returns an `Uncertain` receipt; a retry with
 the same key is resolved as a duplicate by the database.
 
 `tests/postgres_live.rs` is an ignored, opt-in test against an operator-supplied
-server. It verifies database idempotency, checkpoint progression,
-lost-acknowledgement recovery and restart from the persisted checkpoint. CI
-does not run it because no server is provisioned there.
+server. It exercises database idempotency, transaction behavior, checkpoint
+progression, lost-acknowledgement recovery and restart from the persisted
+checkpoint. The operator reports a PASS against PostgreSQL 18.6. CI does not
+run it because no server is provisioned there, and this source export contains
+no server transcript or database evidence manifest.
 
 ### Guarantee boundaries
 

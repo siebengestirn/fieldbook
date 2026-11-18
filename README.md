@@ -17,7 +17,7 @@ Kalshi test, and never writes credentials or account identifiers into evidence.
 | Hyperliquid | Operator-reported direct, read-only mainnet evidence: five captures, including two clean `HL_LIVE_OK` runs and one `HL_LIVE_RECOVERY_OK` reconnect drill. Artifacts are in the Git-ignored `captures/` directory and are not included in this source export; verify them using `captures/INDEX.md` in the evidence-bearing checkout. |
 | Polymarket | Live connections disabled until permitted access is documented. The preserved live run is a failed capture, not certification. |
 | Kalshi | Opt-in authenticated read-only test exists; no live capture is claimed. |
-| Gates | Reported PASS on `main` at `e9433fd8ab84c6879399d8449bc8e8093de40d41`: `cargo xtask ci` and `scripts/assurance/polish.sh`; four consecutive locked full-suite runs passed. 850 Rust tests and 37 Python tests. |
+| Gates | Operator reports `cargo xtask ci` and `scripts/assurance/polish.sh` PASS on `main` at `b3c45c4a1da1cfc6e0d04682468a2e3fbabeb404` after PRs #83–#85. The accompanying source export has no `.git` metadata, so its exact mapping to that Git head is not independently verifiable here. |
 | Evidence | Synthetic loopback is labelled as such. Only independently verified real captures become live evidence. |
 
 Start with the [live evidence runbook](docs/live-evidence-runbook.md),

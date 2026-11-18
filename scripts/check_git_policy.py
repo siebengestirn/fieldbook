@@ -149,8 +149,8 @@ def check_generated(policy: dict) -> list[str]:
     return errors
 
 
-def check_inventory(policy: dict) -> list[str]:
-    """Check check inventory."""
+def check_inventory(policy: dict, branch: str) -> list[str]:
+    """Check inventory; the finished branch layout is required only on base."""
     rule = policy["inventory"]
     errors: list[str] = []
 
@@ -161,7 +161,12 @@ def check_inventory(policy: dict) -> list[str]:
         ).splitlines()
         if line
     )
-    if branches != sorted(rule["target_local_branches"]):
+    # The policy's inventory describes the state after a change is merged.
+    # An active topic branch is expected while work is in progress, so local
+    # branch equality is enforced only when checked out on the base branch.
+    if branch == policy["branch"]["base"] and branches != sorted(
+        rule["target_local_branches"]
+    ):
         errors.append(
             f"local branches are {branches}, target is "
             f"{sorted(rule['target_local_branches'])}"
@@ -247,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     errors.extend(check_branch(policy, branch))
     errors.extend(check_subjects(policy, base))
     errors.extend(check_generated(policy))
-    errors.extend(check_inventory(policy))
+    errors.extend(check_inventory(policy, branch))
     if args.strict:
         errors.extend(check_clean(policy))
 
