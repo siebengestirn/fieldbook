@@ -1,0 +1,16 @@
+   Compiling ring v0.17.14
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.6
+   Compiling tungstenite v0.30.0
+   Compiling hyper-rustls v0.27.10
+   Compiling tokio-tungstenite v0.30.0
+   Compiling reqwest v0.12.28
+   Compiling engineering-challenge v0.3.0 (/Users/tourist/Documents/engineering-challenge-template)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.86s
+     Running tests/postgres_live.rs (target/debug/deps/postgres_live-9b5018bfcef9fc5d)
+
+running 1 test
+test postgres_live_source_scoped_delivery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
