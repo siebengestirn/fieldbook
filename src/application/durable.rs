@@ -104,7 +104,7 @@ pub enum StoreError {
     FaultInjected(String),
 }
 
-fn checksum_of(record: &CommitRecord) -> Result<String, StoreError> {
+pub(crate) fn checksum_of(record: &CommitRecord) -> Result<String, StoreError> {
     let bytes =
         serde_json::to_vec(record).map_err(|error| StoreError::Serialize(error.to_string()))?;
     let mut hasher = Sha256::new();

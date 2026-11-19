@@ -217,6 +217,29 @@ different batch size, and exact retry versus a changed payload — with no
 partial rows surviving a conflicting batch. The pre-batching single-event
 baseline is retained at `measurements/perf/p6-1-single-event-baseline/`.
 
+## Segmented local durability (P6.2)
+
+A versioned segmented store is available beside the original append-only
+commit-file store. A segment is finalized only after its framed records and
+footer are written, the file is synced, it is atomically renamed into the
+committed namespace and the containing directory is synced. Incomplete
+temporary files are reported rather than discarded because they may contain
+acknowledged data.
+
+A checksummed recovery snapshot carries the binding, the exact segment
+frontier, the materialized checkpoint and a bounded Bloom filter. Recovery
+memory holds the materialized record plus records after that frontier;
+historical ids are resolved by exact segment scan, and the Bloom filter is used
+only to prove absence. Archive manifests are verified on open, and a missing
+or unverifiable archived or acknowledged segment fails closed instead of being
+skipped. Legacy commit files migrate through an explicit, verified migration
+that leaves them in place.
+
+The design is recorded in `docs/p6-2-design.md`. Simulator-quality filesystem
+tests in `tests/p6_segmented_durability.rs` cover every finalization boundary,
+disk-full, corrupt snapshot, truncated/incomplete segment, sequence gaps,
+missing archived segments and migration from the legacy format.
+
 ## Source-scoped durable delivery (PR #90, operator-reported merged)
 
 The PostgreSQL target namespaces checkpoints by

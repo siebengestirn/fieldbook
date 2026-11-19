@@ -37,6 +37,7 @@ use crate::{
 };
 
 pub mod durable;
+pub mod durable_segmented;
 pub mod file_source;
 pub mod network_source;
 pub mod postgres;
