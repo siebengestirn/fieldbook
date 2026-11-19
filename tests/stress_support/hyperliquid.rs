@@ -39,7 +39,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use engineering_challenge::{
+use fieldbook::{
     collector::{CollectorCore, CoreConfig},
     completeness,
     config::{
@@ -779,7 +779,7 @@ fn collect_snapshots(events: &[WorkerEvent]) -> Vec<ExchangeEvent> {
 
 fn write_capture(
     directory: &Path,
-    messages: &[engineering_challenge::model::OutputMessage],
+    messages: &[fieldbook::model::OutputMessage],
 ) -> (PathBuf, WriterStats) {
     let path = directory.join("capture.sbe");
     let mut writer = DirectWriter::create(WriterOptions {
@@ -942,7 +942,7 @@ pub async fn run_hyperliquid_cell(
     .expect("journal start");
     let run_directory = PathBuf::from(journal.status().run_directory.clone());
 
-    let factory: Arc<dyn engineering_challenge::session::SessionFactory> = Arc::new(
+    let factory: Arc<dyn fieldbook::session::SessionFactory> = Arc::new(
         exchange::hyperliquid::session::HyperliquidSessionFactory::new(
             settings.clone(),
             NetworkSettings::default(),
@@ -1148,12 +1148,7 @@ pub async fn run_hyperliquid_cell(
     let sbe_messages = outputs.len() as u64;
     let sbe_snapshots = outputs
         .iter()
-        .filter(|message| {
-            matches!(
-                message,
-                engineering_challenge::model::OutputMessage::Snapshot(_)
-            )
-        })
+        .filter(|message| matches!(message, fieldbook::model::OutputMessage::Snapshot(_)))
         .count() as u64;
     let (capture, writer_stats) = write_capture(root, &outputs);
     check(

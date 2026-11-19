@@ -37,7 +37,7 @@ use std::{
 };
 
 use base64::Engine as _;
-use engineering_challenge::{
+use fieldbook::{
     config::NetworkSettings,
     egress::{EgressRoute, http_client_with},
     model::SourceId,
@@ -737,7 +737,7 @@ async fn rest_and_websocket_share_the_same_egress_route() {
 
 #[tokio::test]
 async fn journal_manifest_records_route_provenance_without_credentials() {
-    use engineering_challenge::journal::{
+    use fieldbook::journal::{
         self, DecodeOutcome, FrameKind, JournalConfig, JournalMeta, RawFrame, SyncMode,
     };
 
@@ -783,8 +783,8 @@ async fn journal_manifest_records_route_provenance_without_credentials() {
                 payload: b"{}".to_vec(),
             },
             outcome: DecodeOutcome::decoded(1),
-            signal: engineering_challenge::protocol::SessionSignal::MarketData,
-            mechanism: engineering_challenge::protocol::HeartbeatMechanism::Disabled,
+            signal: fieldbook::protocol::SessionSignal::MarketData,
+            mechanism: fieldbook::protocol::HeartbeatMechanism::Disabled,
         })
         .expect("record accepted");
     let summary = handle
@@ -921,13 +921,14 @@ async fn rest_through_socks5_tunnels_to_the_gamma_stub() {
 
 #[tokio::test]
 async fn network_probe_reports_transport_ok_direct() {
-    use engineering_challenge::{config::Settings, probe};
+    use fieldbook::config::Settings;
+    use fieldbook::probe;
 
     let venue = start_venue().await;
     let settings = Settings::default();
     let report = probe::run_with_route(
         &settings,
-        engineering_challenge::egress::EgressRoute::Direct,
+        fieldbook::egress::EgressRoute::Direct,
         Some(&format!("ws://{}", venue.addr)),
     )
     .await
@@ -964,7 +965,8 @@ async fn network_probe_reports_transport_ok_direct() {
 
 #[tokio::test]
 async fn network_probe_reports_proxy_tcp_connect_failure() {
-    use engineering_challenge::{config::Settings, probe};
+    use fieldbook::config::Settings;
+    use fieldbook::probe;
 
     let settings = Settings::default();
     let report = probe::run_with_route(
@@ -983,7 +985,8 @@ async fn network_probe_reports_proxy_tcp_connect_failure() {
 
 #[tokio::test]
 async fn network_probe_reports_proxy_tunnel_failure() {
-    use engineering_challenge::{config::Settings, probe};
+    use fieldbook::config::Settings;
+    use fieldbook::probe;
 
     let venue = start_venue().await;
     let proxy = start_http_connect_proxy(
@@ -1031,7 +1034,8 @@ async fn network_probe_reports_proxy_tunnel_failure() {
 
 #[tokio::test]
 async fn network_probe_reports_socks5_transport_ok() {
-    use engineering_challenge::{config::Settings, probe};
+    use fieldbook::config::Settings;
+    use fieldbook::probe;
 
     let venue = start_venue().await;
     let proxy = start_socks5_proxy(
@@ -1067,7 +1071,8 @@ async fn network_probe_reports_socks5_transport_ok() {
 
 #[tokio::test]
 async fn network_probe_config_failure_is_a_failed_report_not_a_panic() {
-    use engineering_challenge::{config::Settings, probe};
+    use fieldbook::config::Settings;
+    use fieldbook::probe;
 
     let settings = Settings::default();
     // An explicit_proxy route whose environment variable does not exist.

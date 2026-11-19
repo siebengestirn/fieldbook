@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use engineering_challenge::{
+use fieldbook::{
     Side,
     config::{ExchangeKind, Settings},
     coverage,
@@ -71,7 +71,7 @@ fn update(symbol: &str, received_us: i64) -> OutputMessage {
 fn write_capture(directory: &Path, messages: Vec<OutputMessage>) -> (PathBuf, usize) {
     let path = directory.join("capture.sbe");
     let count = messages.len();
-    let mut writer = DirectWriter::create(engineering_challenge::writer::WriterOptions {
+    let mut writer = DirectWriter::create(fieldbook::writer::WriterOptions {
         path: path.to_str().unwrap().to_owned(),
         chunk_size: 4096,
         queue: 32,
@@ -229,7 +229,7 @@ fn cli_exits_zero_for_a_complete_certificate() {
     let metadata = write_metadata(directory.path(), &["A"]);
     let report = write_report(directory.path(), &["A"], capture_messages);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_engineering-challenge"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fieldbook"))
         .args(["coverage"])
         .arg(&capture)
         .arg(&metadata)
@@ -253,7 +253,7 @@ fn cli_exits_non_zero_when_a_selected_symbol_is_unanchored() {
     let metadata = write_metadata(directory.path(), &["A", "B"]);
     let report = write_report(directory.path(), &["A", "B"], capture_messages);
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_engineering-challenge"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fieldbook"))
         .args(["coverage"])
         .arg(&capture)
         .arg(&metadata)

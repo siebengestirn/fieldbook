@@ -168,7 +168,7 @@ these are typically markets retired by a later discovery round.
 Run the same check offline:
 
 ```bash
-target/release/engineering-challenge coverage \
+target/release/fieldbook coverage \
   captures/live-<run>/<venue>/orderbook.sbe \
   captures/live-<run>/<venue>/markets.json \
   captures/live-<run>/<venue>/report.json \

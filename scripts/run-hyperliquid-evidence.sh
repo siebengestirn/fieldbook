@@ -28,7 +28,7 @@ else
   OUT="${HL_EVIDENCE_DIR:-$ROOT/captures/live-hyperliquid-$STAMP}"
 fi
 case "$OUT" in /*) ;; *) OUT="$ROOT/$OUT" ;; esac
-BIN="$ROOT/target/release/engineering-challenge"
+BIN="$ROOT/target/release/fieldbook"
 
 for tool in cargo python3 git; do
   if ! command -v "$tool" >/dev/null 2>&1; then

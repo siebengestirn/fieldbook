@@ -79,7 +79,7 @@ impl fmt::Display for SourceId {
 /// `Price` and [`Quantity`] have distinct units and cannot be interchanged:
 ///
 /// ```compile_fail
-/// use engineering_challenge::model::{Price, Quantity};
+/// use fieldbook::model::{Price, Quantity};
 /// let _: Quantity = Price::from_raw(1);
 /// ```
 #[derive(

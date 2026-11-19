@@ -18,7 +18,7 @@
 
 use std::io::Write as _;
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     Checkpoint,      //
     DeliveryReceipt, //
     DeliveryRequest, //
@@ -354,7 +354,7 @@ fn streaming_quarantine_preserves_exact_source_bytes() {
     let transform_result = run_streaming_pipeline(
         &mut valid_source,
         |_| {
-            Err(engineering_challenge::application::TransformError::Schema(
+            Err(fieldbook::application::TransformError::Schema(
                 "forced transform rejection".to_owned(),
             ))
         },
@@ -569,7 +569,7 @@ fn simulated_modes_report_simulated_and_never_write_externally() {
     let mut replay_source = JsonlSource::from_str("fixture", &text(2));
     let mut wrapped = PostgresTarget::new("pg-local");
     let replay = {
-        let mut connector = engineering_challenge::application::ReplayConnector::new(&mut wrapped);
+        let mut connector = fieldbook::application::ReplayConnector::new(&mut wrapped);
         run_jsonl_to_target_with_mode(
             &mut replay_source,
             transform_observation,
@@ -713,7 +713,7 @@ fn uncertain_ack_resolves_with_the_same_target_specific_key() {
     assert!(!transcript.has_commit());
     finalize_transcript(
         &mut transcript,
-        &engineering_challenge::application::DeliveryReceipt::DurableCommitted {
+        &fieldbook::application::DeliveryReceipt::DurableCommitted {
             idempotency_key: receipt_key,
             target_id: "pg-local".to_owned(),
             duplicate: true,

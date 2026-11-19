@@ -32,7 +32,7 @@ use tokio::{
 };
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
-use engineering_challenge::{
+use fieldbook::{
     config::{HyperliquidSettings, NetworkSettings},
     exchange::hyperliquid::session::HyperliquidSessionFactory,
     journal::{

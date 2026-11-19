@@ -251,7 +251,7 @@ fn format_close_time(index: usize, offset_secs: u64) -> String {
     let ts_us = BASE_US
         + (i64::try_from(offset_secs).unwrap_or(0) * 1_000_000)
         + i64::try_from(index % 600).unwrap_or(0) * 1_000;
-    engineering_challenge::time::utc_from_us(ts_us)
+    fieldbook::time::utc_from_us(ts_us)
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
         .unwrap_or_else(|_| "2027-01-01T00:00:00Z".to_owned())
 }

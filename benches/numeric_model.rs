@@ -18,7 +18,7 @@
 
 use std::time::Instant;
 
-use engineering_challenge::{
+use fieldbook::{
     fixed::{format_scaled, parse_scaled},
     model::{BookSnapshot, Level, Price, Quantity, QuantityChange, QuantityDelta},
     orderbook::OrderBook,
@@ -35,14 +35,14 @@ fn books() -> Vec<OrderBook> {
         for level in 0..LEVELS_PER_SIDE {
             let price = Price::from_raw(base + level as i64 * 100);
             book.apply(
-                engineering_challenge::Side::Buy,
+                fieldbook::Side::Buy,
                 price,
                 QuantityChange::Absolute(Quantity::new(1_000_000).unwrap()),
             )
             .unwrap();
             let ask = Price::from_raw(base + 10_000 + level as i64 * 100);
             book.apply(
-                engineering_challenge::Side::Sell,
+                fieldbook::Side::Sell,
                 ask,
                 QuantityChange::Absolute(Quantity::new(1_000_000).unwrap()),
             )
@@ -86,12 +86,8 @@ fn bench_updates(books: &mut [OrderBook]) {
         let delta = QuantityDelta::from_raw(i64::from(round) * 10_000);
         for (index, book) in books.iter_mut().enumerate() {
             let price = Price::from_raw(100_000 + (index % 10_000) as i64 * 100);
-            book.apply(
-                engineering_challenge::Side::Buy,
-                price,
-                QuantityChange::Delta(delta),
-            )
-            .unwrap();
+            book.apply(fieldbook::Side::Buy, price, QuantityChange::Delta(delta))
+                .unwrap();
         }
     }
     println!(

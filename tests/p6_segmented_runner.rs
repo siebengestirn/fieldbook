@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     durable::{StreamingLimits, run_streaming_pipeline, run_streaming_pipeline_bounded},
     durable_segmented::{SegmentedStore, StoreLimits, SyncPolicy},
     file_source::{CheckpointBinding, DurableCheckpoint, FileSource, SourceIdentity},

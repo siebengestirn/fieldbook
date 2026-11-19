@@ -26,7 +26,7 @@
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 
-use engineering_challenge::{
+use fieldbook::{
     config::{KalshiSettings, NetworkSettings},
     exchange::{Exchange, KalshiExchange},
     model::{ExchangeEvent, SourceId},

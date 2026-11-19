@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     durable::{CommitStore, load_state, run_streaming_pipeline},
     file_source::{CheckpointBinding, DurableCheckpoint, SourceIdentity},
     network_source,

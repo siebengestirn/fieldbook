@@ -7,36 +7,36 @@
 cargo build --release --locked
 
 # Install
-sudo install -m 755 target/release/engineering-challenge /usr/local/bin/
-sudo useradd --system --home-dir /var/lib/engineering-challenge --shell /usr/sbin/nologin collector
-sudo mkdir -p /etc/engineering-challenge
-sudo install -m 644 config.example.toml /etc/engineering-challenge/settings.toml
-sudo install -d -o collector -g collector /var/lib/engineering-challenge /var/log/engineering-challenge
+sudo install -m 755 target/release/fieldbook /usr/local/bin/
+sudo useradd --system --home-dir /var/lib/fieldbook --shell /usr/sbin/nologin collector
+sudo mkdir -p /etc/fieldbook
+sudo install -m 644 config.example.toml /etc/fieldbook/settings.toml
+sudo install -d -o collector -g collector /var/lib/fieldbook /var/log/fieldbook
 ```
 
 ## Directory Layout
 
 ```text
-/etc/engineering-challenge/
+/etc/fieldbook/
   settings.toml          # Main configuration (root readable)
 
-/var/lib/engineering-challenge/
+/var/lib/fieldbook/
   capture.sbe            # Primary SBE output (rotated segments here)
   capture.manifest.json  # Rotation manifest
   metadata.json          # Metadata sidecar (latest-wins)
   catalog.json           # Catalog checkpoint (latest-wins)
 
-/var/log/engineering-challenge/
+/var/log/fieldbook/
   collector.log          # Structured JSON logs (stdout/stderr captured by journald)
 ```
 
 ## systemd Service
 
-Install `deploy/engineering-challenge.service` to `/etc/systemd/system/` and enable:
+Install `deploy/fieldbook.service` to `/etc/systemd/system/` and enable:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now engineering-challenge
+sudo systemctl enable --now fieldbook
 ```
 
 ### Service Type
@@ -58,7 +58,7 @@ Adjust `MemoryMax` for larger deployments (full universe would need ~2.2 GB + ov
 
 ### Settings File
 
-`/etc/engineering-challenge/settings.toml` contains all runtime configuration. Key sections:
+`/etc/fieldbook/settings.toml` contains all runtime configuration. Key sections:
 
 ```toml
 [collector]
@@ -75,15 +75,15 @@ duration_secs = 0             # 0 = run until signal
 final_snapshots = true
 
 [output]
-path = "/var/lib/engineering-challenge/capture.sbe"
+path = "/var/lib/fieldbook/capture.sbe"
 chunk_size = 67108864           # 64 MiB; template-reader compatible
 rotate_bytes = 1073741824     # 1 GiB segments
 rotate_secs = 3600            # 1 hour max segment age
 min_free_bytes = 10737418240  # 10 GiB watermark
 fsync_interval_secs = 10
 overwrite = false             # Safety: refuse existing artifacts
-metadata_path = "/var/lib/engineering-challenge/metadata.json"
-report_path = "/var/lib/engineering-challenge/report.json"
+metadata_path = "/var/lib/fieldbook/metadata.json"
+report_path = "/var/lib/fieldbook/report.json"
 
 [metrics]
 listen = "127.0.0.1:9090"     # Bind to localhost; expose via sidecar/proxy
@@ -111,14 +111,14 @@ require_accepting_orders = true
 base_url = "https://api.elections.kalshi.com"
 ws_url = "wss://api.elections.kalshi.com/ws"
 email = "collector@example.com"
-key_file = "/etc/engineering-challenge/kalshi-key.pem"
+key_file = "/etc/fieldbook/kalshi-key.pem"
 key_id = "your-key-id"
 request_timeout_secs = 5
 ```
 
 ### Secrets
 
-Kalshi private key: `/etc/engineering-challenge/kalshi-key.pem` (mode 600, owned by collector)
+Kalshi private key: `/etc/fieldbook/kalshi-key.pem` (mode 600, owned by collector)
 Never commit secrets to version control. Use `systemd` `LoadCredential` or external secret manager.
 
 ## Log Rotation
@@ -126,14 +126,14 @@ Never commit secrets to version control. Use `systemd` `LoadCredential` or exter
 The collector writes structured JSON logs to stdout. Configure `journald` or a log shipper (Vector, Fluent Bit) to rotate:
 
 ```ini
-# /etc/systemd/journald.conf.d/engineering-challenge.conf
+# /etc/systemd/journald.conf.d/fieldbook.conf
 [Journal]
 SystemMaxUse=2G
 MaxFileSec=1d
 ForwardToSyslog=no
 ```
 
-Or use a sidecar container in Kubernetes to tail `/var/log/engineering-challenge/collector.log`.
+Or use a sidecar container in Kubernetes to tail `/var/log/fieldbook/collector.log`.
 
 ## Monitoring
 
@@ -141,7 +141,7 @@ Or use a sidecar container in Kubernetes to tail `/var/log/engineering-challenge
 
 ```yaml
 scrape_configs:
-- job_name: engineering-challenge
+- job_name: fieldbook
   static_configs:
   - targets: ['localhost:9090']
   metrics_path: /metrics
@@ -210,9 +210,9 @@ Catalog age (`collector_catalog_age_seconds`)
 ## Rolling Updates
 
 Drain traffic: remove from load balancer (wait for `/readyz` to go 503).
-Stop service: `systemctl stop engineering-challenge`.
+Stop service: `systemctl stop fieldbook`.
 Replace binary and/or config.
-Start service: `systemctl start engineering-challenge`.
+Start service: `systemctl start fieldbook`.
 Wait for `/readyz` to return `ready: true`.
 6. Re-add to load balancer.
 
@@ -223,7 +223,7 @@ catalog mode. The collector must rebuild subscriptions from scratch.
 
 ### Capture Files
 
-SBE captures are append-only; back up the entire `/var/lib/engineering-challenge/` directory.
+SBE captures are append-only; back up the entire `/var/lib/fieldbook/` directory.
 Rotation segments are independently verifiable; no need to back up partial (`.partial`) files.
 Manifest (`capture.manifest.json`) enables integrity verification of the full chain.
 
@@ -234,7 +234,7 @@ On restore, the collector will use the catalog checkpoint if `catalog_mode = war
 
 ### Disaster Recovery
 
-Restore `/var/lib/engineering-challenge/` from backup.
+Restore `/var/lib/fieldbook/` from backup.
 Ensure `settings.toml` matches the original run (especially `catalog_mode` and `catalog_path`).
 3. Start collector. It will resume from the catalog checkpoint (if valid) or run
    fresh discovery.
@@ -244,7 +244,7 @@ Ensure `settings.toml` matches the original run (especially `catalog_mode` and `
 [ ] Binary built with `cargo build --release --locked` on trusted machine.
 [ ] `cargo audit` passes (no known vulnerabilities in dependencies).
 [ ] `cargo deny check` passes (license, bans, sources).
-[ ] Kalshi private key stored at `/etc/engineering-challenge/kalshi-key.pem` mode 600.
+[ ] Kalshi private key stored at `/etc/fieldbook/kalshi-key.pem` mode 600.
 [ ] Service runs as unprivileged `collector` user.
 [ ] systemd hardening enabled (see service file).
 [ ] Output directory on dedicated mount with `noexec,nodev,nosuid`.

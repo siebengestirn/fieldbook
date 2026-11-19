@@ -12,7 +12,7 @@
 //! before a success verdict survives. Evidence that cannot be observed stays
 //! `null` and fails certification; it is never defaulted to zero.
 
-use engineering_challenge::journal::RunState;
+use fieldbook::journal::RunState;
 use serde_json::{Map, Value, json};
 
 use super::runner::{CellConfig, CellOutput, FailInject};

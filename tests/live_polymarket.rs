@@ -18,7 +18,7 @@
 
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
-use engineering_challenge::{
+use fieldbook::{
     config::PolymarketSettings,
     exchange::{Exchange, PolymarketExchange},
     model::{ExchangeEvent, SourceId},
@@ -37,7 +37,7 @@ async fn discovers_and_subscribes_to_public_polymarket_books() {
     let exchange = Arc::new(
         PolymarketExchange::new(
             PolymarketSettings::default(),
-            engineering_challenge::config::NetworkSettings::default(),
+            fieldbook::config::NetworkSettings::default(),
         )
         .unwrap(),
     );
@@ -104,7 +104,7 @@ async fn resubscribing_an_asset_returns_a_fresh_book() {
     let exchange = Arc::new(
         PolymarketExchange::new(
             PolymarketSettings::default(),
-            engineering_challenge::config::NetworkSettings::default(),
+            fieldbook::config::NetworkSettings::default(),
         )
         .unwrap(),
     );

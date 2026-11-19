@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use engineering_challenge::{
+use fieldbook::{
     journal::{
         DataRecord, DecodeOutcome, JournalConfig, JournalHandle, JournalMeta, ObservationRecord,
         RawFrame, SyncMode,

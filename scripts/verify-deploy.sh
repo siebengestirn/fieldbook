@@ -3,8 +3,8 @@
 #
 # This is not a unit test and not a simulation. It builds the release
 # binary, installs it into a sandbox that mirrors the layout from
-# deploy/deployment-notes.md (etc/engineering-challenge/settings.toml,
-# var/lib/engineering-challenge, var/log/engineering-challenge), starts the
+# deploy/deployment-notes.md (etc/fieldbook/settings.toml,
+# var/lib/fieldbook, var/log/fieldbook), starts the
 # collector exactly as the systemd unit does (`--config <settings.toml>`,
 # default command), exercises the documented health endpoints, waits for the
 # bounded run to finish, and then verifies every artifact through the
@@ -29,12 +29,12 @@ cd "$ROOT"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SANDBOX="$ROOT/build/deploy-verification/$STAMP"
-ETC="$SANDBOX/etc/engineering-challenge"
-VAR_LIB="$SANDBOX/var/lib/engineering-challenge"
-VAR_LOG="$SANDBOX/var/log/engineering-challenge"
+ETC="$SANDBOX/etc/fieldbook"
+VAR_LIB="$SANDBOX/var/lib/fieldbook"
+VAR_LOG="$SANDBOX/var/log/fieldbook"
 SETTINGS="$ETC/settings.toml"
 DURATION_SECS="${DEPLOY_VERIFY_DURATION_SECS:-45}"
-UNIT="deploy/engineering-challenge.service"
+UNIT="deploy/fieldbook.service"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 sha256() {
@@ -63,7 +63,7 @@ echo "deploy-verification sandbox: $SANDBOX (commit ${COMMIT:0:12}${DIRTY:+, dir
 echo "== building release binary"
 cargo build --release --locked >"$SANDBOX/build.log" 2>&1 ||
   { tail -n 40 "$SANDBOX/build.log" >&2; fail "release build failed"; }
-BIN="$ROOT/target/release/engineering-challenge"
+BIN="$ROOT/target/release/fieldbook"
 [[ -x "$BIN" ]] || fail "release binary not produced"
 
 # A free localhost port for the metrics endpoint, chosen before the settings
@@ -142,11 +142,11 @@ unit_checks=(
   "^NoNewPrivileges=yes$"
   "^ProtectSystem=strict$"
   "^ProtectHome=yes$"
-  "^ReadWritePaths=/var/lib/engineering-challenge /var/log/engineering-challenge$"
+  "^ReadWritePaths=/var/lib/fieldbook /var/log/fieldbook$"
   "^Restart=on-failure$"
   "^MemoryMax=4G$"
   "^LimitNOFILE=65536$"
-  "^ExecStart=/usr/local/bin/engineering-challenge --config /etc/engineering-challenge/settings.toml$"
+  "^ExecStart=/usr/local/bin/fieldbook --config /etc/fieldbook/settings.toml$"
 )
 UNIT_STATUS=pass
 for pattern in "${unit_checks[@]}"; do
@@ -353,7 +353,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-settings = root / "etc" / "engineering-challenge" / "settings.toml"
+settings = root / "etc" / "fieldbook" / "settings.toml"
 manifest = {
     "schema_version": 1,
     "verification": "deploy",

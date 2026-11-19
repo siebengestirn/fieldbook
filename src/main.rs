@@ -8,7 +8,7 @@ use anyhow::Context;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use engineering_challenge::{
+use fieldbook::{
     completeness, config::Settings, coordinator, coverage, inspect, journal, latency, probe,
     replay, report::write_json_atomic, verify,
 };

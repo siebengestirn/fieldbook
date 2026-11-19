@@ -40,7 +40,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use engineering_challenge::Side;
+use fieldbook::Side;
 
 use super::rng::SplitMix64;
 use super::universe::{SyntheticMarket, SyntheticUniverse};
@@ -682,7 +682,7 @@ fn side_label(side: Side) -> &'static str {
 }
 
 fn format_micros(value: i64) -> String {
-    engineering_challenge::fixed::format_micros(value)
+    fieldbook::fixed::format_micros(value)
 }
 
 /// The running mock: REST + WS servers on ephemeral ports.

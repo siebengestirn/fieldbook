@@ -107,10 +107,7 @@ impl KalshiExchange {
             Err(_) => None,
         };
         let client = crate::egress::http_client(
-            concat!(
-                "engineering-challenge-collector/",
-                env!("CARGO_PKG_VERSION")
-            ),
+            concat!("fieldbook-collector/", env!("CARGO_PKG_VERSION")),
             Duration::from_secs(settings.request_timeout_secs),
             &network,
         )

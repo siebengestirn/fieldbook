@@ -15,7 +15,7 @@
 
 use std::str::FromStr;
 
-use engineering_challenge::{
+use fieldbook::{
     application::{
         CanonicalBusinessEvent, //
         DeliveryReceipt,        //

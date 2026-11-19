@@ -26,7 +26,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use engineering_challenge::util::sha256_hex;
+use fieldbook::util::sha256_hex;
 use serde_json::{Map, Value, json};
 
 pub const STRESS_MANIFEST_SCHEMA_VERSION: u32 = 1;

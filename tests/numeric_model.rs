@@ -10,7 +10,7 @@
     reason = "test crates relax the production lint set wholesale; `expect` cannot express lints that may not fire"
 )]
 
-use engineering_challenge::{
+use fieldbook::{
     Side,
     fixed::{format_scaled, parse_scaled, rescale_exact},
     model::{

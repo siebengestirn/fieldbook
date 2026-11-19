@@ -579,42 +579,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
-name = "engineering-challenge"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "clap",
- "crossbeam",
- "ed25519-dalek",
- "ergo-sbe",
- "flate2",
- "futures-util",
- "http",
- "indexmap",
- "postgres",
- "rand 0.8.8",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2 0.10.9",
- "signature 2.2.0",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-socks",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -663,6 +627,42 @@ name = "fiat-crypto"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
+
+[[package]]
+name = "fieldbook"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "crossbeam",
+ "ed25519-dalek",
+ "ergo-sbe",
+ "flate2",
+ "futures-util",
+ "http",
+ "indexmap",
+ "postgres",
+ "rand 0.8.8",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.10.9",
+ "signature 2.2.0",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-socks",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+]
 
 [[package]]
 name = "find-msvc-tools"
