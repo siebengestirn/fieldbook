@@ -26,7 +26,7 @@ state machine per venue; assume every venue has a sequence clock.
 
 **Consequences.** Adding a venue requires an adapter and a capability
 declaration, not a change to the state machine. Capability semantics are
-explicit and testable, but the capability set must grow deliberately when a new
+explicit and testable, but the capability set must grow when a new
 core decision depends on a venue feature.
 
 **Implementation.** `src/exchange/mod.rs`, `src/exchange/kalshi/mod.rs`,

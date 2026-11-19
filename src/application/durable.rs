@@ -1,7 +1,7 @@
 //! Real local durable commit store (Platform P6).
 //!
 //! This is an append-only, checksummed, fsync-capable store built from the
-//! existing atomic JSON helper in `crate::report` and `sha2`. It is deliberately
+//! existing atomic JSON helper in `crate::report` and `sha2`. It is
 //! **not** the market-data journal and reuses none of its types or formats.
 //!
 //! Each commit is a separate, never-rewritten file named
@@ -71,7 +71,7 @@ pub enum StoreFault {
     FailBeforeWrite,
     /// Write only the first half of the record, simulating a crash mid-write.
     TruncatedAppend,
-    /// Write a complete record with a deliberately wrong checksum.
+    /// Write a complete record with an invalid checksum.
     CorruptChecksum,
 }
 

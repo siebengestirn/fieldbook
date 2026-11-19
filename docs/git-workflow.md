@@ -9,11 +9,11 @@ exports are snapshots, never sources of Git history.
 represents one active, bounded engineering objective. A pull request records
 the evidence and decision to integrate that objective into project history.
 
-We use protected `main` plus short-lived feature branches, mandatory pull
-requests, and merge commits. There is no permanent `develop` branch, no
-release branches, and no permanent feature branches. This is a single-developer
-repository: a complicated GitFlow would add synchronization work without
-adding an active integration team.
+This repository uses protected `main` plus short-lived feature branches,
+mandatory pull requests, and merge commits. There is no permanent `develop`
+branch, no release branches, and no permanent feature branches. This is a
+single-developer repository: a complicated GitFlow would add synchronization
+work without adding an active integration team.
 
 The machine-readable policy is [`git-policy.json`](../git-policy.json). This
 document explains it; the two must not disagree.
@@ -120,7 +120,7 @@ direct pushes to `main` restricted; PR required;
 required CI checks and latest-check enforcement enabled;
 force pushes and deletion of `main` disabled;
 - merge commit allowed; squash/rebase merging disabled;
-- linear history not required (the repository deliberately uses merge commits);
+- linear history not required (the repository uses merge commits);
 - conversation resolution required;
 - required approving reviews remain zero because an artificial reviewer
   requirement cannot be satisfied by the sole developer; self-review plus CI is

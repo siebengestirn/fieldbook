@@ -96,7 +96,7 @@ JSON files use double quotes, no comments, no trailing commas, no duplicate
 keys, two-space structural indentation, a final newline and no trailing
 whitespace. Property names follow the versioned report and fixture schemas:
 these files are persisted artifacts, not new public APIs, so the guide's
-camelCase API naming rule is intentionally not applied to them. The guide's
+camelCase API naming rule is not applied to them. The guide's
 formatting and value rules are enforced. Byte-exact raw observations, such as
 `fixtures/hyperliquid/fast_asset_ctxs_wire.json`, are immutable evidence:
 their hashes are recorded in `captures/INDEX.md` and reformatting is forbidden.
@@ -159,6 +159,10 @@ Three Python files hold long vocabulary, regex and responsibility-map
   must stay in lockstep.
 - Immutable evidence and the raw wire fixture are excluded from formatting.
 - The Google JSON API naming rule does not apply to persisted schema fields.
+- Vendored third-party documents under `references/` are byte-exact and
+  hash-pinned by `scripts/check_style_references.py`; the English prose audit
+  excludes them because their wording is not authored project prose. That hash
+  check is the fail-closed guard for this exception.
 
 Every other rule has no exemption mechanism. Do not add one without a documented
 reason in this file and a matching fail-closed check.

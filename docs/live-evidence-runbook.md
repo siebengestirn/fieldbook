@@ -225,7 +225,7 @@ result, and a failed run still uploads whatever it produced for review.
 
 Hyperliquid has a dedicated workflow because its runtime subscribes only the
 configured finite set of selected perpetuals, and `fastAssetCtxs` is a
-compressed telemetry channel. `scripts/run-live-evidence.sh` deliberately does
+compressed telemetry channel. `scripts/run-live-evidence.sh` does
 not cover it; do not claim that it certifies this adapter.
 
 ```bash

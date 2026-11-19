@@ -3,7 +3,7 @@ use std::{fs, path::Path};
 use crate::{command::Cmd, report::Report};
 
 /// Integration test targets that exercise real components through their public
-/// boundaries. Live venue targets are deliberately excluded.
+/// boundaries. Live venue targets are excluded.
 const SUITES: &[&str] = &[
     "e2e_mock_exchange",
     "egress_lab",

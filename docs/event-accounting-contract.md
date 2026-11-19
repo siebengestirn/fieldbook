@@ -1,7 +1,7 @@
 # Event accounting contract
 
 This document defines the accounting contract currently implemented for the
-market-data collector and its stress laboratory. It intentionally separates what
+market-data collector and its stress laboratory. It separates what
 is implemented from future platform-wide guarantees.
 
 ## Identities
@@ -16,7 +16,7 @@ is implemented from future platform-wide guarantees.
 | Successful SBE write | Writer sink | `WriterStats.delta_messages` |
 | Persisted evidence | Independent verifier | decoded SBE capture, journal verification |
 
-Core-ingress counters are deliberately **not** transport counters. They are
+Core-ingress counters are **not** transport counters. They are
 retained as a separate boundary and never substituted for receive or decode
 evidence.
 

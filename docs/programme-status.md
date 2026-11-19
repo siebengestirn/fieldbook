@@ -4,7 +4,7 @@ This is the definitive status record for the engineering programme. Other
 documents may describe design, history or intent; when a status statement here
 differs from another document, this file is authoritative.
 
-Status vocabulary is deliberately multi-dimensional:
+Status vocabulary is multi-dimensional:
 
 | Column | Meaning |
 |---|---|
@@ -120,7 +120,7 @@ source-scoped durable PostgreSQL delivery. PR #91 excluded operator-local
 PostgreSQL output. The exact PR #90/#91 merge commit IDs are not present in this
 source export and are therefore not invented here.
 
-Three retained evidence records are deliberately distinguished:
+Three retained evidence records are distinguished:
 
 - `measurements/live/2026-11-18-postgres-checkpoint-integrity/` records the
   PASS on the earlier source commit `ac33b81`.
@@ -338,7 +338,7 @@ opt-in authenticated read-only test with no live capture claimed.
 `ledger.json` with per-file SHA-256, workload, status and provenance fields.
 These are deterministic **synthetic loopback** runs: burst, lifecycle churn,
 disconnect sweep, backpressure profiles, 10k capacity, Hyperliquid H3, plus
-three intentionally failed cells. They establish test execution and fail-closed
+three failed cells. They establish test execution and fail-closed
 behavior; they are not live venue or capacity certifications.
 
 The main `measurements/stress/index.json` retains the earlier v2–v5 reference
