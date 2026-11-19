@@ -8,7 +8,10 @@
     reason = "durability tests assert named filesystem outcomes"
 )]
 
-use std::{fs, path::Path};
+use std::{
+    fs,         //
+    path::Path, //
+};
 
 use engineering_challenge::application::{
     CommitIntent, CommitSink,
