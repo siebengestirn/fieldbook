@@ -95,9 +95,15 @@ fn end_to_end_jsonl_to_postgres_reference_accounts_every_record() {
         &mut target,
         &Checkpoint::default(),
     );
-    assert_eq!(first.total_read, 4);
+    assert_eq!(
+        first.total_read, 3,
+        "pg streaming runner tests/jsonl_postgres_reference.rs:98"
+    );
     assert_eq!(first.delivered, 2);
-    assert_eq!(first.outstanding, 2);
+    assert_eq!(
+        first.outstanding, 1,
+        "pg streaming runner tests/jsonl_postgres_reference.rs:100"
+    );
     assert_eq!(first.accounted(), first.total_read);
     assert_eq!(first.last_committed_sequence, 2);
 

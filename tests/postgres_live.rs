@@ -17,13 +17,38 @@ use std::str::FromStr;
 
 use engineering_challenge::{
     application::{
-        CanonicalBusinessEvent, DeliveryReceipt, DeliveryRequest, DeliveryState, TargetConnector,
-        postgres::{
-            IdempotencyKey, OUTPUT_CONTRACT_VERSION, PgCheckpoint, PgTarget, apply_migrations,
-            assign_legacy_checkpoint_source,
+        CanonicalBusinessEvent, //
+        DeliveryReceipt,        //
+        DeliveryRequest,        //
+        DeliveryState,          //
+        SourcePosition,         //
+        TargetConnector,        //
+        durable::{
+            CommitStore,            //
+            StoreFault,             //
+            run_streaming_pipeline, //
         },
+        file_source::{
+            CheckpointBinding, //
+            DurableCheckpoint, //
+            FileSource,        //
+            SourceIdentity,    //
+        },
+        postgres::{
+            IdempotencyKey,                  //
+            OUTPUT_CONTRACT_VERSION,         //
+            PgCheckpoint,                    //
+            PgTarget,                        //
+            apply_migrations,                //
+            assign_legacy_checkpoint_source, //
+        },
+        transform_observation, //
     },
-    canonical::{CANONICAL_SCHEMA_VERSION, CanonicalEnvelope, EventId},
+    canonical::{
+        CANONICAL_SCHEMA_VERSION, //
+        CanonicalEnvelope,        //
+        EventId,                  //
+    },
     identity::OpaqueId,
 };
 use postgres::{
@@ -68,9 +93,28 @@ fn envelope(id: &str, source: &str, value: i64) -> CanonicalEnvelope<CanonicalBu
     }
 }
 
-fn request(event: CanonicalEnvelope<CanonicalBusinessEvent>) -> DeliveryRequest {
+fn request(
+    event: CanonicalEnvelope<CanonicalBusinessEvent>,
+    sequence: u64,
+    offset: u64,
+) -> DeliveryRequest {
+    let source_id = event.source_id.as_str().to_owned();
+    request_for_source(event, &source_id, sequence, offset)
+}
+
+fn request_for_source(
+    event: CanonicalEnvelope<CanonicalBusinessEvent>,
+    source_id: &str,
+    sequence: u64,
+    offset: u64,
+) -> DeliveryRequest {
     DeliveryRequest {
         idempotency_key: event.event_id.as_str().to_owned(),
+        source_position: Some(SourcePosition {
+            source_id: source_id.to_owned(),
+            sequence,
+            offset,
+        }),
         events: vec![event],
     }
 }
@@ -132,6 +176,206 @@ fn cleanup(target_id: &str) {
 
 #[test]
 #[ignore = "requires an operator-supplied PostgreSQL server; set NIRNAY_TEST_PG_URL"]
+fn postgres_live_streaming_file_runner_drives_real_pg_target() {
+    let mut client = connect();
+    apply_migrations(&mut client).expect("migration applies");
+
+    let target_id = format!("pg-live-streaming-{}", std::process::id());
+    cleanup(&target_id);
+    let source_name = "postgres-live-file-source";
+    let input = concat!(
+        r#"{"id":"pipeline-a","payload":{"entity_id":"acct-a","kind":"credit","value":1,"observed_at":100},"received_at":110}"#,
+        "\n",
+        r#"{"id":"pipeline-b","payload":{"entity_id":"acct-b","kind":"credit","value":2,"observed_at":200},"received_at":210}"#,
+        "\n",
+    );
+    let bytes = input.as_bytes();
+    let expected_offset = u64::try_from(bytes.len()).expect("input length fits u64");
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let input_path = directory.path().join("input.jsonl");
+    std::fs::write(&input_path, bytes).expect("write input");
+    let identity = SourceIdentity::register(source_name, bytes);
+    let binding = CheckpointBinding::new(&identity, &target_id);
+    let anchor = DurableCheckpoint::new(&binding);
+    let store_path = directory.path().join("commit-store");
+    let mut store = CommitStore::open(&store_path, binding).expect("open commit store");
+    let mut source = FileSource::open(&input_path, source_name).expect("open file source");
+
+    let result = {
+        let mut target =
+            PgTarget::with_source(&target_id, identity.source_id().as_str(), &mut client);
+        let result = run_streaming_pipeline(
+            &mut source,
+            transform_observation,
+            &mut target,
+            &anchor,
+            &mut store,
+        );
+        let checkpoint = target
+            .persisted_checkpoint()
+            .expect("read PostgreSQL checkpoint")
+            .expect("checkpoint committed by streaming runner");
+        assert_eq!(
+            checkpoint.sequence, 2,
+            "pg streaming runner tests/postgres_live.rs:218"
+        );
+        assert_eq!(
+            checkpoint.offset, expected_offset,
+            "pg streaming runner tests/postgres_live.rs:219"
+        );
+        assert_eq!(
+            target.source_committed_count().expect("count source rows"),
+            2,
+            "pg streaming runner tests/postgres_live.rs:220"
+        );
+        result
+    };
+
+    assert_eq!(
+        result.report.delivered, 2,
+        "pg streaming runner tests/postgres_live.rs:227"
+    );
+    assert_eq!(
+        result.report.uncertain, 0,
+        "pg streaming runner tests/postgres_live.rs:228"
+    );
+    assert_eq!(
+        result.checkpoint.last_committed_sequence, 2,
+        "pg streaming runner tests/postgres_live.rs:229"
+    );
+    assert_eq!(
+        result.checkpoint.last_committed_offset, expected_offset,
+        "pg streaming runner tests/postgres_live.rs:230"
+    );
+    assert_eq!(
+        store.state().records.len(),
+        2,
+        "pg streaming runner tests/postgres_live.rs:231"
+    );
+    cleanup(&target_id);
+}
+
+#[test]
+#[ignore = "requires an operator-supplied PostgreSQL server; set NIRNAY_TEST_PG_URL"]
+fn postgres_live_streaming_runner_replays_after_local_checkpoint_failure() {
+    let mut client = connect();
+    apply_migrations(&mut client).expect("migration applies");
+
+    let target_id = format!("pg-live-replay-{}", std::process::id());
+    cleanup(&target_id);
+    let source_name = "postgres-live-replay-source";
+    let input = concat!(
+        r#"{"id":"replay-a","payload":{"entity_id":"acct-a","kind":"credit","value":1,"observed_at":100},"received_at":110}"#,
+        "\n",
+        r#"{"id":"replay-b","payload":{"entity_id":"acct-b","kind":"credit","value":2,"observed_at":200},"received_at":210}"#,
+        "\n",
+    );
+    let bytes = input.as_bytes();
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let input_path = directory.path().join("input.jsonl");
+    std::fs::write(&input_path, bytes).expect("write input");
+    let identity = SourceIdentity::register(source_name, bytes);
+    let binding = CheckpointBinding::new(&identity, &target_id);
+    let anchor = DurableCheckpoint::new(&binding);
+    let store_path = directory.path().join("commit-store");
+
+    // The target commits record one, but the independent local checkpoint
+    // append fails. The runner must stop before consuming record two.
+    let first = {
+        let mut source = FileSource::open(&input_path, source_name).expect("open source");
+        let mut store = CommitStore::open(&store_path, binding.clone()).expect("open store");
+        store.set_fault(StoreFault::FailBeforeWrite);
+        let mut target =
+            PgTarget::with_source(&target_id, identity.source_id().as_str(), &mut client);
+        run_streaming_pipeline(
+            &mut source,
+            transform_observation,
+            &mut target,
+            &anchor,
+            &mut store,
+        )
+    };
+    assert_eq!(
+        first.report.total_read, 1,
+        "pg streaming runner tests/postgres_live.rs:275"
+    );
+    assert_eq!(
+        first.report.uncertain, 1,
+        "pg streaming runner tests/postgres_live.rs:276"
+    );
+    assert_eq!(
+        first.checkpoint.last_committed_sequence, 0,
+        "pg streaming runner tests/postgres_live.rs:277"
+    );
+    assert_eq!(
+        client
+            .query_one(
+                "SELECT count(*) FROM canonical_business_events WHERE target_id = $1",
+                &[&target_id],
+            )
+            .expect("count first target commit")
+            .get::<_, i64>(0),
+        1,
+        "pg streaming runner tests/postgres_live.rs:278"
+    );
+
+    // Restart from the still-genesis local cursor. PostgreSQL deduplicates
+    // record one, the local store catches up, and record two can then advance.
+    let mut source = FileSource::open_with_resume(&input_path, source_name, &anchor, &target_id)
+        .expect("resume from local checkpoint");
+    let mut store = CommitStore::open(&store_path, binding).expect("reopen store");
+    let second = {
+        let mut target =
+            PgTarget::with_source(&target_id, identity.source_id().as_str(), &mut client);
+        run_streaming_pipeline(
+            &mut source,
+            transform_observation,
+            &mut target,
+            &anchor,
+            &mut store,
+        )
+    };
+    assert_eq!(
+        second.report.duplicates, 1,
+        "pg streaming runner tests/postgres_live.rs:305"
+    );
+    assert_eq!(
+        second.report.delivered, 1,
+        "pg streaming runner tests/postgres_live.rs:306"
+    );
+    assert_eq!(
+        second.report.uncertain, 0,
+        "pg streaming runner tests/postgres_live.rs:307"
+    );
+    assert_eq!(
+        second.report.total_read, 2,
+        "pg streaming runner tests/postgres_live.rs:308"
+    );
+    assert_eq!(
+        second.checkpoint.last_committed_sequence, 2,
+        "pg streaming runner tests/postgres_live.rs:309"
+    );
+    assert_eq!(
+        store.state().records.len(),
+        2,
+        "pg streaming runner tests/postgres_live.rs:310"
+    );
+    let committed: i64 = client
+        .query_one(
+            "SELECT count(*) FROM canonical_business_events WHERE target_id = $1",
+            &[&target_id],
+        )
+        .expect("count replay-safe target rows")
+        .get(0);
+    assert_eq!(
+        committed, 2,
+        "pg streaming runner tests/postgres_live.rs:318"
+    );
+    cleanup(&target_id);
+}
+
+#[test]
+#[ignore = "requires an operator-supplied PostgreSQL server; set NIRNAY_TEST_PG_URL"]
 fn postgres_live_source_scoped_delivery() {
     let mut client = connect();
     apply_migrations(&mut client).expect("migration applies");
@@ -141,11 +385,10 @@ fn postgres_live_source_scoped_delivery() {
     let source_b = canonical_source(SOURCE_B);
 
     // 1. Two distinct sources each commit sequence 1, offset 10 to one target.
-    let first_a = request(envelope("evt-a1", SOURCE_A, 11));
-    let first_b = request(envelope("evt-b1", SOURCE_B, 21));
+    let first_a = request(envelope("evt-a1", SOURCE_A, 11), 1, 10);
+    let first_b = request(envelope("evt-b1", SOURCE_B, 21), 1, 10);
     {
         let mut a = PgTarget::with_source(&target_id, &source_a, &mut client);
-        a.set_position(1, 10);
         let receipt = a.deliver(&first_a);
         assert_eq!(
             receipt.state(),
@@ -158,7 +401,6 @@ fn postgres_live_source_scoped_delivery() {
             "verified by the source-scoped integration contract"
         );
         let mut b = PgTarget::with_source(&target_id, &source_b, &mut client);
-        b.set_position(1, 10);
         assert_eq!(
             b.deliver(&first_b).state(),
             DeliveryState::DurableCommitted,
@@ -182,12 +424,34 @@ fn postgres_live_source_scoped_delivery() {
         );
     }
 
-    // A legacy target may not erase the source on a modern envelope.
+    // A target rejects a request without an explicit source position.
+    let missing_position_target = format!("pg-missing-position-{}", std::process::id());
+    {
+        let mut target = PgTarget::with_source(&missing_position_target, &source_a, &mut client);
+        let mut missing_position = request(envelope("evt-missing-position", SOURCE_A, 30), 1, 10);
+        missing_position.source_position = None;
+        let receipt = target.deliver(&missing_position);
+        assert_eq!(receipt.state(), DeliveryState::Rejected, "{receipt:?}");
+        assert_eq!(
+            target
+                .source_committed_count()
+                .expect("count without position"),
+            0,
+            "a delivery without source position must not write"
+        );
+    }
+
+    // A legacy target may not erase the source on a modern envelope, even
+    // when the supplied position itself names the empty legacy namespace.
     let legacy_api_target = format!("pg-legacy-api-{}", std::process::id());
     {
         let mut legacy = PgTarget::new(&legacy_api_target, &mut client);
-        legacy.set_position(1, 10);
-        let receipt = legacy.deliver(&request(envelope("evt-legacy-api", SOURCE_A, 31)));
+        let receipt = legacy.deliver(&request_for_source(
+            envelope("evt-legacy-api", SOURCE_A, 31),
+            "",
+            1,
+            10,
+        ));
         assert_eq!(receipt.state(), DeliveryState::Rejected, "{receipt:?}");
         assert_eq!(
             legacy
@@ -209,12 +473,11 @@ fn postgres_live_source_scoped_delivery() {
             &mut client,
             checkpoint_a,
         );
-        target_b.set_position(1, 10);
-        let receipt = target_b.deliver(&request(envelope(
-            "evt-checkpoint-transplant",
-            SOURCE_B,
-            32,
-        )));
+        let receipt = target_b.deliver(&request(
+            envelope("evt-checkpoint-transplant", SOURCE_B, 32),
+            1,
+            10,
+        ));
         assert_eq!(receipt.state(), DeliveryState::Rejected, "{receipt:?}");
         assert_eq!(
             target_b
@@ -273,8 +536,7 @@ fn postgres_live_source_scoped_delivery() {
             &mut client,
             PgCheckpoint::initial_for_source(&target_id, &source_a),
         );
-        stale.set_position(1, 10);
-        let stale_receipt = stale.deliver(&request(envelope("evt-a2", SOURCE_A, 12)));
+        let stale_receipt = stale.deliver(&request(envelope("evt-a2", SOURCE_A, 12), 1, 10));
         assert_ne!(
             stale_receipt.state(),
             DeliveryState::DurableCommitted,
@@ -302,6 +564,31 @@ fn postgres_live_source_scoped_delivery() {
         );
     }
 
+    // A source-A envelope cannot be paired with a source-B cursor.
+    {
+        let mut a = PgTarget::with_source(&target_id, &source_a, &mut client);
+        let receipt = a.deliver(&request_for_source(
+            envelope("evt-position-foreign", SOURCE_A, 998),
+            &source_b,
+            2,
+            20,
+        ));
+        assert_eq!(receipt.state(), DeliveryState::Rejected, "{receipt:?}");
+        assert!(
+            matches!(
+                &receipt,
+                DeliveryReceipt::Rejected { reason, .. }
+                    if reason.contains("source position source")
+            ),
+            "pg streaming runner tests/postgres_live.rs:522"
+        );
+        assert_eq!(
+            a.source_committed_count().expect("count source A"),
+            1,
+            "a mismatched source position must not commit an event"
+        );
+    }
+
     // 3b. A target bound to A rejects an envelope from source B without any
     // row or checkpoint mutation.
     {
@@ -309,7 +596,12 @@ fn postgres_live_source_scoped_delivery() {
         let before = a
             .source_committed_count()
             .expect("count before foreign envelope");
-        let receipt = a.deliver(&request(envelope("evt-foreign", SOURCE_B, 999)));
+        let receipt = a.deliver(&request_for_source(
+            envelope("evt-foreign", SOURCE_B, 999),
+            &source_a,
+            2,
+            20,
+        ));
         assert_eq!(receipt.state(), DeliveryState::Rejected, "{receipt:?}");
         assert!(
             matches!(&receipt, DeliveryReceipt::Rejected { reason, .. } if reason.contains("does not match target source")),
@@ -334,7 +626,6 @@ fn postgres_live_source_scoped_delivery() {
     // 4. Same-source exact retries remain idempotent.
     {
         let mut a = PgTarget::with_source(&target_id, &source_a, &mut client);
-        a.set_position(1, 10);
         let retry = a.deliver(&first_a.clone());
         assert_eq!(
             retry.state(),
@@ -357,8 +648,7 @@ fn postgres_live_source_scoped_delivery() {
     changed.raw_observation = Some("changed-payload".to_owned());
     {
         let mut a = PgTarget::with_source(&target_id, &source_a, &mut client);
-        a.set_position(2, 20);
-        let changed_receipt = a.deliver(&request(changed));
+        let changed_receipt = a.deliver(&request(changed, 2, 20));
         assert_ne!(
             changed_receipt.state(),
             DeliveryState::DurableCommitted,
@@ -381,14 +671,13 @@ fn postgres_live_source_scoped_delivery() {
 
     // 6. A failed checkpoint race leaves no partial event behind.
     {
-        let racing = request(envelope("evt-race", SOURCE_A, 77));
+        let racing = request(envelope("evt-race", SOURCE_A, 77), 1, 10);
         let mut stale = PgTarget::with_source_checkpoint(
             &target_id,
             &source_a,
             &mut client,
             PgCheckpoint::initial_for_source(&target_id, &source_a),
         );
-        stale.set_position(1, 10);
         let receipt = stale.deliver(&racing);
         assert_ne!(
             receipt.state(),
@@ -753,8 +1042,7 @@ fn postgres_live_source_scoped_delivery() {
     };
     let mut resumed =
         PgTarget::with_source_checkpoint(&legacy_target, &source_a, &mut client, reloaded);
-    resumed.set_position(1, 10);
-    let retry = resumed.deliver(&request(legacy_event));
+    let retry = resumed.deliver(&request(legacy_event, 1, 10));
     assert_eq!(retry.state(), DeliveryState::DurableCommitted, "{retry:?}");
     assert!(
         retry.is_duplicate(),
@@ -786,18 +1074,16 @@ fn postgres_live_source_scoped_delivery() {
             let mut client = connect();
             apply_migrations(&mut client).expect("migration");
             let mut target = PgTarget::with_source(&concurrent_target, &source_a, &mut client);
-            target.set_position(1, 10);
             target
-                .deliver(&request(envelope("evt-concurrent-a", SOURCE_A, 1)))
+                .deliver(&request(envelope("evt-concurrent-a", SOURCE_A, 1), 1, 10))
                 .state()
         });
         let b = scope.spawn(|| {
             let mut client = connect();
             apply_migrations(&mut client).expect("migration");
             let mut target = PgTarget::with_source(&concurrent_target, &source_a, &mut client);
-            target.set_position(1, 10);
             target
-                .deliver(&request(envelope("evt-concurrent-b", SOURCE_A, 2)))
+                .deliver(&request(envelope("evt-concurrent-b", SOURCE_A, 2), 1, 10))
                 .state()
         });
         [a.join().expect("thread A"), b.join().expect("thread B")]

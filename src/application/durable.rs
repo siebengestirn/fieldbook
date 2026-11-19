@@ -380,8 +380,10 @@ pub struct StreamingResult {
 ///
 /// The anchor must already have been verified against the source identity and
 /// target. Every terminal outcome is committed to the store as one atomic
-/// record before the in-memory checkpoint is advanced. A non-terminal receipt
-/// leaves the checkpoint unmoved. Callers wanting a simulated run should use
+/// record before the in-memory checkpoint is advanced. The runner stops at
+/// the first unresolved delivery or failed local commit, so a later source
+/// position can never leap over an unaccounted record. Callers wanting a
+/// simulated run should use
 /// `run_jsonl_to_target_with_mode` with a side-effect-free connector instead of
 /// this store-backed runner.
 pub fn run_streaming_pipeline<R, T, F>(
@@ -403,7 +405,7 @@ where
 {
     use crate::application::{
         CommitIntent, DeliveryObligation, DeliveryReceipt, DeliveryState, MAX_DELIVERY_ATTEMPTS,
-        QuarantineRecord, SourceAdapter,
+        QuarantineRecord, SourceAdapter, SourcePosition,
     };
 
     let mut report = ImportReport::default();
@@ -418,34 +420,44 @@ where
                     report.skipped += 1;
                     continue;
                 }
-                let Ok(envelope) = transform(&observation) else {
-                    let quarantine = QuarantineRecord {
-                        sequence: observation.sequence,
-                        line_number: observation.line_number,
-                        byte_offset: source.last_offset(),
-                        record_id: observation.record_id.clone(),
-                        target_id: target.target_id().to_owned(),
-                        raw_bytes_hex: String::new(),
-                        reason: "transform rejected the observation".to_owned(),
-                    };
-                    if CommitSink::commit(
-                        store,
-                        &CommitIntent::quarantined(target.target_id(), &quarantine),
-                    )
-                    .is_ok()
-                    {
-                        report.rejected += 1;
-                        report.quarantined += 1;
-                        frontier = frontier.advanced(observation.sequence, source.next_offset());
-                    } else {
-                        report.uncertain += 1;
+                let envelope = match transform(&observation) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        let quarantine = QuarantineRecord {
+                            sequence: observation.sequence,
+                            line_number: observation.line_number,
+                            byte_offset: source.last_offset(),
+                            record_id: observation.record_id.clone(),
+                            target_id: target.target_id().to_owned(),
+                            raw_bytes_hex: crate::application::hex_bytes(&observation.raw_bytes),
+                            reason: error.to_string(),
+                        };
+                        if CommitSink::commit(
+                            store,
+                            &CommitIntent::quarantined(target.target_id(), &quarantine),
+                        )
+                        .is_ok()
+                        {
+                            report.rejected += 1;
+                            report.quarantined += 1;
+                            frontier =
+                                frontier.advanced(observation.sequence, source.next_offset());
+                        } else {
+                            report.uncertain += 1;
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
                 };
                 let key = envelope.event_id.as_str().to_owned();
                 let request = crate::application::DeliveryRequest {
                     idempotency_key: key.clone(),
                     events: vec![envelope],
+                    source_position: Some(SourcePosition {
+                        source_id: observation.source_id.as_str().to_owned(),
+                        sequence: observation.sequence,
+                        offset: source.next_offset(),
+                    }),
                 };
                 let mut obligation = DeliveryObligation::new(&key, target.target_id());
                 let mut receipt = target.deliver(&request);
@@ -454,6 +466,7 @@ where
                     receipt = target.deliver(&request);
                     obligation.apply_receipt(&receipt);
                 }
+                let mut halt_after_observation = false;
                 match receipt {
                     DeliveryReceipt::DurableCommitted { duplicate, .. } => {
                         let intent = CommitIntent::delivered(
@@ -474,7 +487,11 @@ where
                                 frontier.advanced(observation.sequence, source.next_offset());
                         } else {
                             obligation.state = DeliveryState::Uncertain;
+                            obligation.last_error = Some(
+                                "local commit-store append failed after target commit".to_owned(),
+                            );
                             report.uncertain += 1;
+                            halt_after_observation = true;
                         }
                     }
                     DeliveryReceipt::Rejected { reason, .. } => {
@@ -484,7 +501,7 @@ where
                             byte_offset: source.last_offset(),
                             record_id: observation.record_id.clone(),
                             target_id: target.target_id().to_owned(),
-                            raw_bytes_hex: String::new(),
+                            raw_bytes_hex: crate::application::hex_bytes(&observation.raw_bytes),
                             reason,
                         };
                         if CommitSink::commit(
@@ -498,16 +515,37 @@ where
                             frontier =
                                 frontier.advanced(observation.sequence, source.next_offset());
                         } else {
+                            obligation.state = DeliveryState::Uncertain;
+                            obligation.last_error = Some("durable quarantine failed".to_owned());
                             report.uncertain += 1;
+                            halt_after_observation = true;
                         }
                     }
-                    DeliveryReceipt::Outstanding { .. } => report.outstanding += 1,
-                    DeliveryReceipt::Uncertain { .. } => report.uncertain += 1,
-                    DeliveryReceipt::Accepted { .. } => report.accepted += 1,
-                    DeliveryReceipt::Delivered { .. } => report.target_delivered += 1,
-                    DeliveryReceipt::Simulated { .. } => report.simulated += 1,
+                    DeliveryReceipt::Outstanding { .. } => {
+                        report.outstanding += 1;
+                        halt_after_observation = true;
+                    }
+                    DeliveryReceipt::Uncertain { .. } => {
+                        report.uncertain += 1;
+                        halt_after_observation = true;
+                    }
+                    DeliveryReceipt::Accepted { .. } => {
+                        report.accepted += 1;
+                        halt_after_observation = true;
+                    }
+                    DeliveryReceipt::Delivered { .. } => {
+                        report.target_delivered += 1;
+                        halt_after_observation = true;
+                    }
+                    DeliveryReceipt::Simulated { .. } => {
+                        report.simulated += 1;
+                        halt_after_observation = true;
+                    }
                 }
                 report.obligations.push(obligation);
+                if halt_after_observation {
+                    break;
+                }
             }
             Err(error) => {
                 report.total_read += 1;
@@ -518,15 +556,15 @@ where
                 }
                 if matches!(error, crate::application::SourceError::Io { .. }) {
                     report.uncertain += 1;
-                    continue;
+                    break;
                 }
                 let quarantine = QuarantineRecord {
                     sequence,
-                    line_number: sequence as usize,
+                    line_number: error.line_number(),
                     byte_offset: source.last_offset(),
                     record_id: format!("jsonl-source-rejected:{sequence}"),
                     target_id: target.target_id().to_owned(),
-                    raw_bytes_hex: String::new(),
+                    raw_bytes_hex: crate::application::hex_bytes(error.raw_bytes()),
                     reason: error.to_string(),
                 };
                 if CommitSink::commit(
@@ -540,6 +578,7 @@ where
                     frontier = frontier.advanced(sequence, source.next_offset());
                 } else {
                     report.uncertain += 1;
+                    break;
                 }
             }
         }
@@ -684,6 +723,7 @@ mod tests {
         let request = DeliveryRequest {
             idempotency_key: "key".to_owned(),
             events: Vec::new(),
+            source_position: None,
         };
         assert_eq!(request.idempotency_key, "key");
     }
