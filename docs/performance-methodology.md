@@ -99,6 +99,28 @@ build and environment for every histogram. A live run carries the same
 distribution in `RunReport.stage_timing` (an optional, backward-compatible
 field).
 
+## Build performance
+
+Compile cost was measured from a full `cargo clean` on this host (8 cores,
+Rust 1.99.1), running the same commands before and after the profile change:
+
+| Command | Before | After |
+|---|---|---|
+| `cargo test --workspace --all-targets --locked --no-run` | 103 s | 109 s |
+| `cargo build --release --locked` | 172 s | 98 s |
+| `target/debug` directory size | 2.7 GiB | 2.0 GiB |
+
+The release profile uses thin LTO with eight codegen units. Cross-crate
+optimisation remains enabled, while rustc can spread codegen across cores.
+Debug builds keep line tables for workspace frames and omit DWARF for
+dependencies; the release build skips optimisation of build scripts and proc
+macros. No gate, wire format, capture contract or runtime behaviour changes
+with these settings.
+
+The debug-target compile did not improve in this measurement; the reduced
+artifact size is the measured benefit. A later change needs its own A/B result
+before claiming a compile-time gain for that path.
+
 ## What is not claimed
 
 **No throughput, CPU, RSS or disk performance claim.** The existing

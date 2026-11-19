@@ -53,10 +53,34 @@ indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.9"
 
+# Debug information is only needed for workspace frames. Dependencies never
+# need DWARF here, and line tables keep backtraces usable for our own code.
+# This cuts both compile time and the size of the target directory.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = 0
+
+# Thin LTO keeps cross-crate optimisation; multiple codegen units let rustc
+# use all available cores instead of serialising the whole crate.
 [profile.release]
 lto = "thin"
-codegen-units = 1
+codegen-units = 8
 panic = "abort"
+
+# Build scripts and proc macros only run at build time. Optimising them adds
+# cost to every clean build without changing the shipped binary.
+[profile.release.build-override]
+opt-level = 0
+codegen-units = 8
+debug = 0
 
 [lints.rust]
 # The generated SBE codec contains internal unsafe pointer reads. It is an
