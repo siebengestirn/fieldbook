@@ -65,6 +65,10 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `7edfb92` | PR #88 — bounded loopback socket waits |
 | `a6f9fcb` | PR #89 — reconcile current head and live PostgreSQL evidence |
 | `f86592b` | PR #92 — legacy PostgreSQL source-mapping integrity |
+| `bc46abe` | PR #1 — canonical repository URL under `siebengestirn/fieldbook` |
+| `48a42d7` | PR #2 — canonical repository URL under `siebensterne/fieldbook` |
+| `cab6291` | PR #3 — durable runner supplies source position to real PostgreSQL target |
+| `276e433` | PR #4 — `FIELDBOOK_TEST_PG_URL` replaces the legacy `nirnay` variable name |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
