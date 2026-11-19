@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.34s
+     Running tests/postgres_batch_live.rs (target/debug/deps/postgres_batch_live-c656cff0b99f8e61)
+
+running 3 tests
+test postgres_live_batch_exact_retry_and_changed_payload_are_distinguished ... ok
+test postgres_live_batch_replays_after_local_commit_failure ... ok
+test postgres_live_bounded_batch_drives_real_target ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s

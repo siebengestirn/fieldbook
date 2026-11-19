@@ -1,0 +1,295 @@
+{
+  "source_commit": "647233d62dc1d10c1b12b15f52924b2f5567acaa",
+  "generated_at_unix": 1795088722,
+  "server_version": "PostgreSQL 18.6 (Homebrew) on aarch64-apple-darwin27.0.0, compiled by Apple clang version 21.0.0 (clang-2100.3.34.2), 64-bit",
+  "cases": [
+    {
+      "batch_events": 1,
+      "byte_ceiling": 262144,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 3040.01925,
+      "events_per_second": 84.20999307816884
+    },
+    {
+      "batch_events": 1,
+      "byte_ceiling": 1048576,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 2851.60575,
+      "events_per_second": 89.7739808527178
+    },
+    {
+      "batch_events": 1,
+      "byte_ceiling": 4194304,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 2588.4186250000002,
+      "events_per_second": 98.90208543836296
+    },
+    {
+      "batch_events": 8,
+      "byte_ceiling": 262144,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 489.760042,
+      "events_per_second": 522.7049535413099
+    },
+    {
+      "batch_events": 8,
+      "byte_ceiling": 1048576,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 446.344958,
+      "events_per_second": 573.5474220367468
+    },
+    {
+      "batch_events": 8,
+      "byte_ceiling": 4194304,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 516.192042,
+      "events_per_second": 495.93945502941324
+    },
+    {
+      "batch_events": 16,
+      "byte_ceiling": 262144,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 263.491666,
+      "events_per_second": 971.5677307228381
+    },
+    {
+      "batch_events": 16,
+      "byte_ceiling": 1048576,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 280.31412500000005,
+      "events_per_second": 913.2611494336932
+    },
+    {
+      "batch_events": 16,
+      "byte_ceiling": 4194304,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 297.668833,
+      "events_per_second": 860.0161374637431
+    },
+    {
+      "batch_events": 32,
+      "byte_ceiling": 262144,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 173.10091699999998,
+      "events_per_second": 1478.906088059603
+    },
+    {
+      "batch_events": 32,
+      "byte_ceiling": 1048576,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 185.235958,
+      "events_per_second": 1382.0210868561492
+    },
+    {
+      "batch_events": 32,
+      "byte_ceiling": 4194304,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 160.899833,
+      "events_per_second": 1591.0519931987749
+    },
+    {
+      "batch_events": 64,
+      "byte_ceiling": 262144,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 137.7375,
+      "events_per_second": 1858.607859152373
+    },
+    {
+      "batch_events": 64,
+      "byte_ceiling": 1048576,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 124.4435,
+      "events_per_second": 2057.158469506242
+    },
+    {
+      "batch_events": 64,
+      "byte_ceiling": 4194304,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 146.816583,
+      "events_per_second": 1743.6722389867907
+    },
+    {
+      "batch_events": 128,
+      "byte_ceiling": 262144,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 104.499458,
+      "events_per_second": 2449.7734715523598
+    },
+    {
+      "batch_events": 128,
+      "byte_ceiling": 1048576,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 119.082041,
+      "events_per_second": 2149.7784036133544
+    },
+    {
+      "batch_events": 128,
+      "byte_ceiling": 4194304,
+      "workload": "small",
+      "events": 256,
+      "elapsed_ms": 106.311125,
+      "events_per_second": 2408.0264412590873
+    },
+    {
+      "batch_events": 1,
+      "byte_ceiling": 262144,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 2619.954542,
+      "events_per_second": 97.71161899800627
+    },
+    {
+      "batch_events": 1,
+      "byte_ceiling": 1048576,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 2567.64775,
+      "events_per_second": 99.70214956471345
+    },
+    {
+      "batch_events": 1,
+      "byte_ceiling": 4194304,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 2750.454666,
+      "events_per_second": 93.07552062739579
+    },
+    {
+      "batch_events": 8,
+      "byte_ceiling": 262144,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 507.49912500000005,
+      "events_per_second": 504.43436725137207
+    },
+    {
+      "batch_events": 8,
+      "byte_ceiling": 1048576,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 517.399584,
+      "events_per_second": 494.78199812391034
+    },
+    {
+      "batch_events": 8,
+      "byte_ceiling": 4194304,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 466.818583,
+      "events_per_second": 548.39290748629
+    },
+    {
+      "batch_events": 16,
+      "byte_ceiling": 262144,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 301.89695900000004,
+      "events_per_second": 847.9714431307007
+    },
+    {
+      "batch_events": 16,
+      "byte_ceiling": 1048576,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 282.865459,
+      "events_per_second": 905.0238968908537
+    },
+    {
+      "batch_events": 16,
+      "byte_ceiling": 4194304,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 293.288042,
+      "events_per_second": 872.8620446107379
+    },
+    {
+      "batch_events": 32,
+      "byte_ceiling": 262144,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 181.01708399999998,
+      "events_per_second": 1414.2311562150676
+    },
+    {
+      "batch_events": 32,
+      "byte_ceiling": 1048576,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 174.93575,
+      "events_per_second": 1463.394417664771
+    },
+    {
+      "batch_events": 32,
+      "byte_ceiling": 4194304,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 188.819125,
+      "events_per_second": 1355.794864529745
+    },
+    {
+      "batch_events": 64,
+      "byte_ceiling": 262144,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 141.49375,
+      "events_per_second": 1809.267193780644
+    },
+    {
+      "batch_events": 64,
+      "byte_ceiling": 1048576,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 130.45854200000002,
+      "events_per_second": 1962.309221576307
+    },
+    {
+      "batch_events": 64,
+      "byte_ceiling": 4194304,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 131.46141599999999,
+      "events_per_second": 1947.3394383641814
+    },
+    {
+      "batch_events": 128,
+      "byte_ceiling": 262144,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 122.267083,
+      "events_per_second": 2093.7769489438133
+    },
+    {
+      "batch_events": 128,
+      "byte_ceiling": 1048576,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 114.189291,
+      "events_per_second": 2241.891492259112
+    },
+    {
+      "batch_events": 128,
+      "byte_ceiling": 4194304,
+      "workload": "representative",
+      "events": 256,
+      "elapsed_ms": 115.004959,
+      "events_per_second": 2225.9909679199136
+    }
+  ]
+}
