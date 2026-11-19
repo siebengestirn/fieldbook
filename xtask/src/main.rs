@@ -115,6 +115,12 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             evidence::checks(&mut report, root)?;
             Ok(report)
         }
+        "perf" => {
+            let label = args.get(1).map(String::as_str).unwrap_or("local");
+            let line = format!("python3 scripts/measure_compile.py --label {label}");
+            run(&mut report, root, &[Cmd::new(&line)])?;
+            Ok(report)
+        }
         "fixtures" => {
             evidence::verify(&mut report, root)?;
             Ok(report)
@@ -150,6 +156,7 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
                     Cmd::new("cargo test --workspace --all-targets --locked"),
                     Cmd::new("cargo test --workspace --doc --locked"),
                     Cmd::new("cargo build --release --locked"),
+                    Cmd::new("python3 scripts/check_sbe_generated.py"),
                     Cmd::new("cargo doc --no-deps --workspace --locked").with_env(
                         "RUSTDOCFLAGS",
                         "-D warnings -D rustdoc::broken_intra_doc_links",

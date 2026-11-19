@@ -1,0 +1,15 @@
+[package]
+name = "sbe-gen"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "On-demand generator for the checked-in SBE codec"
+
+[workspace]
+
+[dependencies]
+ergo-sbe = "=0.1.16"
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.9"
