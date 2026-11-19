@@ -20,7 +20,7 @@ fi
 commit="$(git rev-parse HEAD)"
 tree="$(git rev-parse 'HEAD^{tree}')"
 short="$(git rev-parse --short HEAD)"
-output="${1:-/Users/tourist/Documents/fieldbook-${short}.zip}"
+output="${1:-fieldbook-${short}.zip}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 

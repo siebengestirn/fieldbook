@@ -85,7 +85,7 @@ fn cleanup(client: &mut Client, target_id: &str) {
     }
 }
 
-fn summarize(path: &'static str, samples: &mut Vec<f64>) -> PathSummary {
+fn summarize(path: &'static str, samples: &mut [f64]) -> PathSummary {
     samples.sort_by(f64::total_cmp);
     PathSummary {
         path,

@@ -1013,10 +1013,15 @@ impl TargetConnector for PgTarget<'_> {
             self.receipts.push(receipt.clone());
             return vec![receipt];
         }
-        let terminal = batch
-            .members
-            .last()
-            .expect("validated batch has at least one member");
+        let Some(terminal) = batch.members.last() else {
+            let receipt = DeliveryReceipt::Uncertain {
+                idempotency_key: batch_key,
+                target_id: self.target_id.clone(),
+                reason: "validated batch has no terminal member".to_owned(),
+            };
+            self.receipts.push(receipt.clone());
+            return vec![receipt];
+        };
         let terminal_checksum = checkpoint_checksum(
             &self.target_id,
             &batch.source_id,
@@ -1118,19 +1123,17 @@ fn batch_validation_error(target: &PgTarget<'_>, batch: &DeliveryBatch) -> Optio
         if position.sequence > i64::MAX as u64 || position.offset > i64::MAX as u64 {
             return Some("checkpoint position exceeds PostgreSQL BIGINT range".to_owned());
         }
-        if let Some(prior) = previous {
-            if position.sequence <= prior.source_position.sequence
-                || position.offset <= prior.source_position.offset
-            {
-                return Some("batch member positions are not strictly ordered".to_owned());
-            }
+        if let Some(prior) = previous
+            && (position.sequence <= prior.source_position.sequence
+                || position.offset <= prior.source_position.offset)
+        {
+            return Some("batch member positions are not strictly ordered".to_owned());
         }
         previous = Some(member);
     }
-    let terminal = batch
-        .members
-        .last()
-        .expect("validated batch has at least one member");
+    let Some(terminal) = batch.members.last() else {
+        return Some("PostgreSQL target requires a non-empty batch".to_owned());
+    };
     let advances = batch.members.iter().all(|member| {
         member.source_position.sequence > target.checkpoint.sequence
             && member.source_position.offset > target.checkpoint.offset
@@ -1377,6 +1380,15 @@ pub fn build_source_commit_transcript(
 /// Statement order is deterministic: `BEGIN`, one event insert per member in
 /// source order, one disposition per member in the same order, one checkpoint
 /// upsert to the final member, then a terminal marker chosen by the caller.
+///
+/// # Panics
+///
+/// Panics if `batch.members` is empty. Callers validate the batch before
+/// constructing its transcript.
+#[expect(
+    clippy::expect_used,
+    reason = "batch validation guarantees at least one member before transcript construction"
+)]
 #[must_use]
 pub fn build_batch_commit_transcript(
     batch: &DeliveryBatch,

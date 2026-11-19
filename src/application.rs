@@ -565,12 +565,11 @@ impl DeliveryBatch {
             if member.event.source_id.as_str() != source_id {
                 return Err("batch event belongs to a different source".to_owned());
             }
-            if let Some(prior) = previous {
-                if member.source_position.sequence <= prior.sequence
-                    || member.source_position.offset <= prior.offset
-                {
-                    return Err("batch member positions are not strictly ordered".to_owned());
-                }
+            if let Some(prior) = previous
+                && (member.source_position.sequence <= prior.sequence
+                    || member.source_position.offset <= prior.offset)
+            {
+                return Err("batch member positions are not strictly ordered".to_owned());
             }
             previous = Some(&member.source_position);
         }

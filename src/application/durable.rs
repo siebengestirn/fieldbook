@@ -747,10 +747,10 @@ fn flush_batch<T: crate::application::TargetConnector>(
         return false;
     }
 
-    let terminal = batch
-        .members
-        .last()
-        .expect("validated batch has at least one member");
+    let Some(terminal) = batch.members.last() else {
+        report.uncertain += batch.members.len() as u64;
+        return false;
+    };
     let terminal_sequence = terminal.source_position.sequence;
     let terminal_offset = terminal.source_position.offset;
     let committed_members: Vec<_> = committed
@@ -877,8 +877,7 @@ where
                 if !pending.is_empty()
                     && (pending.len() >= limits.max_events
                         || pending_bytes.saturating_add(bytes) > limits.max_bytes)
-                {
-                    if !flush_batch(
+                    && !flush_batch(
                         &mut pending,
                         &mut pending_bytes,
                         &mut report,
@@ -886,9 +885,9 @@ where
                         target,
                         store,
                         limits.output_contract_version,
-                    ) {
-                        break;
-                    }
+                    )
+                {
+                    break;
                 }
                 if bytes > limits.max_bytes {
                     if !quarantine_observation(
