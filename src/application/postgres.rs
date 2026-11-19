@@ -23,8 +23,8 @@ use thiserror::Error;
 
 use crate::{
     application::{
-        CanonicalBusinessEvent, DeliveryObligation, DeliveryReceipt, DeliveryRequest,
-        DeliveryState, ReceiptCategory, TargetConnector,
+        BatchMember, CanonicalBusinessEvent, DeliveryBatch, DeliveryObligation, DeliveryReceipt,
+        DeliveryRequest, DeliveryState, ReceiptCategory, TargetConnector,
     },
     canonical::CanonicalEnvelope,
 };
@@ -132,7 +132,9 @@ pub const MIGRATION_SQL: &str = concat!(
     "value BIGINT NOT NULL, ",
     "observed_at BIGINT NOT NULL, ",
     "raw_observation TEXT NOT NULL, ",
-    "schema_version BIGINT NOT NULL",
+    "schema_version BIGINT NOT NULL, ",
+    "source_sequence BIGINT NOT NULL DEFAULT 0, ",
+    "source_offset BIGINT NOT NULL DEFAULT 0",
     "); ",
     "CREATE TABLE IF NOT EXISTS delivery_dispositions (",
     "idempotency_key TEXT PRIMARY KEY, ",
@@ -155,6 +157,10 @@ pub const MIGRATION_SQL: &str = concat!(
     "); ",
     "ALTER TABLE canonical_business_events ADD COLUMN IF NOT EXISTS ",
     "source_id TEXT NOT NULL DEFAULT ''; ",
+    "ALTER TABLE canonical_business_events ADD COLUMN IF NOT EXISTS ",
+    "source_sequence BIGINT NOT NULL DEFAULT 0; ",
+    "ALTER TABLE canonical_business_events ADD COLUMN IF NOT EXISTS ",
+    "source_offset BIGINT NOT NULL DEFAULT 0; ",
     "ALTER TABLE delivery_dispositions ADD COLUMN IF NOT EXISTS ",
     "source_id TEXT NOT NULL DEFAULT ''; ",
     "ALTER TABLE target_checkpoints ADD COLUMN IF NOT EXISTS ",
@@ -489,6 +495,8 @@ impl PgExecutor<'_> {
             SqlValue::Int(observed_at),
             SqlValue::Text(raw_observation),
             SqlValue::Int(schema_version),
+            SqlValue::Int(source_sequence),
+            SqlValue::Int(source_offset),
         ] = statement.params.as_slice()
         else {
             return Err(ExecutorError::Failed(
@@ -501,8 +509,8 @@ impl PgExecutor<'_> {
             .query_opt(
                 concat!(
                     "SELECT idempotency_key, event_id, target_id, source_id, entity_id, kind, ",
-                    "value, observed_at, raw_observation, schema_version ",
-                    "FROM canonical_business_events WHERE idempotency_key = $1"
+                    "value, observed_at, raw_observation, schema_version, source_sequence, ",
+                    "source_offset FROM canonical_business_events WHERE idempotency_key = $1"
                 ),
                 &query_params,
             )
@@ -519,7 +527,9 @@ impl PgExecutor<'_> {
             && row.get::<_, i64>(6) == *value
             && row.get::<_, i64>(7) == *observed_at
             && row.get::<_, String>(8) == *raw_observation
-            && row.get::<_, i64>(9) == *schema_version)
+            && row.get::<_, i64>(9) == *schema_version
+            && row.get::<_, i64>(10) == *source_sequence
+            && row.get::<_, i64>(11) == *source_offset)
     }
 }
 
@@ -991,6 +1001,158 @@ impl TargetConnector for PgTarget<'_> {
         self.receipts.push(receipt.clone());
         receipt
     }
+
+    fn deliver_batch(&mut self, batch: &DeliveryBatch) -> Vec<DeliveryReceipt> {
+        let batch_key = batch.idempotency_key.clone();
+        if let Some(reason) = batch_validation_error(self, batch) {
+            let receipt = DeliveryReceipt::Rejected {
+                idempotency_key: batch_key,
+                target_id: self.target_id.clone(),
+                reason,
+            };
+            self.receipts.push(receipt.clone());
+            return vec![receipt];
+        }
+        let Some(terminal) = batch.members.last() else {
+            let receipt = DeliveryReceipt::Uncertain {
+                idempotency_key: batch_key,
+                target_id: self.target_id.clone(),
+                reason: "validated batch has no terminal member".to_owned(),
+            };
+            self.receipts.push(receipt.clone());
+            return vec![receipt];
+        };
+        let terminal_checksum = checkpoint_checksum(
+            &self.target_id,
+            &batch.source_id,
+            OUTPUT_CONTRACT_VERSION,
+            terminal.source_position.sequence,
+            terminal.source_position.offset,
+            &batch_key,
+        );
+        let mut transcript = build_batch_commit_transcript(batch, &terminal_checksum);
+        finalize_transcript(
+            &mut transcript,
+            &DeliveryReceipt::DurableCommitted {
+                idempotency_key: batch_key.clone(),
+                target_id: self.target_id.clone(),
+                duplicate: false,
+            },
+        );
+        let mut executor = PgExecutor::new(self.client);
+        if let Err(error) = execute_transcript(&mut executor, &transcript) {
+            let receipt = DeliveryReceipt::Uncertain {
+                idempotency_key: batch_key,
+                target_id: self.target_id.clone(),
+                reason: format!("SQL executor failed: {error}"),
+            };
+            self.receipts.push(receipt.clone());
+            return vec![receipt];
+        }
+
+        let receipts: Vec<DeliveryReceipt> = batch
+            .members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                let duplicate = executor.affected().get(1 + index).copied() == Some(0);
+                if self.uncertain_once.remove(member.event.event_id.as_str()) {
+                    DeliveryReceipt::Uncertain {
+                        idempotency_key: batch_key.clone(),
+                        target_id: self.target_id.clone(),
+                        reason: "acknowledgement lost after commit".to_owned(),
+                    }
+                } else {
+                    DeliveryReceipt::DurableCommitted {
+                        idempotency_key: batch_key.clone(),
+                        target_id: self.target_id.clone(),
+                        duplicate,
+                    }
+                }
+            })
+            .collect();
+        if receipts
+            .iter()
+            .all(|receipt| receipt.category() == ReceiptCategory::DurableCommitted)
+        {
+            self.checkpoint = PgCheckpoint {
+                sequence: terminal.source_position.sequence,
+                offset: terminal.source_position.offset,
+                checksum: terminal_checksum,
+                last_idempotency_key: Some(batch_key.clone()),
+                source_id: self.source_id.clone(),
+            };
+        }
+        self.receipts.extend(receipts.iter().cloned());
+        receipts
+    }
+}
+
+fn batch_validation_error(target: &PgTarget<'_>, batch: &DeliveryBatch) -> Option<String> {
+    if batch.members.is_empty() {
+        return Some("PostgreSQL target requires a non-empty batch".to_owned());
+    }
+    if batch.source_id != target.source_id {
+        return Some("batch source does not match target source".to_owned());
+    }
+    if batch.target_id != target.target_id {
+        return Some("batch target does not match target connector".to_owned());
+    }
+    if batch.checkpoint_checksum_mismatch(target) {
+        return Some(
+            "checkpoint checksum does not match target, source, position and last event id"
+                .to_owned(),
+        );
+    }
+    let mut previous: Option<&BatchMember> = None;
+    for member in &batch.members {
+        let position = &member.source_position;
+        if position.source_id != target.source_id {
+            return Some("batch member belongs to a different source".to_owned());
+        }
+        if let Some(reason) = source_binding_error(
+            &target.source_id,
+            &target.checkpoint.source_id,
+            member.event.source_id.as_str(),
+        ) {
+            return Some(reason);
+        }
+        if let Some(reason) = event_validation_error(&member.event) {
+            return Some(reason);
+        }
+        if position.sequence > i64::MAX as u64 || position.offset > i64::MAX as u64 {
+            return Some("checkpoint position exceeds PostgreSQL BIGINT range".to_owned());
+        }
+        if let Some(prior) = previous
+            && (position.sequence <= prior.source_position.sequence
+                || position.offset <= prior.source_position.offset)
+        {
+            return Some("batch member positions are not strictly ordered".to_owned());
+        }
+        previous = Some(member);
+    }
+    let Some(terminal) = batch.members.last() else {
+        return Some("PostgreSQL target requires a non-empty batch".to_owned());
+    };
+    let advances = batch.members.iter().all(|member| {
+        member.source_position.sequence > target.checkpoint.sequence
+            && member.source_position.offset > target.checkpoint.offset
+    });
+    let exact_retry = terminal.source_position.sequence == target.checkpoint.sequence
+        && terminal.source_position.offset == target.checkpoint.offset
+        && target.checkpoint.last_idempotency_key.as_deref()
+            == Some(batch.idempotency_key.as_str());
+    if advances || exact_retry {
+        None
+    } else {
+        Some("checkpoint position must advance, except for an exact same-key retry".to_owned())
+    }
+}
+
+impl DeliveryBatch {
+    fn checkpoint_checksum_mismatch(&self, target: &PgTarget<'_>) -> bool {
+        target.checkpoint.checksum != target.checkpoint.expected_checksum(&target.target_id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -999,7 +1161,7 @@ impl TargetConnector for PgTarget<'_> {
 
 /// Version of the output row contract. It is part of the idempotency key so a
 /// changed projection cannot be mistaken for a previously committed delivery.
-pub const OUTPUT_CONTRACT_VERSION: u32 = 1;
+pub const OUTPUT_CONTRACT_VERSION: u32 = crate::application::DEFAULT_OUTPUT_CONTRACT_VERSION;
 
 /// Target-specific idempotency key. The same event delivered to two targets,
 /// or under two output contract versions, is a different logical delivery.
@@ -1050,8 +1212,8 @@ impl IdempotencyKey {
 
 pub const INSERT_EVENT_WITH_KEY_SQL: &str = concat!(
     "INSERT INTO canonical_business_events ",
-    "(idempotency_key, event_id, target_id, source_id, entity_id, kind, value, observed_at, raw_observation, schema_version) ",
-    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ",
+    "(idempotency_key, event_id, target_id, source_id, entity_id, kind, value, observed_at, raw_observation, schema_version, source_sequence, source_offset) ",
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ",
     "ON CONFLICT (idempotency_key) DO NOTHING",
 );
 
@@ -1178,6 +1340,8 @@ pub fn build_source_commit_transcript(
                 SqlValue::Int(event.payload.observed_at),
                 SqlValue::Text(event.raw_observation.clone().unwrap_or_default()),
                 SqlValue::Int(i64::from(event.schema_version)),
+                SqlValue::Int(i64::try_from(last_committed_sequence).unwrap_or(i64::MAX)),
+                SqlValue::Int(i64::try_from(last_committed_offset).unwrap_or(i64::MAX)),
             ],
         },
         ParameterizedStatement {
@@ -1207,6 +1371,103 @@ pub fn build_source_commit_transcript(
     ];
     CommitTranscript {
         idempotency_key: key,
+        statements,
+    }
+}
+
+/// Build one transaction that commits every member of a validated batch.
+///
+/// Statement order is deterministic: `BEGIN`, one event insert per member in
+/// source order, one disposition per member in the same order, one checkpoint
+/// upsert to the final member, then a terminal marker chosen by the caller.
+///
+/// # Panics
+///
+/// Panics if `batch.members` is empty. Callers validate the batch before
+/// constructing its transcript.
+#[expect(
+    clippy::expect_used,
+    reason = "batch validation guarantees at least one member before transcript construction"
+)]
+#[must_use]
+pub fn build_batch_commit_transcript(
+    batch: &DeliveryBatch,
+    terminal_checksum: &str,
+) -> CommitTranscript {
+    let mut statements = vec![ParameterizedStatement {
+        sql: BEGIN_SQL.to_owned(),
+        params: Vec::new(),
+    }];
+    for member in &batch.members {
+        let key = IdempotencyKey::with_source(
+            member.event.event_id.as_str(),
+            &batch.target_id,
+            &member.source_position.source_id,
+            batch.output_contract_version,
+        )
+        .as_text();
+        statements.push(ParameterizedStatement {
+            sql: INSERT_EVENT_WITH_KEY_SQL.to_owned(),
+            params: vec![
+                SqlValue::Text(key),
+                SqlValue::Text(member.event.event_id.as_str().to_owned()),
+                SqlValue::Text(batch.target_id.clone()),
+                SqlValue::Text(member.source_position.source_id.clone()),
+                SqlValue::Text(member.event.payload.entity_id.clone()),
+                SqlValue::Text(member.event.payload.kind.clone()),
+                SqlValue::Int(member.event.payload.value),
+                SqlValue::Int(member.event.payload.observed_at),
+                SqlValue::Text(member.event.raw_observation.clone().unwrap_or_default()),
+                SqlValue::Int(i64::from(member.event.schema_version)),
+                SqlValue::Int(i64::try_from(member.source_position.sequence).unwrap_or(i64::MAX)),
+                SqlValue::Int(i64::try_from(member.source_position.offset).unwrap_or(i64::MAX)),
+            ],
+        });
+    }
+    for member in &batch.members {
+        let key = IdempotencyKey::with_source(
+            member.event.event_id.as_str(),
+            &batch.target_id,
+            &member.source_position.source_id,
+            batch.output_contract_version,
+        )
+        .as_text();
+        statements.push(ParameterizedStatement {
+            sql: INSERT_DISPOSITION_SQL.to_owned(),
+            params: vec![
+                SqlValue::Text(key),
+                SqlValue::Text(member.event.event_id.as_str().to_owned()),
+                SqlValue::Text(batch.target_id.clone()),
+                SqlValue::Text(member.source_position.source_id.clone()),
+                SqlValue::Text("durable_committed".to_owned()),
+                SqlValue::Text(String::new()),
+                SqlValue::Text(member.event.raw_observation.clone().unwrap_or_default()),
+            ],
+        });
+    }
+    let terminal = batch
+        .members
+        .last()
+        .expect("validated batch has at least one member");
+    statements.push(ParameterizedStatement {
+        sql: UPSERT_CHECKPOINT_SQL.to_owned(),
+        params: vec![
+            SqlValue::Text(batch.target_id.clone()),
+            SqlValue::Text(batch.source_id.clone()),
+            SqlValue::Int(i64::from(batch.output_contract_version)),
+            SqlValue::Int(i64::try_from(terminal.source_position.sequence).unwrap_or(i64::MAX)),
+            SqlValue::Int(i64::try_from(terminal.source_position.offset).unwrap_or(i64::MAX)),
+            SqlValue::Text(terminal_checksum.to_owned()),
+            SqlValue::Text(batch.idempotency_key.clone()),
+        ],
+    });
+    CommitTranscript {
+        idempotency_key: IdempotencyKey::with_source(
+            batch.members[0].event.event_id.as_str(),
+            &batch.target_id,
+            &batch.source_id,
+            batch.output_contract_version,
+        ),
         statements,
     }
 }

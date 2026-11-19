@@ -33,8 +33,10 @@ same source. `PgTarget::with_source` is the required constructor for modern
 non-empty source identities; `PgTarget::new` and `with_checkpoint` are limited
 to the explicit empty-source legacy namespace. Empty source is not a wildcard:
 a modern envelope cannot be written while erasing its provenance. The target
-also rejects multi-event delivery requests rather than silently truncating
-them.
+supports bounded, ordered multi-event batches in one transaction; it rejects
+empty, cross-source or unordered batches instead of silently truncating them.
+The bounded runner flushes a pending batch before quarantining a malformed
+record and commits one checksummed local record per batch.
 
 ## Independent network source
 

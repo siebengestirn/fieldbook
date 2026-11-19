@@ -503,6 +503,93 @@ pub struct DeliveryRequest {
     pub source_position: Option<SourcePosition>,
 }
 
+/// Version of the generic target output contract. Targets with their own
+/// projection contract must use the same version to be replay-compatible.
+pub const DEFAULT_OUTPUT_CONTRACT_VERSION: u32 = 1;
+
+/// Hard upper bounds for one ordered delivery batch.
+pub const MAX_BATCH_EVENTS: usize = 128;
+pub const MAX_BATCH_BYTES: usize = 4 * 1024 * 1024;
+
+/// One event in an ordered delivery batch, carrying its own source position.
+///
+/// A batch never relies on a single final offset to describe its members.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchMember {
+    pub event: CanonicalEnvelope<CanonicalBusinessEvent>,
+    pub source_position: SourcePosition,
+}
+
+/// An ordered, source-scoped batch of canonical events.
+///
+/// Every member must belong to the same source and target contract and the
+/// member positions must be strictly ordered. The idempotency key is derived
+/// from the first member so a retry of the same batch is recognisable even
+/// when the in-memory grouping differs after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryBatch {
+    pub idempotency_key: String,
+    pub source_id: String,
+    pub target_id: String,
+    pub output_contract_version: u32,
+    pub members: Vec<BatchMember>,
+}
+
+impl DeliveryBatch {
+    /// Build a validated batch. Returns a reason string for an invalid batch
+    /// instead of panicking, so the runner can quarantine it deterministically.
+    pub fn new(
+        source_id: &str,
+        target_id: &str,
+        output_contract_version: u32,
+        members: Vec<BatchMember>,
+    ) -> Result<Self, String> {
+        if members.is_empty() {
+            return Err("delivery batch requires at least one member".to_owned());
+        }
+        if members.len() > MAX_BATCH_EVENTS {
+            return Err("delivery batch exceeds the event limit".to_owned());
+        }
+        let encoded: usize = members
+            .iter()
+            .map(|member| member.event.raw_observation.as_deref().map_or(0, str::len))
+            .sum();
+        if encoded > MAX_BATCH_BYTES {
+            return Err("delivery batch exceeds the byte limit".to_owned());
+        }
+        let mut previous: Option<&SourcePosition> = None;
+        for member in &members {
+            if member.source_position.source_id != source_id {
+                return Err("batch member belongs to a different source".to_owned());
+            }
+            if member.event.source_id.as_str() != source_id {
+                return Err("batch event belongs to a different source".to_owned());
+            }
+            if let Some(prior) = previous
+                && (member.source_position.sequence <= prior.sequence
+                    || member.source_position.offset <= prior.offset)
+            {
+                return Err("batch member positions are not strictly ordered".to_owned());
+            }
+            previous = Some(&member.source_position);
+        }
+        let first = &members[0];
+        Ok(Self {
+            idempotency_key: format!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                first.event.event_id.as_str(),
+                target_id,
+                source_id,
+                output_contract_version
+            ),
+            source_id: source_id.to_owned(),
+            target_id: target_id.to_owned(),
+            output_contract_version,
+            members,
+        })
+    }
+}
+
 /// State recorded on a [`DeliveryObligation`]. `Duplicate` is an accounting
 /// projection of a committed receipt whose idempotency key was already known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -670,6 +757,23 @@ pub trait TargetConnector {
     /// to call again with the same idempotency key.
     fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt;
 
+    /// Deliver an ordered batch. The default degrades to one single-event
+    /// delivery per member, so connectors that cannot commit atomically stay
+    /// correct. Real durable targets override this with one transaction.
+    fn deliver_batch(&mut self, batch: &DeliveryBatch) -> Vec<DeliveryReceipt> {
+        batch
+            .members
+            .iter()
+            .map(|member| {
+                self.deliver(&DeliveryRequest {
+                    idempotency_key: member.event.event_id.as_str().to_owned(),
+                    events: vec![member.event.clone()],
+                    source_position: Some(member.source_position.clone()),
+                })
+            })
+            .collect()
+    }
+
     /// Whether calling `deliver` is guaranteed to have no external side effect.
     /// Only side-effect-free connectors (for example the replay connector)
     /// override this; the runner uses it to avoid calling a real target in a
@@ -810,6 +914,37 @@ impl CommitIntent {
             quarantines: Vec::new(),
             next_sequence: sequence,
             next_offset: offset,
+        }
+    }
+
+    /// One checksummed local record for a whole successfully delivered batch.
+    pub fn batch(
+        target_id: &str,
+        members: &[crate::application::BatchMember],
+        terminal_sequence: u64,
+        terminal_offset: u64,
+    ) -> Self {
+        let committed_event_ids = members
+            .iter()
+            .map(|member| member.event.event_id.as_str().to_owned())
+            .collect();
+        let dispositions = members
+            .iter()
+            .map(|member| DispositionRecord {
+                sequence: member.source_position.sequence,
+                event_id: member.event.event_id.as_str().to_owned(),
+                target_id: target_id.to_owned(),
+                state: DeliveryState::DurableCommitted,
+                reason: None,
+            })
+            .collect();
+        Self {
+            target_id: target_id.to_owned(),
+            committed_event_ids,
+            dispositions,
+            quarantines: Vec::new(),
+            next_sequence: terminal_sequence,
+            next_offset: terminal_offset,
         }
     }
 

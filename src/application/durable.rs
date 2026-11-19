@@ -376,6 +376,44 @@ pub struct StreamingResult {
     pub checkpoint: DurableCheckpoint,
 }
 
+/// Hard pull-based bounds for one delivery batch. Batching is bounded by the
+/// consumer, never by an unbounded producer queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamingLimits {
+    pub max_events: usize,
+    pub max_bytes: usize,
+    pub output_contract_version: u32,
+}
+
+impl StreamingLimits {
+    #[must_use]
+    pub const fn new(max_events: usize, max_bytes: usize, output_contract_version: u32) -> Self {
+        Self {
+            max_events,
+            max_bytes,
+            output_contract_version,
+        }
+    }
+
+    #[must_use]
+    pub const fn single() -> Self {
+        Self::new(
+            1,
+            usize::MAX,
+            crate::application::DEFAULT_OUTPUT_CONTRACT_VERSION,
+        )
+    }
+
+    #[must_use]
+    pub const fn fieldbook_default() -> Self {
+        Self::new(
+            32,
+            1024 * 1024,
+            crate::application::DEFAULT_OUTPUT_CONTRACT_VERSION,
+        )
+    }
+}
+
 /// Run a bounded streaming source into a target with a durable local store.
 ///
 /// The anchor must already have been verified against the source identity and
@@ -578,6 +616,341 @@ where
                     frontier = frontier.advanced(sequence, source.next_offset());
                 } else {
                     report.uncertain += 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    StreamingResult {
+        report,
+        checkpoint: frontier,
+    }
+}
+
+/// Quarantine one observation durably and advance the frontier only after the
+/// local append succeeds. Returns `false` when the run must halt.
+fn quarantine_observation(
+    observation: &crate::application::RawObservation,
+    reason: String,
+    offset: u64,
+    target_id: &str,
+    report: &mut ImportReport,
+    frontier: &mut DurableCheckpoint,
+    store: &mut CommitStore,
+) -> bool {
+    let record = QuarantineRecord {
+        sequence: observation.sequence,
+        line_number: observation.line_number,
+        byte_offset: offset,
+        record_id: observation.record_id.clone(),
+        target_id: target_id.to_owned(),
+        raw_bytes_hex: observation.hex_bytes(),
+        reason,
+    };
+    if CommitSink::commit(store, &CommitIntent::quarantined(target_id, &record)).is_ok() {
+        report.rejected += 1;
+        report.quarantined += 1;
+        let advanced = frontier.clone().advanced(observation.sequence, offset);
+        *frontier = advanced;
+        true
+    } else {
+        report.uncertain += 1;
+        false
+    }
+}
+
+/// Deliver one bounded batch atomically and commit one local record.
+/// Returns `false` when the run must halt before reading more records.
+fn flush_batch<T: crate::application::TargetConnector>(
+    pending: &mut Vec<(
+        crate::application::RawObservation,
+        crate::application::BatchMember,
+    )>,
+    pending_bytes: &mut usize,
+    report: &mut ImportReport,
+    frontier: &mut DurableCheckpoint,
+    target: &mut T,
+    store: &mut CommitStore,
+    version: u32,
+) -> bool {
+    if pending.is_empty() {
+        return true;
+    }
+    let batch_items = std::mem::take(pending);
+    *pending_bytes = 0;
+    let source_id = batch_items[0].1.source_position.source_id.clone();
+    let members: Vec<_> = batch_items
+        .iter()
+        .map(|(_, member)| member.clone())
+        .collect();
+    let Ok(batch) =
+        crate::application::DeliveryBatch::new(&source_id, target.target_id(), version, members)
+    else {
+        report.uncertain += batch_items.len() as u64;
+        return false;
+    };
+    let receipts = target.deliver_batch(&batch);
+    if receipts.len() != batch.members.len() {
+        report.uncertain += batch.members.len() as u64;
+        return false;
+    }
+
+    let mut committed: Vec<usize> = Vec::new();
+    let mut rejected: Vec<(usize, String)> = Vec::new();
+    let mut unresolved = false;
+    for (index, receipt) in receipts.iter().enumerate() {
+        let member = &batch.members[index];
+        let mut obligation = crate::application::DeliveryObligation::new(
+            member.event.event_id.as_str(),
+            target.target_id(),
+        );
+        obligation.apply_receipt(receipt);
+        report.obligations.push(obligation);
+        match receipt {
+            crate::application::DeliveryReceipt::DurableCommitted { duplicate, .. } => {
+                if *duplicate {
+                    report.duplicates += 1;
+                } else {
+                    report.delivered += 1;
+                }
+                report.durable_committed += 1;
+                committed.push(index);
+            }
+            crate::application::DeliveryReceipt::Rejected { reason, .. } => {
+                report.rejected += 1;
+                rejected.push((index, reason.clone()));
+            }
+            crate::application::DeliveryReceipt::Outstanding { .. } => {
+                report.outstanding += 1;
+                unresolved = true;
+            }
+            crate::application::DeliveryReceipt::Uncertain { .. } => {
+                report.uncertain += 1;
+                unresolved = true;
+            }
+            crate::application::DeliveryReceipt::Accepted { .. } => {
+                report.accepted += 1;
+                unresolved = true;
+            }
+            crate::application::DeliveryReceipt::Delivered { .. } => {
+                report.target_delivered += 1;
+                unresolved = true;
+            }
+            crate::application::DeliveryReceipt::Simulated { .. } => {
+                report.simulated += 1;
+                unresolved = true;
+            }
+        }
+    }
+    if unresolved {
+        return false;
+    }
+
+    let Some(terminal) = batch.members.last() else {
+        report.uncertain += batch.members.len() as u64;
+        return false;
+    };
+    let terminal_sequence = terminal.source_position.sequence;
+    let terminal_offset = terminal.source_position.offset;
+    let committed_members: Vec<_> = committed
+        .iter()
+        .map(|index| batch.members[*index].clone())
+        .collect();
+    let mut intent = crate::application::CommitIntent::batch(
+        target.target_id(),
+        &committed_members,
+        terminal_sequence,
+        terminal_offset,
+    );
+    for (index, reason) in rejected {
+        let observation = &batch_items[index].0;
+        intent.quarantines.push(QuarantineRecord {
+            sequence: observation.sequence,
+            line_number: observation.line_number,
+            byte_offset: terminal_offset,
+            record_id: observation.record_id.clone(),
+            target_id: target.target_id().to_owned(),
+            raw_bytes_hex: observation.hex_bytes(),
+            reason,
+        });
+    }
+    let append_rejected = intent.quarantines.len() as u64;
+    if CommitSink::commit(store, &intent).is_ok() {
+        report.quarantined += append_rejected;
+        let advanced = frontier
+            .clone()
+            .advanced(terminal_sequence, terminal_offset);
+        *frontier = advanced;
+        true
+    } else {
+        report.uncertain += batch.members.len() as u64;
+        false
+    }
+}
+
+/// Run a pull-based streaming source with bounded, ordered batch delivery.
+///
+/// Unlike [`run_streaming_pipeline`], this accumulates up to `limits.max_events`
+/// records (and `limits.max_bytes` encoded bytes) into one `DeliveryBatch`,
+/// delivers them in one target transaction and commits one checksummed local
+/// record. It flushes a pending batch before quarantining a malformed record
+/// and halts at the first unresolved transaction or failed local append.
+pub fn run_streaming_pipeline_bounded<R, T, F>(
+    source: &mut FileSource<R>,
+    transform: F,
+    target: &mut T,
+    anchor: &DurableCheckpoint,
+    store: &mut CommitStore,
+    limits: StreamingLimits,
+) -> StreamingResult
+where
+    R: std::io::BufRead,
+    T: crate::application::TargetConnector,
+    F: Fn(
+        &crate::application::RawObservation,
+    ) -> Result<
+        crate::canonical::CanonicalEnvelope<crate::application::CanonicalBusinessEvent>,
+        crate::application::TransformError,
+    >,
+{
+    use crate::application::SourceAdapter;
+
+    let mut report = ImportReport::default();
+    let mut frontier = anchor.clone();
+    let mut pending: Vec<(
+        crate::application::RawObservation,
+        crate::application::BatchMember,
+    )> = Vec::new();
+    let mut pending_bytes = 0usize;
+
+    loop {
+        match source.read_one() {
+            Ok(None) => {
+                flush_batch(
+                    &mut pending,
+                    &mut pending_bytes,
+                    &mut report,
+                    &mut frontier,
+                    target,
+                    store,
+                    limits.output_contract_version,
+                );
+                break;
+            }
+            Ok(Some(observation)) => {
+                report.total_read += 1;
+                if observation.sequence <= frontier.last_committed_sequence {
+                    report.skipped += 1;
+                    continue;
+                }
+                let offset = source.next_offset();
+                let envelope = match transform(&observation) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        if !flush_batch(
+                            &mut pending,
+                            &mut pending_bytes,
+                            &mut report,
+                            &mut frontier,
+                            target,
+                            store,
+                            limits.output_contract_version,
+                        ) {
+                            break;
+                        }
+                        if !quarantine_observation(
+                            &observation,
+                            error.to_string(),
+                            source.last_offset(),
+                            target.target_id(),
+                            &mut report,
+                            &mut frontier,
+                            store,
+                        ) {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                let bytes = observation.raw_bytes.len();
+                if !pending.is_empty()
+                    && (pending.len() >= limits.max_events
+                        || pending_bytes.saturating_add(bytes) > limits.max_bytes)
+                    && !flush_batch(
+                        &mut pending,
+                        &mut pending_bytes,
+                        &mut report,
+                        &mut frontier,
+                        target,
+                        store,
+                        limits.output_contract_version,
+                    )
+                {
+                    break;
+                }
+                if bytes > limits.max_bytes {
+                    if !quarantine_observation(
+                        &observation,
+                        "record exceeds the bounded batch byte limit".to_owned(),
+                        offset,
+                        target.target_id(),
+                        &mut report,
+                        &mut frontier,
+                        store,
+                    ) {
+                        break;
+                    }
+                    continue;
+                }
+                pending.push((
+                    observation.clone(),
+                    crate::application::BatchMember {
+                        event: envelope,
+                        source_position: crate::application::SourcePosition {
+                            source_id: observation.source_id.as_str().to_owned(),
+                            sequence: observation.sequence,
+                            offset,
+                        },
+                    },
+                ));
+                pending_bytes += bytes;
+            }
+            Err(error) => {
+                if !flush_batch(
+                    &mut pending,
+                    &mut pending_bytes,
+                    &mut report,
+                    &mut frontier,
+                    target,
+                    store,
+                    limits.output_contract_version,
+                ) {
+                    break;
+                }
+                report.total_read += 1;
+                if matches!(error, crate::application::SourceError::Io { .. }) {
+                    report.uncertain += 1;
+                    break;
+                }
+                let offset = source.last_offset();
+                let error_observation = crate::application::RawObservation {
+                    sequence: error.sequence(),
+                    line_number: error.line_number(),
+                    source_id: source.identity().source_id().clone(),
+                    record_id: format!("bounded-source-error:{}", error.sequence()),
+                    raw_bytes: error.raw_bytes().to_vec(),
+                    provenance: format!("bounded-source-error:{}", error.line_number()),
+                };
+                if !quarantine_observation(
+                    &error_observation,
+                    error.to_string(),
+                    offset,
+                    target.target_id(),
+                    &mut report,
+                    &mut frontier,
+                    store,
+                ) {
                     break;
                 }
             }

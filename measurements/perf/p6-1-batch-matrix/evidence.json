@@ -1,0 +1,20 @@
+{
+  "classification": "post-batching-batch-size-and-byte-ceiling-matrix",
+  "created_at_utc": "2026-11-19T11:45:22.577732+00:00",
+  "source_commit_at_test": "a6aab083018653795513f6f5fac2d58e4c2412d2",
+  "command": "FIELDBOOK_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' FIELDBOOK_BASELINE_EVENTS=256 cargo test --test postgres_baseline postgres_baseline_batch_matrix -- --ignored --nocapture",
+  "server": "PostgreSQL 18.6 (Homebrew) on aarch64-apple-darwin27.0.0, compiled by Apple clang version 21.0.0 (clang-2100.3.34.2), 64-bit",
+  "scope": "Batch sizes 1/8/16/32/64/128 x byte ceilings 256 KiB/1 MiB/4 MiB x small/representative workloads, one source stream. Concurrent writers were not measured in this stage.",
+  "files": [
+    {
+      "path": "batch-matrix.json",
+      "bytes": 7500,
+      "sha256": "0a7e902c2f50d595801bf5353b1cf0022f872e8d57ab1066fba588f3d5e72d43"
+    },
+    {
+      "path": "output.log",
+      "bytes": 401,
+      "sha256": "477c1cf78b46dd141b1a1aeb26d59decc93cc89fc85dac4dc63be303923e6df0"
+    }
+  ]
+}

@@ -117,10 +117,15 @@ the claimed source in the same transaction. A mapped position can therefore
 be reloaded without losing replay deduplication.
 `PgTarget::with_source` binds an instance to one source identity
 and rejects an envelope whose source does not match.
-`PgTarget` accepts exactly one event per delivery and rejects empty or
-multi-event batches rather than silently dropping records. A failed statement
-triggers `ROLLBACK` and returns an `Uncertain` receipt; a retry with the same
-key is resolved as a duplicate by the database.
+`PgTarget` accepts single-event deliveries and bounded, ordered multi-event
+batches. It rejects empty batches, cross-source members, unordered positions
+and batches that would regress the checkpoint rather than silently dropping
+records. Every batch member carries its own source id, sequence and
+end-exclusive offset; the event table persists those positions so a replay can
+distinguish an exact retry from a changed payload or a changed position. All
+event inserts, dispositions and the single terminal checkpoint update share one
+transaction. A failed statement triggers `ROLLBACK` and returns an `Uncertain`
+receipt; a retry with the same key is resolved as a duplicate by the database.
 
 `tests/postgres_live.rs` is an ignored, opt-in test against an operator-supplied
 server. It exercises database idempotency, transaction behavior, checkpoint

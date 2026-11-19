@@ -65,6 +65,10 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `7edfb92` | PR #88 — bounded loopback socket waits |
 | `a6f9fcb` | PR #89 — reconcile current head and live PostgreSQL evidence |
 | `f86592b` | PR #92 — legacy PostgreSQL source-mapping integrity |
+| `bc46abe` | PR #1 — canonical repository URL under `siebengestirn/fieldbook` |
+| `48a42d7` | PR #2 — canonical repository URL under `siebensterne/fieldbook` |
+| `cab6291` | PR #3 — durable runner supplies source position to real PostgreSQL target |
+| `276e433` | PR #4 — `FIELDBOOK_TEST_PG_URL` replaces the legacy `nirnay` variable name |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -187,6 +191,32 @@ Live certification is retained at
 the exact tested commit, the operator-provisioned PostgreSQL 18.6 server, the
 command, and the SHA-256 of the complete test output.
 
+## Bounded, ordered batch delivery (P6.1)
+
+The generic runner can accumulate up to a bounded number of events and a
+bounded number of encoded bytes before delivering them as one
+`DeliveryBatch`. Each member carries its own source id, sequence and
+end-exclusive offset; the batch is rejected if members belong to another
+source, are unordered, or exceed the hard limits. The runner flushes a pending
+batch before quarantining a malformed record and stops at the first unresolved
+transaction or failed local checkpoint append, so no source position overtakes
+an unaccounted record.
+
+`PgTarget` commits a whole batch in one transaction: one insert per member,
+one disposition per member, and one terminal checkpoint update. The event
+table persists each member's source position, so a retry can be checked
+against the full persisted canonical content and position rather than only a
+final offset. The local `CommitStore` writes one checksummed record per batch,
+which removes the per-event local fsync from the batched path.
+
+Simulator evidence: `tests/p6_bounded_batch.rs` covers event/byte limits,
+oversize quarantine, one local record per batch and batch-validation failures.
+Live evidence: `tests/postgres_batch_live.rs` covers three real-server
+scenarios — bounded batch delivery, replay after a failed local append with a
+different batch size, and exact retry versus a changed payload — with no
+partial rows surviving a conflicting batch. The pre-batching single-event
+baseline is retained at `measurements/perf/p6-1-single-event-baseline/`.
+
 ## Source-scoped durable delivery (PR #90, operator-reported merged)
 
 The PostgreSQL target namespaces checkpoints by
@@ -249,7 +279,7 @@ capability.
 | JSONL-to-target | Generic source/target runner with deterministic simulator and source-scoped real `PgTarget` (`postgres::Client`) | Opt-in live source-scoped PostgreSQL PASS with command, output and hashes retained in `measurements/live/2026-11-18-postgres-source-scoped/` | No production certification |
 | Local reference commit store | Implemented (`src/application/durable.rs`): append-only checksummed fsync records, reopen verification, fault injection | Single-writer local filesystem only; no replication or multi-host durability | No |
 | Streaming file source | Implemented (`src/application/file_source.rs`): bounded `BufRead`, exact bytes/offsets, fingerprint-bound resume | File ingestion plus a loopback TCP source; network-source tests use a local server and do not certify a production network adapter | No |
-| PostgreSQL execution | Synchronous `postgres` driver, `PgExecutor`, `PgTarget`, explicit migration and database idempotency/checkpoint tables; one event per delivery | Opt-in live server test PASS with retained transcript; per-source monotonic checkpoints; no connection pool, failover soak or replication | No |
+| PostgreSQL execution | Synchronous `postgres` driver, `PgExecutor`, `PgTarget`, explicit migration and database idempotency/checkpoint tables; bounded ordered single- and multi-event batches in one transaction | Opt-in live server tests PASS for batches, exact retry, changed payload and replay; per-source monotonic checkpoints; no connection pool, failover soak or replication | No |
 | Hyperliquid | H0-H3 implemented; H1/H2 wire codecs fixed from real frames | Read-only mainnet captures in `captures/`, including a reconnect drill; no orders | No |
 | Additional H0 venues | Reference data only | No live product integration | No |
 
