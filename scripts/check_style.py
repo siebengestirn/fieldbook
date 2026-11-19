@@ -39,6 +39,7 @@ SKIP_DIRS = frozenset(
         "target",
         "build",
         "captures",
+        "references",
         ".pytest_cache",
         "__pycache__",
     }
