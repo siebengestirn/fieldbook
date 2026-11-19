@@ -24,7 +24,9 @@ use std::{
 };
 
 use engineering_challenge::application::{
-    durable::{CommitStore, run_streaming_pipeline},
+    durable::{
+        CommitStore, StreamingLimits, run_streaming_pipeline, run_streaming_pipeline_bounded,
+    },
     file_source::{CheckpointBinding, DurableCheckpoint, FileSource, SourceIdentity},
     postgres::{PgTarget, PostgresSimulator, apply_migrations},
     transform_observation,
@@ -200,6 +202,132 @@ fn postgres_baseline_single_event() {
     )
     .expect("write baseline report");
     println!("single-event baseline written to {output}");
+}
+
+#[derive(Serialize)]
+struct BatchCase {
+    batch_events: usize,
+    byte_ceiling: usize,
+    workload: &'static str,
+    events: usize,
+    elapsed_ms: f64,
+    events_per_second: f64,
+}
+
+#[derive(Serialize)]
+struct BatchReport {
+    source_commit: String,
+    generated_at_unix: u64,
+    server_version: String,
+    cases: Vec<BatchCase>,
+}
+
+#[test]
+#[ignore = "requires an operator-supplied PostgreSQL server; set FIELDBOOK_TEST_PG_URL"]
+fn postgres_baseline_batch_matrix() {
+    let url = env::var("FIELDBOOK_TEST_PG_URL")
+        .expect("set FIELDBOOK_TEST_PG_URL to an operator-supplied PostgreSQL connection string");
+    let output = env::var("FIELDBOOK_BASELINE_BATCH_OUTPUT")
+        .expect("set FIELDBOOK_BASELINE_BATCH_OUTPUT to the JSON report path");
+    let commit = env::var("FIELDBOOK_BASELINE_COMMIT").unwrap_or_default();
+    let events: usize = env::var("FIELDBOOK_BASELINE_EVENTS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(256);
+
+    let config = Config::from_str(&url).expect("valid PostgreSQL URL");
+    let mut client = config.connect(NoTls).expect("connect to live PostgreSQL");
+    apply_migrations(&mut client).expect("migration applies");
+    let server_version: String = client
+        .query_one("select version()", &[])
+        .expect("server version")
+        .get(0);
+    let root = tempfile::tempdir().expect("tempdir");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let mut cases = Vec::new();
+
+    for workload in ["small", "representative"] {
+        let padding = if workload == "small" {
+            ""
+        } else {
+            &"x".repeat(900)
+        };
+        for batch_events in [1, 8, 16, 32, 64, 128] {
+            for byte_ceiling in [262_144, 1_048_576, 4_194_304] {
+                let target_id = format!(
+                    "fieldbook-batch-bench-{unique}-{workload}-{batch_events}-{byte_ceiling}"
+                );
+                cleanup(&mut client, &target_id);
+                let source_name =
+                    format!("bench-{unique}-{workload}-{batch_events}-{byte_ceiling}");
+                let lines: Vec<String> = (0..events)
+                    .map(|index| {
+                        format!(
+                            "{{\"id\":\"bench-{index}\",\"payload\":{{\"entity_id\":\"acct{padding}\",\"kind\":\"credit\",\"value\":{index},\"observed_at\":{index}}},\"received_at\":{index}}}"
+                        )
+                    })
+                    .collect();
+                let bytes = format!("{}\n", lines.join("\n"));
+                let input = root.path().join(format!("{source_name}.jsonl"));
+                fs::write(&input, &bytes).expect("write benchmark input");
+                let identity = SourceIdentity::register(&source_name, bytes.as_bytes());
+                let binding = CheckpointBinding::new(&identity, &target_id);
+                let anchor = DurableCheckpoint::new(&binding);
+                let store_dir = root.path().join(format!("store-{source_name}"));
+                let mut store = CommitStore::open(&store_dir, binding).expect("open store");
+                let mut source = FileSource::open(&input, &source_name).expect("open source");
+                let started = Instant::now();
+                {
+                    let mut target = PgTarget::with_source(
+                        &target_id,
+                        identity.source_id().as_str(),
+                        &mut client,
+                    );
+                    let result = run_streaming_pipeline_bounded(
+                        &mut source,
+                        transform_observation,
+                        &mut target,
+                        &anchor,
+                        &mut store,
+                        StreamingLimits::new(batch_events, byte_ceiling, 1),
+                    );
+                    assert_eq!(
+                        result.report.delivered, events as u64,
+                        "all events delivered"
+                    );
+                }
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                cases.push(BatchCase {
+                    batch_events,
+                    byte_ceiling,
+                    workload,
+                    events,
+                    elapsed_ms: elapsed,
+                    events_per_second: f64::from(events as u32) * 1000.0 / elapsed,
+                });
+                cleanup(&mut client, &target_id);
+            }
+        }
+    }
+
+    let report = BatchReport {
+        source_commit: commit,
+        generated_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_secs(),
+        server_version,
+        cases,
+    };
+    fs::write(
+        &output,
+        serde_json::to_string_pretty(&report).expect("serialize report"),
+    )
+    .expect("write batch benchmark report");
+    println!("batch matrix written to {output}");
 }
 
 #[test]
