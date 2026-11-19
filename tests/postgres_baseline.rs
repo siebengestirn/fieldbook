@@ -29,7 +29,11 @@ use engineering_challenge::application::{
     postgres::{PgTarget, PostgresSimulator, apply_migrations},
     transform_observation,
 };
-use postgres::{Client, Config, NoTls};
+use postgres::{
+    Client, //
+    Config, //
+    NoTls,  //
+};
 use serde::Serialize;
 
 #[derive(Serialize)]
