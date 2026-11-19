@@ -969,6 +969,17 @@ pub trait CommitSink {
     fn commit(&mut self, intent: &CommitIntent) -> Result<(), String>;
 }
 
+/// A durable local store usable by the generic streaming runner.
+///
+/// The runner depends on this abstraction, never on a concrete commit-file or
+/// segmented implementation. State access lets callers verify recovery without
+/// knowing the on-disk format.
+pub trait DurableStore: CommitSink {
+    fn durable_state(&self) -> &crate::application::durable::DurableState;
+    fn durable_next_sequence(&self) -> u64;
+    fn verify_store(&self) -> Result<(), String>;
+}
+
 /// In-memory sink for the original in-memory-only runner and tests. It records
 /// nothing, so a caller that needs durability must supply a real sink.
 #[derive(Debug, Default, Clone, Copy)]

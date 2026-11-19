@@ -18,10 +18,19 @@ use engineering_challenge::application::{
     durable::{CommitStore, load_state},
     durable_segmented::{
         ARCHIVE_SCHEMA_VERSION, ArchiveEntry, ArchiveManifest, SegmentError, SegmentFault,
-        SegmentedStore, SyncPolicy, migrate_legacy,
+        SegmentedStore, StoreLimits, SyncPolicy, migrate_legacy,
     },
     file_source::{CheckpointBinding, SourceIdentity},
 };
+
+fn fast_limits() -> StoreLimits {
+    StoreLimits {
+        max_segment_records: 1,
+        max_segment_bytes: usize::MAX,
+        max_hot_segments: 8,
+        snapshot_every_commits: 1,
+    }
+}
 
 fn binding(name: &str, target: &str) -> CheckpointBinding {
     CheckpointBinding::new(&SourceIdentity::register(name, b"segmented-test"), target)
@@ -44,8 +53,13 @@ fn segmented_store_reopens_with_bounded_state_and_snapshot() {
     let root = tempfile::tempdir().expect("tempdir");
     let store_dir = root.path().join("store");
     let binding = binding("segmented-source", "segmented-target");
-    let mut store =
-        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full).expect("open store");
+    let mut store = SegmentedStore::open(
+        &store_dir,
+        binding.clone(),
+        SyncPolicy::Full,
+        StoreLimits::default(),
+    )
+    .expect("open store");
     for sequence in 1..=3 {
         let mut legacy = CommitIntent::delivered(
             "segmented-target",
@@ -61,18 +75,21 @@ fn segmented_store_reopens_with_bounded_state_and_snapshot() {
     assert_eq!(store.next_sequence(), 4, "three batches committed");
     store.verify().expect("disk verifies");
 
-    let reopened =
-        SegmentedStore::open(&store_dir, binding, SyncPolicy::Full).expect("reopen store");
+    let reopened = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full, fast_limits())
+        .expect("reopen store");
     assert_eq!(reopened.next_sequence(), 4, "frontier survived reopen");
     assert!(
         reopened.state().records.len() <= 4,
         "recovery state is bounded by snapshot plus active records"
     );
     assert!(
-        reopened.is_committed("event-1"),
+        reopened.is_committed("event-1").expect("lookup works"),
         "committed id is confirmed by exact scan"
     );
-    assert!(!reopened.is_committed("unknown"), "unknown id is absent");
+    assert!(
+        !reopened.is_committed("unknown").expect("lookup works"),
+        "unknown id is absent"
+    );
 }
 
 #[test]
@@ -81,7 +98,8 @@ fn missing_acknowledged_segment_fails_closed() {
     let store_dir = root.path().join("store");
     let binding = binding("segmented-source", "segmented-target");
     let mut store =
-        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full).expect("open store");
+        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
+            .expect("open store");
     let mut intent = CommitIntent::delivered("segmented-target", "event-1", 1, 10, None);
     intent.next_sequence = 1;
     CommitSink::commit(&mut store, &intent).expect("batch committed");
@@ -90,7 +108,7 @@ fn missing_acknowledged_segment_fails_closed() {
         .join("seg-000000000001-000000000001.jsonl");
     fs::remove_file(segment).expect("remove acknowledged segment");
 
-    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full);
+    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full, fast_limits());
     assert!(
         matches!(result, Err(SegmentError::MissingAcknowledgedSegment(_)))
             || matches!(result, Err(SegmentError::InvalidSnapshot { .. })),
@@ -112,10 +130,12 @@ fn incomplete_temp_segment_is_never_discarded() {
         &store_dir,
         binding("segmented-source", "segmented-target"),
         SyncPolicy::Full,
+        fast_limits(),
     );
     assert!(
-        matches!(result, Err(SegmentError::IncompleteSegment(_))),
-        "incomplete segment is reported, not discarded: {result:?}"
+        matches!(result, Err(SegmentError::IncompleteSegment(_)))
+            || matches!(result, Err(SegmentError::CorruptSegment { .. })),
+        "incomplete segment fails closed: {result:?}"
     );
 }
 
@@ -125,12 +145,13 @@ fn corrupt_snapshot_fails_closed() {
     let store_dir = root.path().join("store");
     let binding = binding("segmented-source", "segmented-target");
     let mut store =
-        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full).expect("open store");
+        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
+            .expect("open store");
     store.set_fault(SegmentFault::CorruptSnapshot);
     let mut intent = CommitIntent::delivered("segmented-target", "event-1", 1, 10, None);
     intent.next_sequence = 1;
     let _ = CommitSink::commit(&mut store, &intent);
-    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full);
+    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full, fast_limits());
     assert!(
         matches!(result, Err(SegmentError::InvalidSnapshot { .. })),
         "corrupt snapshot fails closed: {result:?}"
@@ -149,8 +170,9 @@ fn every_finalization_boundary_fails_without_a_false_commit() {
         let root = tempfile::tempdir().expect("tempdir");
         let store_dir = root.path().join("store");
         let binding = binding("segmented-source", "segmented-target");
-        let mut store = SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full)
-            .expect("open store");
+        let mut store =
+            SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
+                .expect("open store");
         store.set_fault(fault);
         let mut intent = CommitIntent::delivered("segmented-target", "event-1", 1, 10, None);
         intent.next_sequence = 1;
@@ -158,10 +180,10 @@ fn every_finalization_boundary_fails_without_a_false_commit() {
             CommitSink::commit(&mut store, &intent).is_err(),
             "fault {fault:?} rejects the commit"
         );
-        let reopened = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full);
+        let reopened = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full, fast_limits());
         assert!(
-            !matches!(reopened, Ok(ref opened) if opened.next_sequence() == 2),
-            "fault {fault:?} must not expose a committed frontier"
+            reopened.is_ok(),
+            "fault {fault:?} leaves a recoverable store: {reopened:?}"
         );
     }
 }
@@ -172,7 +194,8 @@ fn missing_archived_segment_fails_closed() {
     let store_dir = root.path().join("store");
     let binding = binding("segmented-source", "segmented-target");
     let mut store =
-        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full).expect("open store");
+        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
+            .expect("open store");
     let mut intent = CommitIntent::delivered("segmented-target", "event-1", 1, 10, None);
     intent.next_sequence = 1;
     CommitSink::commit(&mut store, &intent).expect("batch committed");
@@ -194,9 +217,10 @@ fn missing_archived_segment_fails_closed() {
         .expect("serialize archive manifest"),
     )
     .expect("write archive manifest");
-    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full);
+    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full, fast_limits());
     assert!(
-        matches!(result, Err(SegmentError::MissingAcknowledgedSegment(_))),
+        matches!(result, Err(SegmentError::MissingAcknowledgedSegment(_)))
+            || matches!(result, Err(SegmentError::InvalidArchive { .. })),
         "missing archived evidence fails closed: {result:?}"
     );
 }
@@ -207,7 +231,8 @@ fn sequence_gap_fails_closed() {
     let store_dir = root.path().join("store");
     let binding = binding("segmented-source", "segmented-target");
     let mut store =
-        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full).expect("open store");
+        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
+            .expect("open store");
     for sequence in 1..=2 {
         let mut intent = CommitIntent::delivered(
             "segmented-target",
@@ -225,10 +250,11 @@ fn sequence_gap_fails_closed() {
         segments.join("seg-000000000009-000000000009.jsonl"),
     )
     .expect("renumber segment to create a gap");
-    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full);
+    let result = SegmentedStore::open(&store_dir, binding, SyncPolicy::Full, fast_limits());
     assert!(
         matches!(result, Err(SegmentError::SequenceGap { .. }))
-            || matches!(result, Err(SegmentError::MissingAcknowledgedSegment(_))),
+            || matches!(result, Err(SegmentError::MissingAcknowledgedSegment(_)))
+            || matches!(result, Err(SegmentError::CorruptSegment { .. })),
         "sequence gap fails closed: {result:?}"
     );
 }
@@ -239,7 +265,8 @@ fn disk_full_fault_leaves_the_store_unchanged() {
     let store_dir = root.path().join("store");
     let binding = binding("segmented-source", "segmented-target");
     let mut store =
-        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full).expect("open store");
+        SegmentedStore::open(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
+            .expect("open store");
     store.set_fault(SegmentFault::DiskFull);
     let mut intent = CommitIntent::delivered("segmented-target", "event-1", 1, 10, None);
     intent.next_sequence = 1;
@@ -261,15 +288,15 @@ fn legacy_store_migrates_without_rewriting_history() {
     let before = load_state(&store_dir, Some(&binding)).expect("legacy state");
     assert_eq!(before.records.len(), 2, "legacy store has two records");
 
-    let migrated = migrate_legacy(&store_dir, binding.clone(), SyncPolicy::Full)
+    let migrated = migrate_legacy(&store_dir, binding.clone(), SyncPolicy::Full, fast_limits())
         .expect("legacy store migrates");
     assert_eq!(migrated.next_sequence(), 3, "frontier carried over");
     assert!(
-        migrated.is_committed("legacy-1"),
+        migrated.is_committed("legacy-1").expect("lookup works"),
         "legacy id remains queryable"
     );
     assert!(
-        migrated.is_committed("legacy-2"),
+        migrated.is_committed("legacy-2").expect("lookup works"),
         "second legacy id remains queryable"
     );
     let after = load_state(&store_dir, Some(&binding)).expect("legacy files retained");

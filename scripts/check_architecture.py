@@ -565,11 +565,9 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
         else ""
     )
     if catalog_path.exists() and "util::sha256_hex" in catalog:
-        util_text = mask_rust(
-            "\n".join(
-                path.read_text(encoding="utf-8")
-                for path in (root / "src/util").rglob("*.rs")
-            )
+        util_text = "\n".join(
+            mask_rust(path.read_text(encoding="utf-8"))
+            for path in sorted((root / "src/util").rglob("*.rs"))
         )
         if not re.search(r"\bfn\s+sha256_hex\b", util_text):
             errors.append(
@@ -616,7 +614,8 @@ def reference_app_independence_errors(root: Path = ROOT) -> list[str]:
 def collect_sources() -> list[str]:
     """Exercise collect sources."""
     return sorted(
-        p.relative_to(ROOT).as_posix() for p in (ROOT / "src").rglob("*.rs")
+        p.relative_to(ROOT).as_posix()
+        for p in sorted((ROOT / "src").rglob("*.rs"))
     )
 
 
