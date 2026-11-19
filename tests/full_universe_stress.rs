@@ -2097,7 +2097,7 @@ fn assert_sbe_receive_times_monotonic(capture: &std::path::Path) {
             }
             AnyMessage::PriceLevelUpdate(decoder) => {
                 let update = PriceLevelUpdateDomain::try_from_decoder(decoder).unwrap();
-                (update.symbol, update.backtest_timestamp.timestamp_micros())
+                (update.symbol, update.received_at.timestamp_micros())
             }
             _ => continue,
         };

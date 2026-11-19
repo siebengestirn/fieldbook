@@ -214,7 +214,7 @@ fn delta_event(
 fn received_at(message: &OutputMessage) -> i64 {
     match message {
         OutputMessage::Snapshot(snapshot) => snapshot.received_at.timestamp_micros(),
-        OutputMessage::PriceLevelUpdate(update) => update.backtest_timestamp.timestamp_micros(),
+        OutputMessage::PriceLevelUpdate(update) => update.received_at.timestamp_micros(),
     }
 }
 
@@ -376,7 +376,11 @@ fn snapshot_anchors_delta_application_in_per_symbol_order() {
     assert_eq!(update.quantity, 12_000_000);
     assert_eq!(update.price_level, 400_000);
     // The writer must not clamp or rewrite the receive timestamp.
-    assert_eq!(update.backtest_timestamp.timestamp_micros(), NOW + 1);
+    assert_eq!(
+        update.received_at.timestamp_micros(),
+        NOW + 1,
+        "received timestamp matches the exchange event"
+    );
 
     // A later delta applies to the state produced by the snapshot plus the
     // first delta, in processing order, without re-emitting a snapshot.
@@ -402,7 +406,11 @@ fn snapshot_anchors_delta_application_in_per_symbol_order() {
         panic!("expected delta");
     };
     assert_eq!(update.quantity, 9_000_000);
-    assert_eq!(update.backtest_timestamp.timestamp_micros(), NOW + 2);
+    assert_eq!(
+        update.received_at.timestamp_micros(),
+        NOW + 2,
+        "received timestamp matches the exchange event"
+    );
     assert_eq!(core.stats().deltas_emitted, 2);
     assert_eq!(core.stats().exchange_snapshots, 1);
 }
@@ -455,7 +463,11 @@ fn clocked_failover_anchors_resumed_deltas_and_preserves_receive_times() {
     let OutputMessage::PriceLevelUpdate(update) = &outputs[0] else {
         panic!("expected resumed delta");
     };
-    assert_eq!(update.backtest_timestamp.timestamp_micros(), NOW + 400);
+    assert_eq!(
+        update.received_at.timestamp_micros(),
+        NOW + 400,
+        "received timestamp matches the exchange event"
+    );
     assert_eq!(update.quantity, 4_000_000);
 }
 

@@ -1205,7 +1205,7 @@ mod tests {
     fn update(symbol: &str) -> OutputMessage {
         let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         OutputMessage::PriceLevelUpdate(PriceLevelUpdateDomain {
-            backtest_timestamp: ts,
+            received_at: ts,
             exchange_timestamp: ts,
             price_level: 500_000,
             quantity: 1_000_000,

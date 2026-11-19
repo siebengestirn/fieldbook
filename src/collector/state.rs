@@ -2148,10 +2148,10 @@ fn build_delta(
     received_at_us: i64,
     exchange_ts_us: i64,
 ) -> anyhow::Result<PriceLevelUpdateDomain> {
-    let backtest_timestamp = timestamp(received_at_us);
+    let received_at = timestamp(received_at_us);
     Ok(PriceLevelUpdateDomain {
-        backtest_timestamp,
-        exchange_timestamp: timestamp_or(exchange_ts_us, backtest_timestamp),
+        received_at,
+        exchange_timestamp: timestamp_or(exchange_ts_us, received_at),
         price_level: price_to_sbe(price, &info.numeric_spec)
             .with_context(|| format!("converting price for `{}`", info.symbol))?,
         quantity: quantity_to_sbe(quantity, &info.numeric_spec)
