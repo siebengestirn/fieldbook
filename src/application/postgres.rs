@@ -683,17 +683,15 @@ fn format_checksum(hasher: Sha256) -> String {
 }
 
 /// A real PostgreSQL target. It shares the simulator's SQL contract and
-/// receipts, but executes the transcript against an applied schema. The
-/// caller declares the source position before each delivery; without that
-/// position no checkpoint can be advanced.
+/// receipts, but executes the transcript against an applied schema. Every
+/// delivery carries its source identity, sequence and end offset explicitly;
+/// without that position no checkpoint can be advanced.
 pub struct PgTarget<'a> {
     target_id: String,
     /// Empty only for the pre-source legacy namespace.
     source_id: String,
     client: &'a mut Client,
     checkpoint: PgCheckpoint,
-    next_sequence: u64,
-    next_offset: u64,
     uncertain_once: std::collections::BTreeSet<String>,
     receipts: Vec<DeliveryReceipt>,
 }
@@ -744,18 +742,10 @@ impl<'a> PgTarget<'a> {
             target_id: target_id.to_owned(),
             source_id: source_id.to_owned(),
             client,
-            next_sequence: checkpoint.sequence,
-            next_offset: checkpoint.offset,
             checkpoint,
             uncertain_once: std::collections::BTreeSet::new(),
             receipts: Vec::new(),
         }
-    }
-
-    /// Declare the source position that a successful delivery will commit.
-    pub fn set_position(&mut self, sequence: u64, offset: u64) {
-        self.next_sequence = sequence;
-        self.next_offset = offset;
     }
 
     #[must_use]
@@ -860,23 +850,40 @@ impl TargetConnector for PgTarget<'_> {
 
     fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt {
         let key = request.idempotency_key.clone();
+        let source_position = request.source_position.as_ref();
         let invalid_reason = match request.events.as_slice() {
             [] => Some("PostgreSQL target requires one event per delivery".to_owned()),
             [event] if event.event_id.as_str() != key.as_str() => {
                 Some("delivery idempotency key does not match the canonical event id".to_owned())
             }
             [event] => {
-                if let Some(reason) = source_binding_error(
+                let Some(position) = source_position else {
+                    let reason =
+                        "PostgreSQL target requires an explicit source position".to_owned();
+                    let receipt = DeliveryReceipt::Rejected {
+                        idempotency_key: key,
+                        target_id: self.target_id.clone(),
+                        reason,
+                    };
+                    self.receipts.push(receipt.clone());
+                    return receipt;
+                };
+                if position.source_id != self.source_id {
+                    Some(format!(
+                        "source position source `{}` does not match target source `{}`",
+                        position.source_id, self.source_id
+                    ))
+                } else if let Some(reason) = source_binding_error(
                     &self.source_id,
                     &self.checkpoint.source_id,
                     event.source_id.as_str(),
                 ) {
                     Some(reason)
                 } else {
-                    let position_advances = self.next_sequence > self.checkpoint.sequence
-                        && self.next_offset > self.checkpoint.offset;
-                    let exact_position_retry = self.next_sequence == self.checkpoint.sequence
-                        && self.next_offset == self.checkpoint.offset
+                    let position_advances = position.sequence > self.checkpoint.sequence
+                        && position.offset > self.checkpoint.offset;
+                    let exact_position_retry = position.sequence == self.checkpoint.sequence
+                        && position.offset == self.checkpoint.offset
                         && self.checkpoint.last_idempotency_key.as_deref() == Some(key.as_str());
                     event_validation_error(event).or_else(|| {
                         if self.checkpoint.checksum
@@ -886,8 +893,8 @@ impl TargetConnector for PgTarget<'_> {
                                 "checkpoint checksum does not match target, source, position and last event id"
                                     .to_owned(),
                             )
-                        } else if self.next_sequence > i64::MAX as u64
-                            || self.next_offset > i64::MAX as u64
+                        } else if position.sequence > i64::MAX as u64
+                            || position.offset > i64::MAX as u64
                         {
                             Some("checkpoint position exceeds PostgreSQL BIGINT range".to_owned())
                         } else if position_advances || exact_position_retry {
@@ -919,12 +926,21 @@ impl TargetConnector for PgTarget<'_> {
             target_id: self.target_id.clone(),
             duplicate: false,
         };
+        let Some(position) = source_position else {
+            let receipt = DeliveryReceipt::Rejected {
+                idempotency_key: key,
+                target_id: self.target_id.clone(),
+                reason: "PostgreSQL target requires an explicit source position".to_owned(),
+            };
+            self.receipts.push(receipt.clone());
+            return receipt;
+        };
         let next_checksum = checkpoint_checksum(
             &self.target_id,
             &self.source_id,
             OUTPUT_CONTRACT_VERSION,
-            self.next_sequence,
-            self.next_offset,
+            position.sequence,
+            position.offset,
             &key,
         );
         let mut transcript = build_source_commit_transcript(
@@ -932,8 +948,8 @@ impl TargetConnector for PgTarget<'_> {
             &request.events[0],
             &self.target_id,
             OUTPUT_CONTRACT_VERSION,
-            self.next_sequence,
-            self.next_offset,
+            position.sequence,
+            position.offset,
             &next_checksum,
             "durable_committed",
             "",
@@ -965,8 +981,8 @@ impl TargetConnector for PgTarget<'_> {
         };
         if receipt.category() == ReceiptCategory::DurableCommitted {
             self.checkpoint = PgCheckpoint {
-                sequence: self.next_sequence,
-                offset: self.next_offset,
+                sequence: position.sequence,
+                offset: position.offset,
                 checksum: next_checksum,
                 last_idempotency_key: Some(key.clone()),
                 source_id: self.source_id.clone(),
@@ -1596,6 +1612,7 @@ mod tests {
         DeliveryRequest {
             idempotency_key: key.to_owned(),
             events: vec![event],
+            source_position: None,
         }
     }
 

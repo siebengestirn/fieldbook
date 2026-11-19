@@ -64,13 +64,27 @@ explicit migration. Its live-server test is opt-in and is not run by CI.
 `src/application/postgres.rs::PgTarget` applies the existing
 `build_commit_transcript` / `SqlExecutor` contract through a real
 `postgres::Client`. It is an additional target, not a replacement for the
-deterministic simulator. `MIGRATION_SQL` creates three tables:
+deterministic simulator. The durable streaming runner supplies an explicit
+`SourcePosition` (source id, sequence and source-defined end-exclusive offset) on every
+`DeliveryRequest`; `PgTarget` rejects a delivery without one or with a position
+from another source. The file source and loopback TCP source share this runner,
+so the live database target can be exercised through the same path as the
+local durable commit store. The in-memory `JsonlSource` convenience runner has
+no physical byte cursor and is not a `PgTarget` execution path; use the durable
+streaming runner for PostgreSQL delivery. `DeliveryRequest` now includes an
+optional source position: downstream struct-literal callers must initialize
+the new field; `PgTarget` requires `Some`, while simulation-only connectors
+may use `None`.
+The streaming runner stops at the first unresolved delivery or failed local
+commit, preserving the last locally committed cursor so a retry cannot be
+skipped by a later source position. `MIGRATION_SQL` creates three tables:
 `canonical_business_events`, `delivery_dispositions` and `target_checkpoints`.
 Database uniqueness on `idempotency_key` (and on
 `(target_id, source_id, output_contract_version)` for checkpoints) is the
 idempotency authority; the client never relies on an in-memory set. The event,
 disposition and checkpoint writes are one `BEGIN ... COMMIT` transaction.
-Checkpoint updates must advance both sequence and byte offset. An exact retry at
+Checkpoint updates must advance both sequence and source offset. An exact
+retry at
 the current position is allowed only when its event id matches the persisted
 `last_idempotency_key`; a different event cannot claim the same position. The
 SHA-256 checkpoint checksum binds target, source, output contract version,

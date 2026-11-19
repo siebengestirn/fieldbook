@@ -19,17 +19,40 @@
 use std::io::Write as _;
 
 use engineering_challenge::application::{
-    Checkpoint, ExecutionMode, ImportReport, JsonlSource, NoopCommitSink, SourceAdapter,
-    durable::{CommitStore, DurableState, StoreFault, load_state, run_streaming_pipeline},
+    Checkpoint,      //
+    DeliveryReceipt, //
+    DeliveryRequest, //
+    ExecutionMode,   //
+    ImportReport,    //
+    JsonlSource,     //
+    NoopCommitSink,  //
+    SourceAdapter,   //
+    TargetConnector, //
+    durable::{
+        CommitStore,            //
+        DurableState,           //
+        StoreFault,             //
+        load_state,             //
+        run_streaming_pipeline, //
+    },
     file_source::{
-        CheckpointBinding, DurableCheckpoint, FileSource, SourceFingerprint, SourceIdentity,
-        SourceRegistry,
+        CheckpointBinding, //
+        DurableCheckpoint, //
+        FileSource,        //
+        SourceFingerprint, //
+        SourceIdentity,    //
+        SourceRegistry,    //
     },
     postgres::{
-        IdempotencyKey, OUTPUT_CONTRACT_VERSION, PostgresFault, PostgresTarget,
-        build_commit_transcript, finalize_transcript,
+        IdempotencyKey,          //
+        OUTPUT_CONTRACT_VERSION, //
+        PostgresFault,           //
+        PostgresTarget,          //
+        build_commit_transcript, //
+        finalize_transcript,     //
     },
-    run_jsonl_to_target_with_mode, transform_observation,
+    run_jsonl_to_target_with_mode, //
+    transform_observation,         //
 };
 
 fn record(id: &str, value: i64) -> String {
@@ -56,6 +79,224 @@ fn store_at(directory: &std::path::Path, name: &str, bytes: &[u8], target_id: &s
     CommitStore::open(directory, binding_for(name, bytes, target_id)).expect("open store")
 }
 
+#[derive(Debug)]
+struct UncertainThenHealthyTarget {
+    target_id: String,
+    attempts: u32,
+}
+
+impl TargetConnector for UncertainThenHealthyTarget {
+    fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt {
+        self.attempts += 1;
+        if self.attempts <= 2 {
+            DeliveryReceipt::Uncertain {
+                idempotency_key: request.idempotency_key.clone(),
+                target_id: self.target_id.clone(),
+                reason: "injected unresolved first delivery".to_owned(),
+            }
+        } else {
+            DeliveryReceipt::DurableCommitted {
+                idempotency_key: request.idempotency_key.clone(),
+                target_id: self.target_id.clone(),
+                duplicate: false,
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RejectingTarget {
+    target_id: String,
+}
+
+impl TargetConnector for RejectingTarget {
+    fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    fn deliver(&mut self, request: &DeliveryRequest) -> DeliveryReceipt {
+        DeliveryReceipt::Rejected {
+            idempotency_key: request.idempotency_key.clone(),
+            target_id: self.target_id.clone(),
+            reason: "injected permanent target rejection".to_owned(),
+        }
+    }
+}
+
+#[test]
+fn target_rejection_requires_a_durable_quarantine_before_checkpoint_advance() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let source_text = text(1);
+    let bytes = source_text.as_bytes();
+    let mut source = JsonlSource::from_str("fixture", &source_text);
+    let mut target = RejectingTarget {
+        target_id: "pg-local".to_owned(),
+    };
+    let report = {
+        let mut store = store_at(directory.path(), "fixture", bytes, "pg-local");
+        run_jsonl_to_target_with_mode(
+            &mut source,
+            transform_observation,
+            &mut target,
+            &Checkpoint::default(),
+            ExecutionMode::Live,
+            &mut store,
+        )
+    };
+    assert_eq!(
+        report.rejected, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:150"
+    );
+    assert_eq!(
+        report.quarantined, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:151"
+    );
+    assert_eq!(
+        report.last_committed_sequence, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:152"
+    );
+    let quarantined_store = store_at(directory.path(), "fixture", bytes, "pg-local");
+    assert_eq!(
+        quarantined_store.state().quarantine_count(),
+        1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:154"
+    );
+
+    let failed_directory = tempfile::tempdir().expect("failed tempdir");
+    let failed_text = text(2);
+    let failed_bytes = failed_text.as_bytes();
+    let mut failed_source = JsonlSource::from_str("fixture", &failed_text);
+    let mut failed_target = RejectingTarget {
+        target_id: "pg-local".to_owned(),
+    };
+    let failed = {
+        let mut store = store_at(failed_directory.path(), "fixture", failed_bytes, "pg-local");
+        store.set_fault(StoreFault::FailBeforeWrite);
+        run_jsonl_to_target_with_mode(
+            &mut failed_source,
+            transform_observation,
+            &mut failed_target,
+            &Checkpoint::default(),
+            ExecutionMode::Live,
+            &mut store,
+        )
+    };
+    assert_eq!(
+        failed.uncertain, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:175"
+    );
+    assert_eq!(
+        failed.last_committed_sequence, 0,
+        "pg streaming runner tests/p6_durable_pipeline.rs:176"
+    );
+    assert_eq!(
+        failed.total_read, 1,
+        "the second record must not overtake quarantine"
+    );
+}
+
+#[test]
+fn streaming_runner_stops_before_a_later_record_can_overtake_uncertain_delivery() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("input.jsonl");
+    let source_text = text(2);
+    let bytes = source_text.as_bytes();
+    std::fs::write(&path, bytes).expect("write source");
+    let binding = binding_for("file", bytes, "pg-local");
+    let anchor = DurableCheckpoint::new(&binding);
+    let mut source = FileSource::open(&path, "file").expect("open source");
+    let mut target = UncertainThenHealthyTarget {
+        target_id: "pg-local".to_owned(),
+        attempts: 0,
+    };
+    let mut store =
+        CommitStore::open(&directory.path().join("store"), binding).expect("open commit store");
+
+    let result = run_streaming_pipeline(
+        &mut source,
+        transform_observation,
+        &mut target,
+        &anchor,
+        &mut store,
+    );
+
+    assert_eq!(
+        target.attempts, 2,
+        "only the unresolved first event is retried"
+    );
+    assert_eq!(
+        result.report.total_read, 1,
+        "the second event is not consumed"
+    );
+    assert_eq!(
+        result.report.uncertain, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:216"
+    );
+    assert_eq!(
+        result.report.obligations.len(),
+        1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:217"
+    );
+    assert_eq!(
+        result.checkpoint.last_committed_sequence, 0,
+        "pg streaming runner tests/p6_durable_pipeline.rs:218"
+    );
+    assert!(
+        store.state().records.is_empty(),
+        "pg streaming runner tests/p6_durable_pipeline.rs:219"
+    );
+}
+
+#[test]
+fn streaming_runner_stops_when_local_commit_fails_after_target_commit() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("input.jsonl");
+    let source_text = text(2);
+    let bytes = source_text.as_bytes();
+    std::fs::write(&path, bytes).expect("write source");
+    let binding = binding_for("file", bytes, "pg-local");
+    let anchor = DurableCheckpoint::new(&binding);
+    let mut source = FileSource::open(&path, "file").expect("open source");
+    let mut target = PostgresTarget::new("pg-local");
+    let mut store =
+        CommitStore::open(&directory.path().join("store"), binding).expect("open commit store");
+    store.set_fault(StoreFault::FailBeforeWrite);
+
+    let result = run_streaming_pipeline(
+        &mut source,
+        transform_observation,
+        &mut target,
+        &anchor,
+        &mut store,
+    );
+
+    assert_eq!(
+        target.simulator().committed_count(),
+        1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:245"
+    );
+    assert_eq!(
+        result.report.total_read, 1,
+        "the second event is not consumed"
+    );
+    assert_eq!(
+        result.report.uncertain, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:250"
+    );
+    assert_eq!(
+        result.checkpoint.last_committed_sequence, 0,
+        "pg streaming runner tests/p6_durable_pipeline.rs:251"
+    );
+    assert!(
+        store.state().records.is_empty(),
+        "pg streaming runner tests/p6_durable_pipeline.rs:252"
+    );
+}
+
 fn accounted(report: &ImportReport) -> u64 {
     report.delivered
         + report.duplicates
@@ -66,6 +307,75 @@ fn accounted(report: &ImportReport) -> u64 {
         + report.skipped
         + report.target_delivered
         + report.simulated
+}
+
+#[test]
+fn streaming_quarantine_preserves_exact_source_bytes() {
+    let malformed = "{not json}";
+    let malformed_directory = tempfile::tempdir().expect("malformed tempdir");
+    let malformed_path = malformed_directory.path().join("input.jsonl");
+    std::fs::write(&malformed_path, malformed.as_bytes()).expect("write malformed source");
+    let malformed_binding = binding_for("file", malformed.as_bytes(), "pg-local");
+    let malformed_anchor = DurableCheckpoint::new(&malformed_binding);
+    let mut malformed_source =
+        FileSource::open(&malformed_path, "file").expect("open malformed source");
+    let mut malformed_target = PostgresTarget::new("pg-local");
+    let mut malformed_store =
+        CommitStore::open(&malformed_directory.path().join("store"), malformed_binding)
+            .expect("open malformed store");
+    let malformed_result = run_streaming_pipeline(
+        &mut malformed_source,
+        transform_observation,
+        &mut malformed_target,
+        &malformed_anchor,
+        &mut malformed_store,
+    );
+    assert_eq!(
+        malformed_result.report.quarantined, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:288"
+    );
+    assert_eq!(
+        malformed_store.state().records[0].quarantines[0].raw_bytes_hex,
+        "7b6e6f74206a736f6e7d",
+        "pg streaming runner tests/p6_durable_pipeline.rs:289"
+    );
+
+    let valid = record("transform-rejected", 1);
+    let valid_bytes = valid.as_bytes();
+    let valid_directory = tempfile::tempdir().expect("transform tempdir");
+    let valid_path = valid_directory.path().join("input.jsonl");
+    std::fs::write(&valid_path, valid_bytes).expect("write transform source");
+    let valid_binding = binding_for("file", valid_bytes, "pg-local");
+    let valid_anchor = DurableCheckpoint::new(&valid_binding);
+    let mut valid_source = FileSource::open(&valid_path, "file").expect("open transform source");
+    let mut valid_target = PostgresTarget::new("pg-local");
+    let mut valid_store = CommitStore::open(&valid_directory.path().join("store"), valid_binding)
+        .expect("open transform store");
+    let transform_result = run_streaming_pipeline(
+        &mut valid_source,
+        |_| {
+            Err(engineering_challenge::application::TransformError::Schema(
+                "forced transform rejection".to_owned(),
+            ))
+        },
+        &mut valid_target,
+        &valid_anchor,
+        &mut valid_store,
+    );
+    let mut expected_hex = String::new();
+    use std::fmt::Write as _;
+    for byte in valid_bytes {
+        write!(&mut expected_hex, "{byte:02x}").expect("write expected hex");
+    }
+    assert_eq!(
+        transform_result.report.quarantined, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:321"
+    );
+    assert_eq!(
+        valid_store.state().records[0].quarantines[0].raw_bytes_hex,
+        expected_hex,
+        "pg streaming runner tests/p6_durable_pipeline.rs:322"
+    );
 }
 
 #[test]
@@ -90,7 +400,14 @@ fn restart_from_durable_store_preserves_previously_committed_records() {
         )
     };
     assert_eq!(first.delivered, 1);
-    assert_eq!(first.outstanding, 2);
+    assert_eq!(
+        first.outstanding, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:350"
+    );
+    assert_eq!(
+        first.total_read, 2,
+        "pg streaming runner tests/p6_durable_pipeline.rs:351"
+    );
     assert_eq!(first.last_committed_sequence, 1);
     assert_eq!(accounted(&first), first.total_read);
 
@@ -149,7 +466,14 @@ fn db_unavailable_leaves_checkpoint_and_durable_store_unmoved() {
             &mut store,
         )
     };
-    assert_eq!(report.outstanding, 2);
+    assert_eq!(
+        report.outstanding, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:410"
+    );
+    assert_eq!(
+        report.total_read, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:411"
+    );
     assert_eq!(report.delivered, 0);
     assert_eq!(report.last_committed_sequence, 0);
     assert_eq!(accounted(&report), report.total_read);
@@ -296,7 +620,14 @@ fn multi_target_obligations_are_independent() {
         )
     };
 
-    assert_eq!(a.outstanding, 2);
+    assert_eq!(
+        a.outstanding, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:558"
+    );
+    assert_eq!(
+        a.total_read, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:559"
+    );
     assert_eq!(a.delivered, 0);
     assert_eq!(a.last_committed_sequence, 0);
     assert_eq!(b.delivered, 2);
@@ -443,7 +774,14 @@ fn streaming_file_source_restarts_from_a_verified_offset() {
         )
     };
     assert_eq!(first_run.report.delivered, 1);
-    assert_eq!(first_run.report.outstanding, 2);
+    assert_eq!(
+        first_run.report.outstanding, 1,
+        "pg streaming runner tests/p6_durable_pipeline.rs:706"
+    );
+    assert_eq!(
+        first_run.report.total_read, 2,
+        "pg streaming runner tests/p6_durable_pipeline.rs:707"
+    );
     assert_eq!(first_run.checkpoint.last_committed_sequence, 1);
     assert_eq!(
         first_run.checkpoint.last_committed_offset,

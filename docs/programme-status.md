@@ -64,6 +64,7 @@ read `No` as a defect when the milestone did not claim that dimension.
 | `15d2993` | PR #87 — PostgreSQL checkpoint integrity hardening |
 | `7edfb92` | PR #88 — bounded loopback socket waits |
 | `a6f9fcb` | PR #89 — reconcile current head and live PostgreSQL evidence |
+| `f86592b` | PR #92 — legacy PostgreSQL source-mapping integrity |
 
 PR #45 is **MERGED** (`d54aa08`); its earlier draft description was obsolete and
 GitHub metadata now agrees with the integrated history. It was never merged
@@ -135,6 +136,56 @@ style-gate/evidence-only change did not modify production source.
 The operator reports the later `169537b` head and PR #91 CI as passing; this ZIP
 cannot independently verify that Git relationship. None of these records is a
 production certification.
+
+## Historical reviewed baseline (operator-reported head f86592b)
+
+The following record describes the reviewed source export that the
+PostgreSQL streaming-runner patch was prepared against. It is retained for
+provenance; it is not the current canonical head.
+
+The operator reports canonical `main` at
+`f86592b0ecd39f1e8501f28996a0a34152c58974`, clean and pushed, after PR #92.
+The uploaded `engineering-challenge-template-f86592b.zip` has no `.git`
+metadata, so this archive cannot independently establish the merge ancestry,
+branch cleanliness or hosted CI result. The operator reports all Rust gates,
+the assurance polish loop and the real PostgreSQL 18.6 legacy-mapping test as
+passing.
+
+The retained record at
+`measurements/live/2026-11-19-postgres-legacy-source-mapping/` must be read
+against its own manifest: `evidence.json` names
+`169537bdc931a3f9856d5f9b630efd2d4e0bce9c` as `source_commit_at_test`. It
+therefore proves the recorded run for that commit; it does not, by itself,
+prove that the same test ran against `f86592b` or the PR #92 merge commit. A
+separate merged-head record naming the exact tested commit is required before
+classifying the final head as live-server tested. This distinction does not
+invalidate the operator's report; it records what the retained artifact
+currently proves.
+
+## Durable streaming runner driving real PostgreSQL (certified)
+
+The durable file and loopback TCP streaming runner now places an explicit
+`SourcePosition` (source id, sequence, end-exclusive source offset) on every
+`DeliveryRequest`. `PgTarget` validates that position against its bound source
+and commits the exact position with the event and disposition in one
+transaction. The separate mutable `set_position` mechanism is removed, so a
+delivery always carries the position belonging to the event being delivered.
+The runner stops at the first unresolved delivery, failed quarantine or failed
+local checkpoint append, so no source position can advance past an unresolved
+record. Malformed and transform-rejected records retain their exact raw bytes
+in the durable quarantine record.
+
+The opt-in live suite now covers the real file streaming runner driving
+`PgTarget`, a committed target event whose local checkpoint append fails,
+restart and replay from the earlier local checkpoint, PostgreSQL
+deduplication of the already-committed event, and subsequent progression
+without duplicate rows. The in-memory JSONL convenience runner is documented
+as a simulation-only path and is not presented as a PostgreSQL execution path.
+
+Live certification is retained at
+`measurements/live/2026-11-19-postgres-streaming-runner/`. Its manifest names
+the exact tested commit, the operator-provisioned PostgreSQL 18.6 server, the
+command, and the SHA-256 of the complete test output.
 
 ## Source-scoped durable delivery (PR #90, operator-reported merged)
 

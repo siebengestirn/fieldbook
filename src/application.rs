@@ -203,6 +203,17 @@ impl SourceError {
     }
 
     #[must_use]
+    pub const fn line_number(&self) -> usize {
+        match self {
+            Self::MalformedLine { line_number, .. }
+            | Self::SchemaRejected { line_number, .. }
+            | Self::DuplicateId { line_number, .. }
+            | Self::LineTooLong { line_number, .. }
+            | Self::Io { line_number, .. } => *line_number,
+        }
+    }
+
+    #[must_use]
     pub fn raw_bytes(&self) -> &[u8] {
         match self {
             Self::MalformedLine { raw_bytes, .. }
@@ -470,12 +481,26 @@ pub fn transform_observation(
 // Target contract: receipts, obligations, idempotency
 // ---------------------------------------------------------------------------
 
+/// Monotonic source position carried with one durable delivery.
+///
+/// `offset` is the source-defined monotonic end-exclusive offset for the
+/// record. File and loopback TCP adapters currently use byte offsets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePosition {
+    pub source_id: String,
+    pub sequence: u64,
+    pub offset: u64,
+}
+
 /// One batch submitted to a target. The idempotency key is the logical event
 /// id; a target must treat a repeated key as the same logical delivery.
+/// Durable targets require an explicit source position; simulation-only
+/// callers may omit it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryRequest {
     pub idempotency_key: String,
     pub events: Vec<CanonicalEnvelope<CanonicalBusinessEvent>>,
+    pub source_position: Option<SourcePosition>,
 }
 
 /// State recorded on a [`DeliveryObligation`]. `Duplicate` is an accounting
@@ -985,6 +1010,7 @@ where
                     ),
                     target.target_id(),
                 );
+                let mut halt_after_observation = false;
                 let (_retry_done, advance) = match transform(&observation) {
                     Err(error) => {
                         let quarantine = QuarantineRecord {
@@ -1012,6 +1038,7 @@ where
                             obligation.attempts = 1;
                             obligation.last_error = Some("durable quarantine failed".to_owned());
                             report.uncertain += 1;
+                            halt_after_observation = true;
                             (true, false)
                         }
                     }
@@ -1021,6 +1048,7 @@ where
                         let request = DeliveryRequest {
                             idempotency_key: key,
                             events: vec![envelope],
+                            source_position: None,
                         };
                         let simulated = mode.is_simulated();
                         let mut receipt = if simulated && !target.is_simulation_safe() {
@@ -1054,6 +1082,7 @@ where
                         match receipt {
                             DeliveryReceipt::Simulated { .. } => {
                                 report.simulated += 1;
+                                halt_after_observation = !simulated;
                                 (true, false)
                             }
                             DeliveryReceipt::DurableCommitted {
@@ -1075,6 +1104,7 @@ where
                                     obligation.last_error =
                                         Some("durable commit failed".to_owned());
                                     report.uncertain += 1;
+                                    halt_after_observation = true;
                                     (true, false)
                                 }
                             }
@@ -1100,27 +1130,57 @@ where
                                     obligation.last_error =
                                         Some("durable commit failed".to_owned());
                                     report.uncertain += 1;
+                                    halt_after_observation = true;
                                     (true, false)
                                 }
                             }
-                            DeliveryReceipt::Rejected { .. } => {
-                                report.rejected += 1;
-                                (true, true)
+                            DeliveryReceipt::Rejected { reason, .. } => {
+                                let quarantine = QuarantineRecord {
+                                    sequence: observation.sequence,
+                                    line_number: observation.line_number,
+                                    byte_offset: 0,
+                                    record_id: observation.record_id.clone(),
+                                    target_id: target.target_id().to_owned(),
+                                    raw_bytes_hex: hex_bytes(&observation.raw_bytes),
+                                    reason,
+                                };
+                                if sink
+                                    .commit(&CommitIntent::quarantined(
+                                        target.target_id(),
+                                        &quarantine,
+                                    ))
+                                    .is_ok()
+                                {
+                                    report.rejected += 1;
+                                    report.quarantined += 1;
+                                    (true, true)
+                                } else {
+                                    obligation.state = DeliveryState::Uncertain;
+                                    obligation.last_error =
+                                        Some("durable quarantine failed".to_owned());
+                                    report.uncertain += 1;
+                                    halt_after_observation = true;
+                                    (true, false)
+                                }
                             }
                             DeliveryReceipt::Accepted { .. } => {
                                 report.accepted += 1;
+                                halt_after_observation = !simulated;
                                 (false, false)
                             }
                             DeliveryReceipt::Delivered { .. } => {
                                 report.target_delivered += 1;
+                                halt_after_observation = !simulated;
                                 (false, false)
                             }
                             DeliveryReceipt::Uncertain { .. } => {
                                 report.uncertain += 1;
+                                halt_after_observation = !simulated;
                                 (false, false)
                             }
                             DeliveryReceipt::Outstanding { .. } => {
                                 report.outstanding += 1;
+                                halt_after_observation = !simulated;
                                 (false, false)
                             }
                         }
@@ -1130,6 +1190,9 @@ where
                     frontier = observation.sequence;
                 }
                 report.obligations.push(obligation);
+                if halt_after_observation {
+                    break;
+                }
             }
             Err(error) => {
                 report.total_read += 1;
@@ -1154,17 +1217,18 @@ where
                     obligation.last_error = Some(reason);
                     report.uncertain += 1;
                     report.obligations.push(obligation);
-                    continue;
+                    break;
                 }
                 let quarantine = QuarantineRecord {
                     sequence,
-                    line_number: 0,
+                    line_number: error.line_number(),
                     byte_offset: 0,
                     record_id: format!("jsonl-source-rejected:{sequence}"),
                     target_id: target.target_id().to_owned(),
                     raw_bytes_hex: hex_bytes(error.raw_bytes()),
                     reason: reason.clone(),
                 };
+                let mut halt_after_observation = false;
                 let quarantined = mode.is_simulated()
                     || sink
                         .commit(&CommitIntent::quarantined(target.target_id(), &quarantine))
@@ -1186,8 +1250,12 @@ where
                     obligation.state = DeliveryState::Uncertain;
                     obligation.last_error = Some("durable quarantine failed".to_owned());
                     report.uncertain += 1;
+                    halt_after_observation = true;
                 }
                 report.obligations.push(obligation);
+                if halt_after_observation {
+                    break;
+                }
             }
         }
     }
@@ -1363,7 +1431,14 @@ mod tests {
             &Checkpoint::default(),
         );
         assert_eq!(first.delivered, 1);
-        assert_eq!(first.outstanding, 2);
+        assert_eq!(
+            first.outstanding, 1,
+            "pg streaming runner src/application.rs:1434"
+        );
+        assert_eq!(
+            first.total_read, 2,
+            "pg streaming runner src/application.rs:1435"
+        );
         assert_eq!(first.last_committed_sequence, 1);
         assert_eq!(interrupted.simulator().committed_count(), 1);
 
