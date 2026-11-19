@@ -13,7 +13,11 @@
     reason = "an opt-in live test needs direct, named failures when the operator server is unavailable"
 )]
 
-use std::{env, fs, str::FromStr};
+use std::{
+    env, //
+    fs,  //
+    str::FromStr,
+};
 
 use engineering_challenge::application::{
     TargetConnector,
