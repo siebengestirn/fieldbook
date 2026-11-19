@@ -121,10 +121,10 @@ a raw
   constructed: the H2 codec has no delta path at all.
 `apply_subscriptions` reconciles to the exact desired set (subscribe additions,
   unsubscribe removals); `request_snapshot` maps to unsubscribe/resubscribe of only the
-  selected symbols, i.e. "wait for the next venue-pushed `l2Book`". `Control::Recover` uses
-  the existing `RecoveryReady` receive fence; with `reconnect: true` the fresh book arrives
-  in a later connection epoch and is therefore strictly newer than the
-acknowledgement.
+  selected symbols, that is "wait for the next venue-pushed `l2Book`".
+`Control::Recover` uses the existing `RecoveryReady` receive fence; with
+`reconnect: true` the fresh book arrives in a later connection epoch and is
+therefore strictly newer than the acknowledgement.
 Fixtures under `fixtures/hyperliquid/` cover two-sided, one-sided, empty and deep books,
   malformed/numeric-boundary cases, unknown additive fields, and trades. `tests/hyperliquid_books.rs`
   drives the real worker/journal against a loopback mock and proves the H2
@@ -172,13 +172,11 @@ none of these.
 
 **`allMids` does not prove book coverage.** It is a venue-wide map of coin→mid price. It
   proves the channel is alive, that coin names are recognized, and that price
-strings parse. It
-  does not prove we subscribed to `l2Book` for any coin, that a two-sided book exists, that any
-  level has depth, or that a single symbol is anchored. It typically also names
-coins we
-  deliberately exclude (other DEXs, non-canonical spot pairs), so counting mids
-as coverage
-  would *overstate* the universe. Planned H1 rule: never emit `Snapshot` or `LevelChange` from
+strings parse. It does not prove `l2Book` subscription for any coin, that a
+two-sided book exists, that any level has depth, or that a single symbol is
+anchored. It typically also names coins outside the selected set (other DEXs,
+non-canonical spot pairs), so counting mids as coverage would *overstate* the
+universe. Planned H1 rule: never emit `Snapshot` or `LevelChange` from
   `allMids`, and never let it advance a book symbol's activity.
 **Asset context does not prove depth.** `fastAssetCtxs`/`assetCtxs` carry per-coin statistics
   (mark/oracle prices, funding, open interest, volume, and similar fields —

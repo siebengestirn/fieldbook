@@ -49,7 +49,7 @@ injections.
   success.
 - Resource and provenance fields are honest: `harness_process_rss_sample_bytes`
   (a single sample of the whole test process — collector, mock and harness
-  share it, so there is deliberately no memory-per-symbol figure), measured
+  share it, so there is no memory-per-symbol figure), measured
   `clock_resolution_ns` (or `null` with a reason), derived `build_profile`,
   `stress_harness_binary_sha256`, and worktree provenance (tracked changes +
   diff hash) captured before the run started.

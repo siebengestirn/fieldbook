@@ -22,7 +22,7 @@ acceptance is not a durability acknowledgement.
 
 ## Platform P6 local reference commit store
 
-The non-market-data reference application has its own, deliberately separate
+The non-market-data reference application has its own, separate
 local store in `src/application/durable.rs`. It is **not** the market-data
 journal and reuses none of its types or formats. It is built on the shared
 `write_json_atomic` helper and `sha2`.

@@ -69,7 +69,7 @@ capture.
 | Swap / memory pressure | not observed — no instrumentation in the live path |
 | Disk used by the run | ~26 GB (8.1 GB SBE + 17.7 GB journal + sidecars) |
 
-**Evidence gap, recorded deliberately:** the live evidence path samples no
+**Evidence gap:** the live evidence path samples no
 process RSS, swap or memory-pressure signal, so "the host could not sustain
 the envelope" cannot be separated from "the venue reset a 78-socket
 subscriber" by this run alone. Configured budget is a limit, not a

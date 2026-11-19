@@ -376,6 +376,37 @@ pub fn assign_legacy_checkpoint_source(
                     .to_owned(),
             ));
         }
+        let anchor_sequence =
+            i64::try_from(sequence).map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        let anchor_offset =
+            i64::try_from(offset).map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        // Legacy event rows predate source positions. Carry the verified
+        // checkpoint position onto the anchor so a replay at that position
+        // matches the persisted canonical event content.
+        let positioned = tx
+            .execute(
+                concat!(
+                    "UPDATE canonical_business_events ",
+                    "SET source_sequence = $4, source_offset = $5 ",
+                    "WHERE target_id = $1 AND source_id = $2 AND event_id = $3 ",
+                    "AND idempotency_key = event_id || chr(31) || target_id || chr(31) || ",
+                    "$2 || chr(31) || $6"
+                ),
+                &[
+                    &target_id,
+                    &source_id,
+                    &last_idempotency_key,
+                    &anchor_sequence,
+                    &anchor_offset,
+                    &contract_version_text,
+                ],
+            )
+            .map_err(|error| ExecutorError::Failed(error.to_string()))?;
+        if positioned != 1 {
+            return Err(ExecutorError::Failed(format!(
+                "legacy checkpoint anchor position update affected {positioned} rows"
+            )));
+        }
     }
 
     // Only a checksum-verified legacy position may be rebound to the claimed
@@ -1267,8 +1298,8 @@ impl CommitTranscript {
 
 /// Build `BEGIN` + INSERT event + INSERT disposition + UPSERT checkpoint for a
 /// single logical delivery. A terminal marker is added only by
-/// [`finalize_transcript`], so callers cannot accidentally commit a receipt
-/// that is still `Outstanding`, `Uncertain`, `Delivered` or `Simulated`.
+/// [`finalize_transcript`], so callers cannot commit a receipt still
+/// marked `Outstanding`, `Uncertain`, `Delivered` or `Simulated`.
 #[expect(
     clippy::too_many_arguments,
     reason = "the transcript needs event, target, contract version, checkpoint fields and disposition evidence"

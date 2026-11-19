@@ -155,7 +155,7 @@ command, output and SHA-256 hashes are retained in
 `measurements/live/2026-11-18-postgres-source-scoped/`, with `source_commit`
 naming the exact code commit tested. It is an opt-in test, not run by CI.
 
-The TCP source in `src/application/network_source.rs` is deliberately a small
+The TCP source in `src/application/network_source.rs` is a small
 loopback reference protocol. Its tests exercise a local server, clean-disconnect
 resume, malformed-line quarantine and a 2,000-record reconnect soak. It is not
 a production authenticated network connector or proof of arbitrary remote

@@ -89,6 +89,9 @@ mkdir -p "$OUT_ROOT" || { echo \
   "ERROR: cannot create evidence directory $OUT_ROOT" >&2; exit 1; }
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 export KALSHI_ENVIRONMENT=production
+# Bake the exact source revision into the binary so the journal manifest
+# names it instead of an unknown commit.
+export GIT_COMMIT="$COMMIT"
 
 # Build once. Keep the compiler output as part of the run directory.
 if ! cargo build --release --locked >"$OUT_ROOT/build.log" 2>&1; then
@@ -98,6 +101,18 @@ if ! cargo build --release --locked >"$OUT_ROOT/build.log" 2>&1; then
 fi
 if [[ ! -x "$BIN" ]]; then
   echo "ERROR: release binary was not produced at $BIN" >&2
+  exit 1
+fi
+if ! python3 - "$BIN" "$COMMIT" <<'PY'
+import pathlib
+import sys
+
+binary, commit = sys.argv[1:3]
+if commit.encode("ascii") not in pathlib.Path(binary).read_bytes():
+    raise SystemExit(f"release binary does not embed source commit {commit}")
+PY
+then
+  echo "ERROR: release binary does not embed the source commit" >&2
   exit 1
 fi
 

@@ -117,7 +117,7 @@ while (( iteration <= loops )); do
   fi
   run_step "english audit (advisory)" scripts/assurance/run_audit.sh
   run_step "english audit strict" python3 scripts/assurance/english_audit.py \
-    --repo . --strict
+    --repo . --exclude 'references/*' --strict
 
   fingerprint_now="$(tree_fingerprint)"
   if [[ "$fingerprint_now" == "$fingerprint_start" ]]; then

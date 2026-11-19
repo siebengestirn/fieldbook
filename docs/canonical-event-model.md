@@ -9,7 +9,7 @@ No dependency is added.
 
 ## Why a separate taxonomy
 
-`ExchangeEvent` is deliberately narrow: `Snapshot`, `LevelChange`, `Lifecycle`,
+`ExchangeEvent` is narrow by design: `Snapshot`, `LevelChange`, `Lifecycle`,
 and `StreamReset`. It is the contract shared by adapters, the collector state
 machine, the SBE writer, and replay. The canonical taxonomy separates kinds
 that the wire contract cannot express without either mislabelling data or

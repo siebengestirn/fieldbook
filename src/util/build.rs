@@ -13,6 +13,8 @@ const COMMON_TYPES: &str = "sbe_schemas/includes/common-types.xml";
 fn main() -> Result<()> {
     println!("cargo::rerun-if-changed={SCHEMA}");
     println!("cargo::rerun-if-changed={COMMON_TYPES}");
+    println!("cargo::rerun-if-env-changed=GIT_COMMIT");
+    println!("cargo::rerun-if-env-changed=GITHUB_SHA");
 
     let yaml = fs::read_to_string(SCHEMA).into_diagnostic()?;
     let schema = sbe_yaml::parse(&yaml).map_err(|error| miette!("{error}"))?;

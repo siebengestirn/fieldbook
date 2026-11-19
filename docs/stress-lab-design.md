@@ -254,7 +254,7 @@ Chunk rotation is mandatory. Raw captures are retained outside Git.
 4. CI smoke case (4k) — the only thing that runs in Ordinary CI
 Correctness suite cases (1k–10k)
 Opt-in capacity/workload/recovery matrix wiring (`STRESS_*` env), `measurements/stress/` layout, README
-7. Sample run + sample deliberately-failed run (for review)
+7. Sample run + sample failed run (for review)
 
 ## 12. Acceptance (as enforced by the suite)
 
@@ -275,7 +275,7 @@ SIGINT-child-process shutdown drains accepted data and finalizes.
 ## 13. Success artifacts (for review)
 
 - One successful reference-matrix manifest (e.g. 100k uniform, 5000/socket)
-- One deliberately failed manifest (e.g. induced backpressure or dropped anchor)
+- One failed manifest (e.g. induced backpressure or dropped anchor)
 - One reproduced backpressure scenario and one reproduced recovery scenario
 - Exact test commands and counts
 

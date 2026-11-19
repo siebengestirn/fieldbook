@@ -109,7 +109,7 @@ notifications are never dropped. A discovery round that started before an
 applied terminal notification cannot resurrect the market, and cannot
 overwrite lifecycle-applied metadata; a later round is authoritative again.
 
-The lifecycle plane is deliberately separate from the book plane: it has no
+The lifecycle plane is separate from the book plane by design: it has no
 order-book subscriptions, contributes nothing to the per-shard subscription
 universe, is never counted as an active book source for continuity incidents,
 and its sockets are included in the capacity plan's connection budget

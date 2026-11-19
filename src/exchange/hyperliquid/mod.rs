@@ -83,7 +83,7 @@ impl Exchange for HyperliquidExchange {
         // H2 subscribes l2Book/trades only for the configured finite set of
         // perpetuals. Everything else is discovery context, not part of this
         // run's subscribed universe; counting it as expected would demand
-        // anchors the session deliberately never requests.
+        // anchors that the session never requests.
         markets
             .into_iter()
             .filter(|market| {
