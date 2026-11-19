@@ -120,7 +120,7 @@ impl DuplicateIndex {
         if self.overflow.is_none() {
             let unique = DUPLICATE_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "nirnay-duplicate-index-{}-{unique}",
+                "fieldbook-duplicate-index-{}-{unique}",
                 std::process::id()
             ));
             let file = std::fs::OpenOptions::new()

@@ -6,7 +6,7 @@
 //! Opt-in live PostgreSQL integration for source-scoped durable delivery.
 //!
 //! ```bash
-//! NIRNAY_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' \
+//! FIELDBOOK_TEST_PG_URL='host=/tmp port=5432 user=tourist dbname=postgres' \
 //!   cargo test --test postgres_live -- --ignored --nocapture
 //! ```
 //!
@@ -120,8 +120,8 @@ fn request_for_source(
 }
 
 fn connect() -> Client {
-    let url = std::env::var("NIRNAY_TEST_PG_URL").expect(
-        "set NIRNAY_TEST_PG_URL to an operator-supplied PostgreSQL connection string; \
+    let url = std::env::var("FIELDBOOK_TEST_PG_URL").expect(
+        "set FIELDBOOK_TEST_PG_URL to an operator-supplied PostgreSQL connection string; \
          this test never invents credentials",
     );
     let config = Config::from_str(&url).expect("valid PostgreSQL URL");
@@ -175,7 +175,7 @@ fn cleanup(target_id: &str) {
 }
 
 #[test]
-#[ignore = "requires an operator-supplied PostgreSQL server; set NIRNAY_TEST_PG_URL"]
+#[ignore = "requires an operator-supplied PostgreSQL server; set FIELDBOOK_TEST_PG_URL"]
 fn postgres_live_streaming_file_runner_drives_real_pg_target() {
     let mut client = connect();
     apply_migrations(&mut client).expect("migration applies");
@@ -256,7 +256,7 @@ fn postgres_live_streaming_file_runner_drives_real_pg_target() {
 }
 
 #[test]
-#[ignore = "requires an operator-supplied PostgreSQL server; set NIRNAY_TEST_PG_URL"]
+#[ignore = "requires an operator-supplied PostgreSQL server; set FIELDBOOK_TEST_PG_URL"]
 fn postgres_live_streaming_runner_replays_after_local_checkpoint_failure() {
     let mut client = connect();
     apply_migrations(&mut client).expect("migration applies");
@@ -375,7 +375,7 @@ fn postgres_live_streaming_runner_replays_after_local_checkpoint_failure() {
 }
 
 #[test]
-#[ignore = "requires an operator-supplied PostgreSQL server; set NIRNAY_TEST_PG_URL"]
+#[ignore = "requires an operator-supplied PostgreSQL server; set FIELDBOOK_TEST_PG_URL"]
 fn postgres_live_source_scoped_delivery() {
     let mut client = connect();
     apply_migrations(&mut client).expect("migration applies");
