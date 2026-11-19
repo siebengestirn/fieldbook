@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INDEX = ROOT / "references" / "index.md"
 ROW = re.compile(r"^\| `([^`]+)` \| .* \| `([0-9a-f]{64})` \|$")
 
-# Mirrors the mandatory list in STYLES.md plus its discovery index.
+# Mirrors the mandatory list in STYLES.md.
 MANDATED = frozenset(
     {
         "rustguide.html",
@@ -31,7 +31,6 @@ MANDATED = frozenset(
         "shellguide.html",
         "verilogguide.html",
         "docguide-style.html",
-        "awesome-style-guide-master.md",
     }
 )
 

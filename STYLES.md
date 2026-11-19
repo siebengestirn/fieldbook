@@ -12,7 +12,3 @@ retrieve with curl:
 - https://google.github.io/styleguide/shellguide.html
 - https://google.github.io/styleguide/verilogguide.html
 - https://google.github.io/styleguide/docguide/style.html
-
-
-Extra: go to link then other links
-- https://github.com/kciter/awesome-style-guide
