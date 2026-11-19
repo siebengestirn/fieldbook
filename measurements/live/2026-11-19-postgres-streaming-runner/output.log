@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
+     Running tests/postgres_live.rs (target/debug/deps/postgres_live-9b5018bfcef9fc5d)
+
+running 3 tests
+test postgres_live_streaming_file_runner_drives_real_pg_target ... ok
+test postgres_live_streaming_runner_replays_after_local_checkpoint_failure ... ok
+test postgres_live_source_scoped_delivery ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
