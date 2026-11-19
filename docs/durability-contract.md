@@ -44,8 +44,17 @@ A resume anchor is bound to `(source identity, SHA-256 of full source bytes,
   target id)`, records the last terminal sequence and its physical byte offset,
   and is verified before any line is re-read.
 
-This store is local, single-writer and process/host-recovery scoped. It is not a
-database transaction, not replicated, and not a live PostgreSQL connection.
+A versioned segmented implementation is available in
+`src/application/durable_segmented.rs` and is used by the same runner through
+the `DurableStore` abstraction. It bounds segments by record count and encoded
+bytes, separates record, footer, rename and directory sync, rotates verified
+segments into a checksummed archive, decouples snapshot replacement from
+commits, and fails closed on missing or unreadable acknowledged evidence. It
+is not replicated and does not replace the original commit-file format, which
+remains the compatibility store and migration source.
+
+Both local stores are process/host-recovery scoped. Neither is a database
+transaction, replicated, or a live PostgreSQL connection.
 The separate PostgreSQL target is implemented in
 `src/application/postgres.rs::PgTarget` using the synchronous `postgres` crate;
 it executes the parameterized transcript through `PgExecutor` against the

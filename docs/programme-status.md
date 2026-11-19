@@ -219,26 +219,31 @@ baseline is retained at `measurements/perf/p6-1-single-event-baseline/`.
 
 ## Segmented local durability (P6.2)
 
-A versioned segmented store is available beside the original append-only
-commit-file store. A segment is finalized only after its framed records and
-footer are written, the file is synced, it is atomically renamed into the
-committed namespace and the containing directory is synced. Incomplete
-temporary files are reported rather than discarded because they may contain
-acknowledged data.
+The production-shaped runner depends on the `DurableStore` abstraction and
+works unchanged with the legacy commit-file store and the segmented store.
+File and loopback TCP sources both deliver through the segmented store.
 
-A checksummed recovery snapshot carries the binding, the exact segment
-frontier, the materialized checkpoint and a bounded Bloom filter. Recovery
-memory holds the materialized record plus records after that frontier;
-historical ids are resolved by exact segment scan, and the Bloom filter is used
-only to prove absence. Archive manifests are verified on open, and a missing
-or unverifiable archived or acknowledged segment fails closed instead of being
-skipped. Legacy commit files migrate through an explicit, verified migration
-that leaves them in place.
+A segment holds multiple framed commits and is bounded by record count and
+encoded bytes. Record append, footer, rename and directory sync are separate
+operations, and fault injection sits at each boundary. An interrupted segment
+is recovered as active (or finalized when its footer is present), never
+silently discarded. Snapshot replacement is decoupled from every commit and
+replays the tail after its frontier.
 
-The design is recorded in `docs/p6-2-design.md`. Simulator-quality filesystem
-tests in `tests/p6_segmented_durability.rs` cover every finalization boundary,
-disk-full, corrupt snapshot, truncated/incomplete segment, sequence gaps,
-missing archived segments and migration from the legacy format.
+Finalized segments rotate into an archive once the hot limit is exceeded. The
+archive copy, checksummed manifest and hot removal are ordered so evidence is
+verified before the hot copy is removed. Lookup scans both hot and archived
+segments; the Bloom filter proves only absence, and an unreadable history
+returns an error rather than a negative result. Recovery validates header,
+frame, footer, filename and checksum fields and bounds live memory to the
+snapshot plus the replay tail. Legacy files migrate explicitly and remain in
+place.
+
+Design decisions are in `docs/p6-2-design.md`. Real-filesystem tests in
+`tests/p6_segmented_durability.rs` and integration tests in
+`tests/p6_segmented_runner.rs` cover finalization boundaries, rotation,
+archive verification and restore, exact lookup, migration and both source
+adapters.
 
 ## Source-scoped durable delivery (PR #90, operator-reported merged)
 

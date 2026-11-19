@@ -1,10 +1,10 @@
 # P6.2 design review: segmented local durability
 
-This document settles the six design questions required before implementing
-segmented, checkpointed local durability. It is a design, not a claim that the
-capabilities already exist. The current `CommitStore` and its `commit-N.json`
-files remain the compatibility format; the new format is versioned and
-introduced alongside it.
+This document records the six design decisions for segmented, checkpointed
+local durability and the P6.2.1 closure. The versioned segmented format and the
+`DurableStore` runner abstraction are implemented and tested; see
+`docs/programme-status.md` for current status. The original `CommitStore` and
+its `commit-N.json` files remain the compatibility format.
 
 ## Scope and invariants
 

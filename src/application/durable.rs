@@ -369,6 +369,20 @@ impl CommitSink for CommitStore {
     }
 }
 
+impl crate::application::DurableStore for CommitStore {
+    fn durable_state(&self) -> &DurableState {
+        self.state()
+    }
+
+    fn durable_next_sequence(&self) -> u64 {
+        self.next_sequence()
+    }
+
+    fn verify_store(&self) -> Result<(), String> {
+        self.verify().map(|_| ()).map_err(|error| error.to_string())
+    }
+}
+
 /// Result of one streaming pipeline run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamingResult {
@@ -424,16 +438,17 @@ impl StreamingLimits {
 /// simulated run should use
 /// `run_jsonl_to_target_with_mode` with a side-effect-free connector instead of
 /// this store-backed runner.
-pub fn run_streaming_pipeline<R, T, F>(
+pub fn run_streaming_pipeline<R, T, F, S>(
     source: &mut FileSource<R>,
     transform: F,
     target: &mut T,
     anchor: &DurableCheckpoint,
-    store: &mut CommitStore,
+    store: &mut S,
 ) -> StreamingResult
 where
     R: std::io::BufRead,
     T: crate::application::TargetConnector,
+    S: crate::application::DurableStore,
     F: Fn(
         &crate::application::RawObservation,
     ) -> Result<
@@ -630,14 +645,14 @@ where
 
 /// Quarantine one observation durably and advance the frontier only after the
 /// local append succeeds. Returns `false` when the run must halt.
-fn quarantine_observation(
+fn quarantine_observation<S: crate::application::DurableStore>(
     observation: &crate::application::RawObservation,
     reason: String,
     offset: u64,
     target_id: &str,
     report: &mut ImportReport,
     frontier: &mut DurableCheckpoint,
-    store: &mut CommitStore,
+    store: &mut S,
 ) -> bool {
     let record = QuarantineRecord {
         sequence: observation.sequence,
@@ -662,7 +677,7 @@ fn quarantine_observation(
 
 /// Deliver one bounded batch atomically and commit one local record.
 /// Returns `false` when the run must halt before reading more records.
-fn flush_batch<T: crate::application::TargetConnector>(
+fn flush_batch<T: crate::application::TargetConnector, S: crate::application::DurableStore>(
     pending: &mut Vec<(
         crate::application::RawObservation,
         crate::application::BatchMember,
@@ -671,7 +686,7 @@ fn flush_batch<T: crate::application::TargetConnector>(
     report: &mut ImportReport,
     frontier: &mut DurableCheckpoint,
     target: &mut T,
-    store: &mut CommitStore,
+    store: &mut S,
     version: u32,
 ) -> bool {
     if pending.is_empty() {
@@ -796,17 +811,18 @@ fn flush_batch<T: crate::application::TargetConnector>(
 /// delivers them in one target transaction and commits one checksummed local
 /// record. It flushes a pending batch before quarantining a malformed record
 /// and halts at the first unresolved transaction or failed local append.
-pub fn run_streaming_pipeline_bounded<R, T, F>(
+pub fn run_streaming_pipeline_bounded<R, T, F, S>(
     source: &mut FileSource<R>,
     transform: F,
     target: &mut T,
     anchor: &DurableCheckpoint,
-    store: &mut CommitStore,
+    store: &mut S,
     limits: StreamingLimits,
 ) -> StreamingResult
 where
     R: std::io::BufRead,
     T: crate::application::TargetConnector,
+    S: crate::application::DurableStore,
     F: Fn(
         &crate::application::RawObservation,
     ) -> Result<
