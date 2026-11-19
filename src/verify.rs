@@ -159,7 +159,7 @@ pub fn run(input: &Path, chunk_size: &str) -> anyhow::Result<VerifySummary> {
                 symbols.insert(update.symbol.clone());
                 update_bounds(
                     &mut summary,
-                    update.backtest_timestamp.timestamp_micros(),
+                    update.received_at.timestamp_micros(),
                     update.exchange_timestamp.timestamp_micros(),
                 );
                 if !snapshots_seen.contains(&update.symbol) {
@@ -314,7 +314,7 @@ mod tests {
 
     fn update(us: i64, side: Side, price: i64, quantity: i64) -> OutputMessage {
         OutputMessage::PriceLevelUpdate(PriceLevelUpdateDomain {
-            backtest_timestamp: timestamp(us),
+            received_at: timestamp(us),
             exchange_timestamp: timestamp(us),
             price_level: price,
             quantity,

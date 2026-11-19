@@ -244,7 +244,7 @@ pub fn run(
                         first_unanchored_at_us: None,
                         last_unanchored_at_us: None,
                     });
-                state.observe(update.backtest_timestamp.timestamp_micros(), false);
+                state.observe(update.received_at.timestamp_micros(), false);
             }
             AnyMessage::Unknown { .. } => {
                 messages += 1;
@@ -396,7 +396,7 @@ mod tests {
 
     fn update(symbol: &str, us: i64, side: Side, price: i64, quantity: i64) -> OutputMessage {
         OutputMessage::PriceLevelUpdate(PriceLevelUpdateDomain {
-            backtest_timestamp: timestamp(us),
+            received_at: timestamp(us),
             exchange_timestamp: timestamp(us),
             price_level: price,
             quantity,

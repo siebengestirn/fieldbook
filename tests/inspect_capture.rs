@@ -45,7 +45,7 @@ fn snapshot(symbol: &str, received_us: i64, exchange_us: i64) -> OutputMessage {
 
 fn update(symbol: &str, received_us: i64, exchange_us: i64) -> OutputMessage {
     OutputMessage::PriceLevelUpdate(PriceLevelUpdateDomain {
-        backtest_timestamp: timestamp(received_us),
+        received_at: timestamp(received_us),
         exchange_timestamp: timestamp(exchange_us),
         price_level: 400_000,
         quantity: 15,

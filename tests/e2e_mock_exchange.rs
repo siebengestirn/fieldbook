@@ -1200,7 +1200,7 @@ fn read_capture(path: &Path) -> Vec<CapturedMessage> {
                     .expect("decoding SBE price-level update");
                 messages.push(CapturedMessage::Delta {
                     symbol: update.symbol.clone(),
-                    received_at_us: update.backtest_timestamp.timestamp_micros(),
+                    received_at_us: update.received_at.timestamp_micros(),
                     side: update.side,
                     price: update.price_level,
                     quantity: update.quantity,

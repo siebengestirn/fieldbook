@@ -74,7 +74,7 @@ pub fn run(input: &Path, chunk_size: &str, limit: usize) -> anyhow::Result<Inspe
                     .context("decoding SBE price-level update")?;
                 summary.price_level_updates = summary.price_level_updates.saturating_add(1);
                 symbols.insert(update.symbol.clone());
-                let received = update.backtest_timestamp.timestamp_micros();
+                let received = update.received_at.timestamp_micros();
                 let exchange = update.exchange_timestamp.timestamp_micros();
                 update_bounds(&mut summary, received, exchange);
                 if summary.samples.len() < limit {
@@ -134,7 +134,7 @@ fn update_json(update: &PriceLevelUpdateDomain) -> Value {
     json!({
         "type": "price_level_update",
         "symbol": update.symbol,
-        "received_at_us": update.backtest_timestamp.timestamp_micros(),
+        "received_at_us": update.received_at.timestamp_micros(),
         "exchange_timestamp_us": update.exchange_timestamp.timestamp_micros(),
         "price_level": update.price_level,
         "quantity": update.quantity,
