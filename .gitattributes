@@ -1,0 +1,3 @@
+# Third-party style references are retained verbatim. Their bytes are verified
+# by scripts/check_style_references.py; do not rewrite whitespace in them.
+references/** -whitespace

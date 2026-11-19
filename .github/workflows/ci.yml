@@ -37,6 +37,8 @@ jobs:
         run: python3 scripts/check_rust_style.py
       - name: Tool isolation
         run: python3 scripts/check_no_cross_pollution.py
+      - name: Style reference integrity
+        run: python3 scripts/check_style_references.py
 
   rust:
     name: Format, lint, test, release build

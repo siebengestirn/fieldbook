@@ -45,6 +45,8 @@ and is not covered by these adapters.
 
 ## Review path
 
+- [Style standards](docs/style-standards.md) — mandated references and the
+  gates that enforce them; `STYLES.md` is the primary authority.
 - [Programme status](docs/programme-status.md) — status by milestone.
 - The live evidence index at `captures/INDEX.md` is operator-local and is
   omitted from source exports because `captures/` is Git-ignored.
