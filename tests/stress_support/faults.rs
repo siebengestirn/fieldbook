@@ -370,7 +370,7 @@ pub fn derive_schedule(profile: SweepProfile, seed: u64) -> FaultSchedule {
                     },
                     AffectedInstruments::AllEligible,
                     1 + round,
-                    Some(20_000),
+                    Some(30_000),
                     None,
                     "cycle all sockets, then verify re-anchoring and accounting",
                     "independent generations; bounded queues; healthy books; SBE verifies",
