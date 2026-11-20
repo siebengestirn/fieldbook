@@ -43,10 +43,11 @@ pub fn run(report: &mut Report, root: &Path, args: &[String]) -> Result<(), Stri
         let outcome = Cmd::new(&line).execute(root)?;
         let failed = outcome.status == "failed";
         println!("[{}] {}", outcome.status, line);
+        let output_tail = outcome.output_tail.clone();
         report.push(outcome);
         if failed {
             println!("--- failed step output ---");
-            println!("{}", &outcome.output_tail);
+            println!("{output_tail}");
             return Ok(());
         }
     }
