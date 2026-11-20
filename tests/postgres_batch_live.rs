@@ -6,7 +6,7 @@
 //! ```
 //!
 //! These tests require an operator-provisioned server. The simulator suite in
-//! `tests/p6_bounded_batch.rs` is not a substitute for this certification.
+//! `tests/bounded_batch.rs` is not a substitute for this certification.
 
 #![expect(
     clippy::expect_used,

@@ -217,7 +217,7 @@ against the full persisted canonical content and position rather than only a
 final offset. The local `CommitStore` writes one checksummed record per batch,
 which removes the per-event local fsync from the batched path.
 
-Simulator evidence: `tests/p6_bounded_batch.rs` covers event/byte limits,
+Simulator evidence: `tests/bounded_batch.rs` covers event/byte limits,
 oversize quarantine, one local record per batch and batch-validation failures.
 Live evidence: `tests/postgres_batch_live.rs` covers three real-server
 scenarios — bounded batch delivery, replay after a failed local append with a
@@ -247,9 +247,9 @@ frame, footer, filename and checksum fields and bounds live memory to the
 snapshot plus the replay tail. Legacy files migrate explicitly and remain in
 place.
 
-Design decisions are in `docs/p6-2-design.md`. Real-filesystem tests in
-`tests/p6_segmented_durability.rs` and integration tests in
-`tests/p6_segmented_runner.rs` cover finalization boundaries, rotation,
+Design decisions are in `docs/segmented-durability-design.md`. Real-filesystem tests in
+`tests/segmented_durability.rs` and integration tests in
+`tests/segmented_runner.rs` cover finalization boundaries, rotation,
 archive verification and restore, exact lookup, migration and both source
 adapters.
 
