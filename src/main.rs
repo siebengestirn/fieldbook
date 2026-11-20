@@ -173,6 +173,19 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::AnalyticsExport {
+            capture_dir,
+            staging_dir,
+        } => {
+            let summary = fieldbook::analytics::export::export_capture(&capture_dir, &staging_dir)?;
+            emit_json(&summary)?;
+            anyhow::ensure!(
+                summary.verification_results.values().all(|passed| *passed),
+                "export verification failed for {}",
+                summary.staging_directory
+            );
+            Ok(())
+        }
         Command::AnalyticsVerify { capture_dir, out } => {
             let verification = fieldbook::analytics::verify_capture(&capture_dir)?;
             emit_json(&verification)?;

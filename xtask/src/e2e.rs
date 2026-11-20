@@ -33,7 +33,13 @@ pub fn run(report: &mut Report, root: &Path, args: &[String]) -> Result<(), Stri
         return run_ignored(report, root, filter);
     }
     for suite in SUITES {
-        let line = format!("cargo test --test {suite} --locked");
+        // The stress suite contains wall-clock recovery cells. Serializing it
+        // removes contention from concurrent test threads on shared CI hosts.
+        let line = if *suite == "full_universe_stress" {
+            "cargo test --test full_universe_stress --locked -- --test-threads=1".to_owned()
+        } else {
+            format!("cargo test --test {suite} --locked")
+        };
         let outcome = Cmd::new(&line).execute(root)?;
         let failed = outcome.status == "failed";
         println!("[{}] {}", outcome.status, line);

@@ -38,6 +38,7 @@ pub struct CaptureVerification {
     pub journal_provenance_status: String,
     pub artifact_sha256: BTreeMap<String, String>,
     pub journal_manifest_sha256: String,
+    pub journal_directory: String,
     pub journal_segment_sha256: BTreeMap<String, String>,
     pub journal_records: u64,
     pub journal_complete: bool,
@@ -237,6 +238,7 @@ pub fn verify_capture(capture_root: &Path) -> anyhow::Result<CaptureVerification
         journal_provenance_status: journal_provenance_status.to_owned(),
         artifact_sha256,
         journal_manifest_sha256,
+        journal_directory: journal_root.display().to_string(),
         journal_segment_sha256,
         journal_records: journal_verification.record_count,
         journal_complete: journal_verification.complete,
@@ -258,6 +260,8 @@ pub fn write_summary(path: &Path, summary: &CaptureVerification) -> anyhow::Resu
         .with_context(|| format!("writing `{}`", path.display()))?;
     Ok(())
 }
+
+pub mod export;
 
 #[cfg(test)]
 mod tests;
