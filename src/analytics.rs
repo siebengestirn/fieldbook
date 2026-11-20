@@ -12,8 +12,10 @@ use std::{
 };
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
+use serde::Serialize;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::{
     completeness, coverage, journal,

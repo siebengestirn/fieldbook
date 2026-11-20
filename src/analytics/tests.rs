@@ -11,6 +11,7 @@ fn capture_fixture(name: &str) -> PathBuf {
 }
 
 #[test]
+#[ignore = "requires the three operator-local retained captures"]
 fn all_retained_captures_verify_independently() {
     for name in [
         "live-20261119T181218Z/polymarket",
@@ -40,6 +41,7 @@ fn all_retained_captures_verify_independently() {
 }
 
 #[test]
+#[ignore = "requires the operator-local retained captures"]
 fn capture_identity_is_deterministic() {
     let directory = capture_fixture("live-20261119T181218Z/polymarket");
     let first = verify_capture(&directory).expect("first verification");
@@ -49,6 +51,7 @@ fn capture_identity_is_deterministic() {
 }
 
 #[test]
+#[ignore = "requires an operator-local retained capture"]
 fn modified_evidence_hash_is_rejected() {
     let source = capture_fixture("live-20261119T181218Z/polymarket");
     let temp = TempDir::new().expect("tempdir");
