@@ -66,15 +66,26 @@ def parse_added_lines(diff_text: str) -> dict[str, list[tuple[int, str]]]:
     return by_file
 
 
+# Machine-generated codecs are byte-verified by
+# scripts/check_sbe_generated.py. Their lint suppressions and assertion style
+# come from the generator and must not be hand-edited to satisfy this checker.
+GENERATED_PREFIX = "src/generated/"
+
+
 def collect_added_lines(base: str) -> dict[str, list[tuple[int, str]]]:
-    """Check collect added lines."""
+    """Check collect added lines, excluding verified generated output."""
     result = subprocess.run(
         ["git", "diff", base, "--unified=0", "--", "*.rs"],
         check=True,
         capture_output=True,
         text=True,
     )
-    return parse_added_lines(result.stdout)
+    added = parse_added_lines(result.stdout)
+    return {
+        path: lines
+        for path, lines in added.items()
+        if not path.startswith(GENERATED_PREFIX)
+    }
 
 
 def _macro_invocation(text: str, start: int) -> str:

@@ -1,5 +1,6 @@
 [workspace]
 members = ["xtask"]
+exclude = ["tools/sbe-gen"]
 resolver = "2"
 
 [package]
@@ -15,8 +16,8 @@ license = "MIT"
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
-chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5", features = ["derive", "env"] }
+chrono = { version = "0.4", default-features = false, features = ["alloc", "serde", "std"] }
+clap = { version = "4.5", features = ["derive"] }
 crossbeam = "0.8"
 ed25519-dalek = { version = "3.0", features = ["pkcs8", "pem", "rand_core"] }
 flate2 = "1"
@@ -29,7 +30,6 @@ rsa = { version = "0.9.8", features = ["sha2", "pem"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-signature = "2"
 thiserror = "2"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net", "io-util", "io-std"] }
 tokio-socks = "0.5.3"
@@ -46,12 +46,6 @@ tempfile = "3"
 [[bench]]
 name = "numeric_model"
 harness = false
-
-[build-dependencies]
-ergo-sbe = "=0.1.16"
-indexmap = { version = "2", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
-serde_yaml_ng = "0.9"
 
 # Debug information is only needed for workspace frames. Dependencies never
 # need DWARF here, and line tables keep backtraces usable for workspace code.

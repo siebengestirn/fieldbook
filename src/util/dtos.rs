@@ -36,7 +36,7 @@ macro_rules! schemas {
                 clippy::wildcard_imports,
                 rustdoc::broken_intra_doc_links,
             )]
-            include!(concat!(env!("OUT_DIR"), "/", stringify!($schema), ".rs"));
+            include!(concat!("../generated/", stringify!($schema), ".rs"));
         }
 
         impl $schema::TryFromSbe<$schema::UTCTimestampMicrosEncoding> for DateTime<Utc> {

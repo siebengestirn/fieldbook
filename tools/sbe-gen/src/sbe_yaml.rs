@@ -1,12 +1,25 @@
+#![expect(
+    dead_code,
+    reason = "shared transpiler keeps helpers used by the retired build script"
+)]
+
 //! Custom transpiler from yaml to FIX SBE XML.
 
-use std::fmt::{self, Write as _};
+use std::fmt::{
+    self, //
+    Write as _,
+};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
 use indexmap::IndexMap;
 use serde::Deserialize;
-use serde::de::{Deserializer, Error as _, MapAccess, Visitor};
+use serde::de::{
+    Deserializer, //
+    Error as _,
+    MapAccess,
+    Visitor,
+};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 

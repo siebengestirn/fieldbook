@@ -8,3 +8,7 @@ __pycache__/
 
 # Local assurance audit output
 /build/
+
+# Local performance experiments and tool scratch output
+.local/
+tools/sbe-gen/target/
