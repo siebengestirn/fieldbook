@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod application;
 pub mod canonical;
 pub mod capacity;

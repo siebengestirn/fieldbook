@@ -138,6 +138,8 @@ SOURCE_RESPONSIBILITIES = {
     "src/application/file_source.rs": "bounded-memory BufRead line source with exact bytes, physical offsets, registered source identity, one-shot SHA-256 fingerprint, duplicate/schema/malformed evidence and a resume anchor bound to source identity, fingerprint and target",
     "src/application/durable.rs": "local append-only checksummed fsync-capable commit store built on atomic JSON and sha2, one checksummed record carrying ids, dispositions/quarantines and checkpoint, reopen verification with fail-closed truncation/corruption checks, fault injection and a streaming pipeline runner",
     "src/application/durable_segmented.rs": "versioned segmented local durability with explicit finalization and sync boundary, framed segments, checksummed recovery snapshot with bounded Bloom filter, verified archive manifest and restore, exact-scan lookup, fail-closed missing-evidence handling, and verified migration from the legacy commit-file store",
+    "src/analytics.rs": "offline analytics input verification, domain-separated capture identity and hash-checked artifact containment",
+    "src/analytics/tests.rs": "capture verification tests covering all three retained captures, deterministic identity, modified hashes and path traversal",
     "src/collector/mod.rs": "collector core module boundary",
     "src/collector/state.rs": "serialized per-symbol/source state machine, discovery and failover decisions",
     "src/collector/state/tests.rs": "collector state-machine tests for discovery, ordering, capabilities, snapshots, recovery, and readiness",

@@ -173,6 +173,22 @@ async fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Command::AnalyticsVerify { capture_dir, out } => {
+            let verification = fieldbook::analytics::verify_capture(&capture_dir)?;
+            emit_json(&verification)?;
+            if let Some(path) = out {
+                fieldbook::analytics::write_summary(&path, &verification)?;
+            }
+            anyhow::ensure!(
+                verification.journal_complete
+                    && verification.sbe_valid
+                    && verification.completeness_valid
+                    && verification.coverage_valid,
+                "capture verification failed for {}",
+                verification.capture_root
+            );
+            Ok(())
+        }
         Command::Journal { command } => match command {
             JournalCommand::Verify { run } => {
                 let verification = journal::verify_run(&run)?;
