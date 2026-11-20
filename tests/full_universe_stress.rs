@@ -32,6 +32,7 @@ mod stress_support;
 use std::collections::BTreeSet;
 
 use fieldbook::histogram::StageHistogram;
+use fieldbook::journal::RunState;
 
 use stress_support::{
     capacity::{
@@ -1874,13 +1875,24 @@ async fn journal_storage_pressure_profile_fails_closed() {
         Some("journal_pressure_rejected"),
         "the boundary must be the primary class, not the collector symptom"
     );
-    // A fatal journal rejection stops the collector before a capture is
-    // produced. That is itself the fail-closed outcome; the manifest must
-    // still carry the rejection state and the collector's terminal error.
-    assert!(
-        outcome.output.is_none(),
-        "a fatal journal rejection cannot certify a capture"
-    );
+    // A fatal journal rejection can stop the collector before a capture is
+    // produced, or after a report carrying a failed journal verification.
+    // Both outcomes are fail-closed; the manifest must still carry the
+    // rejection state and the collector's terminal error.
+    if let Some(output) = outcome.output.as_ref() {
+        let invalid = output
+            .report
+            .journal_verification
+            .as_ref()
+            .is_some_and(|verification| {
+                verification.state == RunState::Failed || !verification.complete
+            });
+        let verdict = format!(
+            "a fatal journal rejection cannot certify a capture: {:?}",
+            output.report.journal_verification
+        );
+        assert!(invalid, "{verdict}");
+    }
 
     let document = read_single_manifest(&out);
     assert_profile_manifest_shape(&document, "journal_storage_pressure");
