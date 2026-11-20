@@ -246,6 +246,15 @@ pub enum Command {
         #[arg(long, value_name = "URL")]
         target: Option<String>,
     },
+    /// Export verified capture evidence as typed NDJSON into staging.
+    AnalyticsExport {
+        /// Capture directory containing evidence.json and its artifacts.
+        #[arg(value_name = "CAPTURE_DIR")]
+        capture_dir: PathBuf,
+        /// Empty staging directory for generated rows and manifest.
+        #[arg(value_name = "STAGING_DIR")]
+        staging_dir: PathBuf,
+    },
     /// Verify every input artifact of one retained capture for offline export.
     AnalyticsVerify {
         /// Capture directory containing evidence.json and its artifacts.
