@@ -975,6 +975,9 @@ struct RecordHeaderV1 {
 struct RecordHeader {
     schema_version: u32,
     source: String,
+    shard: u16,
+    replica: u16,
+    clock_source: String,
     connection_epoch: u64,
     /// `observation_seq` for v2; the legacy receive fence for v1.
     observation_seq: u64,
@@ -1008,6 +1011,9 @@ impl RecordHeader {
                 Ok(Self {
                     schema_version: header.schema_version,
                     source: header.source,
+                    shard: header.shard,
+                    replica: header.replica,
+                    clock_source: header.clock_source,
                     connection_epoch: header.connection_epoch,
                     observation_seq: header.receive_seq,
                     receive_seq: Some(header.receive_seq),
@@ -1051,6 +1057,9 @@ impl RecordHeader {
                 Ok(Self {
                     schema_version: header.schema_version,
                     source: header.source,
+                    shard: header.shard,
+                    replica: header.replica,
+                    clock_source: header.clock_source,
                     connection_epoch: header.connection_epoch,
                     observation_seq: header.observation_seq,
                     receive_seq: header.receive_seq,
@@ -2014,6 +2023,28 @@ fn verify_segment(
     expected: &ManifestSegment,
     previous: &mut BTreeMap<String, SequenceCursor>,
 ) -> anyhow::Result<(SegmentVerification, u64)> {
+    verify_segment_visiting(
+        run_directory,
+        manifest,
+        expected,
+        previous,
+        MAX_RECORD_BYTES,
+        None,
+    )
+}
+
+/// Verify one segment and optionally deliver each record to a visitor.
+///
+/// Verification checks and the visitor see the same parsed bytes from one file
+/// traversal, so a mutation after an earlier `verify_run` is rejected.
+fn verify_segment_visiting(
+    run_directory: &Path,
+    manifest: &Manifest,
+    expected: &ManifestSegment,
+    previous: &mut BTreeMap<String, SequenceCursor>,
+    max_record_bytes: usize,
+    mut visitor: Option<&mut dyn JournalVisitor>,
+) -> anyhow::Result<(SegmentVerification, u64)> {
     anyhow::ensure!(
         expected.state == "finalized",
         "manifest state is `{}`",
@@ -2022,7 +2053,7 @@ fn verify_segment(
     let path = run_directory.join(&expected.file);
     let file =
         File::open(&path).with_context(|| format!("opening segment `{}`", path.display()))?;
-    let mut reader = JournalReader::new(file);
+    let mut reader = JournalReader::with_limit(file, max_record_bytes);
     let header = read_segment_header(&mut reader.reader)?;
     anyhow::ensure!(
         header.run_id == manifest.run_id,
@@ -2049,6 +2080,8 @@ fn verify_segment(
     let mut last_us: Option<i64> = None;
     let mut ranges: BTreeMap<String, SourceRange> = BTreeMap::new();
     let mut body_bytes = 0u64;
+    let mut segment_ordinal = 0u64;
+    let mut segment_offset = 0u64;
     loop {
         let Some(magic) = reader.marker()? else {
             bail!("segment has no footer");
@@ -2060,9 +2093,51 @@ fn verify_segment(
                 "record schema {} does not match the segment schema {segment_schema}",
                 parsed.header.schema_version
             );
-            body_bytes = body_bytes.saturating_add(parsed.raw.len() as u64);
+            let framed =
+                u64::try_from(parsed.raw.len()).context("record length does not fit u64")?;
+            let record_byte_offset = segment_offset;
+            segment_offset = segment_offset
+                .checked_add(framed)
+                .context("record offset overflow")?;
+            body_bytes = body_bytes
+                .checked_add(framed)
+                .context("segment byte count overflow")?;
             hasher.update(parsed.raw);
-            records = records.saturating_add(1);
+            records = records.checked_add(1).context("record count overflow")?;
+            if let Some(visitor) = &mut visitor {
+                let entry = JournalEntry {
+                    position: JournalPosition {
+                        run_id: manifest.run_id.clone(),
+                        segment_index: expected.index,
+                        segment_file: expected.file.clone(),
+                        segment_record_ordinal: segment_ordinal,
+                        record_byte_offset,
+                        record_byte_length: framed,
+                    },
+                    schema_version: parsed.header.schema_version,
+                    source: &parsed.header.source,
+                    shard: parsed.header.shard,
+                    replica: parsed.header.replica,
+                    clock_source: &parsed.header.clock_source,
+                    connection_epoch: parsed.header.connection_epoch,
+                    observation_seq: parsed.header.observation_seq,
+                    receive_seq: parsed.header.receive_seq,
+                    control_seq: parsed.header.control_seq,
+                    direction: parsed.header.direction,
+                    classification: parsed.header.classification,
+                    signal: parsed.header.signal.as_ref(),
+                    mechanism: parsed.header.mechanism.as_ref(),
+                    received_at_us: parsed.header.received_at_us,
+                    payload: parsed.payload,
+                    payload_sha256: sha256_hex(parsed.payload),
+                    outcome: parsed.header.outcome.as_ref(),
+                    send_result: parsed.header.send_result.as_ref(),
+                };
+                visitor.visit(&entry)?;
+            }
+            segment_ordinal = segment_ordinal
+                .checked_add(1)
+                .context("record ordinal overflow")?;
             let header = parsed.header;
             first_us = Some(first_us.map_or(header.received_at_us, |value| {
                 value.min(header.received_at_us)
@@ -2081,7 +2156,11 @@ fn verify_segment(
             let same_epoch = header.connection_epoch == cursor.epoch;
             if same_epoch {
                 anyhow::ensure!(
-                    header.observation_seq == cursor.observation.saturating_add(1),
+                    header.observation_seq
+                        == cursor
+                            .observation
+                            .checked_add(1)
+                            .context("observation sequence overflow")?,
                     "observation sequence for {source} is not contiguous in epoch {}: {} then {}",
                     header.connection_epoch,
                     cursor.observation,
@@ -2089,7 +2168,11 @@ fn verify_segment(
                 );
                 if let Some(receive_seq) = header.receive_seq {
                     anyhow::ensure!(
-                        receive_seq == cursor.receive.saturating_add(1),
+                        receive_seq
+                            == cursor
+                                .receive
+                                .checked_add(1)
+                                .context("receive sequence overflow")?,
                         "receive sequence for {source} is not contiguous in epoch {}: {} then {receive_seq}",
                         header.connection_epoch,
                         cursor.receive
@@ -2097,7 +2180,11 @@ fn verify_segment(
                 }
                 if let Some(control_seq) = header.control_seq {
                     anyhow::ensure!(
-                        control_seq == cursor.control.saturating_add(1),
+                        control_seq
+                            == cursor
+                                .control
+                                .checked_add(1)
+                                .context("control sequence overflow")?,
                         "control sequence for {source} is not contiguous in epoch {}: {} then {control_seq}",
                         header.connection_epoch,
                         cursor.control
@@ -2281,6 +2368,7 @@ fn read_json_block<R: Read>(file: &mut R) -> anyhow::Result<Vec<u8>> {
 }
 
 /// One framed record parsed in place from a reusable buffer.
+#[derive(Debug)]
 struct ParsedRecordRef<'a> {
     raw: &'a [u8],
     header: RecordHeader,
@@ -2312,16 +2400,29 @@ impl<R: Read> JournalReader<R> {
     }
 
     /// Read the next four-byte framing marker. `None` means clean EOF.
+    ///
+    /// A single `read` may legally return fewer than four bytes even when more
+    /// bytes follow, so partial reads are accumulated until the marker is
+    /// complete or the stream ends.
     fn marker(&mut self) -> anyhow::Result<Option<[u8; 4]>> {
         let mut marker = [0u8; 4];
-        let read = self
-            .reader
-            .read(&mut marker)
-            .context("reading segment framing")?;
-        if read == 0 {
+        let mut filled = 0usize;
+        while filled < marker.len() {
+            let read = self
+                .reader
+                .read(&mut marker[filled..])
+                .context("reading segment framing")?;
+            if read == 0 {
+                break;
+            }
+            filled = filled
+                .checked_add(read)
+                .context("framing read counter overflow")?;
+        }
+        if filled == 0 {
             return Ok(None);
         }
-        anyhow::ensure!(read == 4, "segment ends inside a framing marker");
+        anyhow::ensure!(filled == 4, "segment ends inside a framing marker");
         Ok(Some(marker))
     }
 
@@ -2350,6 +2451,10 @@ impl<R: Read> JournalReader<R> {
                 .try_into()
                 .context("reading record header length")?,
         ) as usize;
+        anyhow::ensure!(
+            header_len <= MAX_HEADER_BYTES,
+            "record header length {header_len} exceeds limit"
+        );
         let payload_len = u32::from_le_bytes(
             self.buffer[12..16]
                 .try_into()
@@ -2532,7 +2637,10 @@ pub struct JournalPosition {
     pub run_id: String,
     pub segment_index: u64,
     pub segment_file: String,
+    /// Zero-based record ordinal within the segment.
     pub segment_record_ordinal: u64,
+    /// Zero-based byte offset from the start of the segment record region,
+    /// after the segment header.
     pub record_byte_offset: u64,
     /// Length of the complete framed record, including magic, lengths and
     /// checksum. The offset is relative to the segment record region.
@@ -2548,6 +2656,9 @@ pub struct JournalEntry<'a> {
     pub position: JournalPosition,
     pub schema_version: u32,
     pub source: &'a str,
+    pub shard: u16,
+    pub replica: u16,
+    pub clock_source: &'a str,
     pub connection_epoch: u64,
     pub observation_seq: u64,
     pub receive_seq: Option<u64>,
@@ -2624,6 +2735,7 @@ pub fn visit_observations_with_config(
         verification.errors.join("; ")
     );
     let manifest: Manifest = serde_json::from_slice(&fs::read(run_directory.join(MANIFEST_FILE))?)?;
+    let mut previous: BTreeMap<String, SequenceCursor> = BTreeMap::new();
     let mut summary = JournalStreamSummary {
         run_id: manifest.run_id.clone(),
         segments: 0,
@@ -2631,60 +2743,36 @@ pub fn visit_observations_with_config(
         record_bytes: 0,
     };
     for segment in &manifest.segments {
-        let file = File::open(run_directory.join(&segment.file))?;
-        let mut reader = JournalReader::with_limit(file, config.max_record_bytes);
-        read_segment_header(&mut reader.reader)?;
-        let mut ordinal = 0u64;
-        let mut byte_offset = 0u64;
-        loop {
-            let Some(magic) = reader.marker()? else {
-                bail!("segment has no footer");
-            };
-            if magic == RECORD_MAGIC {
-                let parsed = reader.read_record()?;
-                let position = JournalPosition {
-                    run_id: manifest.run_id.clone(),
-                    segment_index: segment.index,
-                    segment_file: segment.file.clone(),
-                    segment_record_ordinal: ordinal,
-                    record_byte_offset: byte_offset,
-                    record_byte_length: parsed.raw.len() as u64,
-                };
-                ordinal = ordinal.saturating_add(1);
-                byte_offset = byte_offset.saturating_add(parsed.raw.len() as u64);
-                let entry = JournalEntry {
-                    position,
-                    schema_version: parsed.header.schema_version,
-                    source: &parsed.header.source,
-                    connection_epoch: parsed.header.connection_epoch,
-                    observation_seq: parsed.header.observation_seq,
-                    receive_seq: parsed.header.receive_seq,
-                    control_seq: parsed.header.control_seq,
-                    direction: parsed.header.direction,
-                    classification: parsed.header.classification,
-                    signal: parsed.header.signal.as_ref(),
-                    mechanism: parsed.header.mechanism.as_ref(),
-                    received_at_us: parsed.header.received_at_us,
-                    payload: parsed.payload,
-                    payload_sha256: sha256_hex(parsed.payload),
-                    outcome: parsed.header.outcome.as_ref(),
-                    send_result: parsed.header.send_result.as_ref(),
-                };
-                visitor.visit(&entry)?;
-                summary.records = summary.records.saturating_add(1);
-                summary.record_bytes = summary.record_bytes.saturating_add(parsed.raw.len() as u64);
-                continue;
-            }
-            if magic == FOOTER_MAGIC[..4] {
-                summary.segments = summary.segments.saturating_add(1);
-                break;
-            }
-            bail!("unknown framing marker while streaming records");
-        }
+        let (verified, records) = verify_segment_visiting(
+            run_directory,
+            &manifest,
+            segment,
+            &mut previous,
+            config.max_record_bytes,
+            Some(&mut *visitor),
+        )?;
+        summary.records = summary
+            .records
+            .checked_add(records)
+            .context("streamed record count overflow")?;
+        summary.record_bytes = summary
+            .record_bytes
+            .checked_add(verified.byte_count)
+            .context("streamed byte count overflow")?;
+        summary.segments = summary
+            .segments
+            .checked_add(1)
+            .context("streamed segment count overflow")?;
     }
     anyhow::ensure!(
         summary.records == verification.record_count
-            && summary.segments == verification.segment_count,
+            && summary.segments == verification.segment_count
+            && summary.record_bytes
+                == verification
+                    .segments
+                    .iter()
+                    .map(|segment| segment.byte_count)
+                    .sum::<u64>(),
         "streamed row accounting does not match verification"
     );
     Ok(summary)

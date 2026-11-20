@@ -2094,6 +2094,9 @@ fn stream_rows(run_directory: &Path) -> anyhow::Result<Vec<(JournalPosition, Jou
         let header = RecordHeader {
             schema_version: entry.schema_version,
             source: entry.source.to_owned(),
+            shard: entry.shard,
+            replica: entry.replica,
+            clock_source: entry.clock_source.to_owned(),
             connection_epoch: entry.connection_epoch,
             observation_seq: entry.observation_seq,
             receive_seq: entry.receive_seq,
@@ -2275,4 +2278,120 @@ fn streaming_preserves_absent_optional_fields() {
         assert_eq!(observation.signal, None, "v1 has no signal field");
         assert_eq!(observation.mechanism, None, "v1 has no mechanism field");
     }
+}
+
+#[test]
+fn streaming_preserves_stored_source_metadata() {
+    for fixture in ["journal-v1-golden", "journal-v2-golden"] {
+        let directory = fixture_run(fixture);
+        let mut seen = 0usize;
+        visit_observations(&directory, &mut |entry: &JournalEntry<'_>| {
+            assert_eq!(entry.shard, 0, "{fixture} shard must come from the header");
+            assert_eq!(
+                entry.replica, 0,
+                "{fixture} replica must come from the header"
+            );
+            assert_eq!(
+                entry.clock_source, "unix_epoch_microseconds",
+                "{fixture} clock source must come from the header"
+            );
+            seen += 1;
+            Ok(())
+        })
+        .expect("stream with source metadata");
+        assert!(seen > 0, "{fixture} must deliver observations");
+    }
+}
+
+struct FooterMutatingVisitor {
+    segment: PathBuf,
+    at_ordinal: u64,
+    mutated: bool,
+}
+
+impl JournalVisitor for FooterMutatingVisitor {
+    fn visit(&mut self, entry: &JournalEntry<'_>) -> anyhow::Result<()> {
+        if entry.position.segment_record_ordinal == self.at_ordinal && !self.mutated {
+            let mut bytes = fs::read(&self.segment)?;
+            let last = bytes.len().checked_sub(1).context("empty segment")?;
+            bytes[last] ^= 0x01;
+            fs::write(&self.segment, &bytes)?;
+            self.mutated = true;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn streaming_rejects_footer_mutated_by_visitor() {
+    let (_temp, directory) = copied_fixture("journal-v2-golden");
+    let mut visitor = FooterMutatingVisitor {
+        segment: directory.join("00000000.pmj"),
+        at_ordinal: 2,
+        mutated: false,
+    };
+    let error = visit_observations(&directory, &mut visitor)
+        .expect_err("mutation after initial verification must fail");
+    assert!(visitor.mutated, "visitor must have applied the mutation");
+    assert!(
+        error.to_string().contains("footer"),
+        "footer mismatch must be reported: {error}"
+    );
+}
+
+#[test]
+fn record_header_length_bound_is_enforced() {
+    let header_len = MAX_HEADER_BYTES + 1;
+    let record_len = 8 + header_len + CHECKSUM_BYTES;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(record_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&(header_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.resize(4 + record_len, 0);
+    let mut reader = JournalReader::new(std::io::Cursor::new(bytes));
+    let error = reader.read_record().expect_err("oversize header rejected");
+    assert!(
+        error.to_string().contains("exceeds limit"),
+        "header bound must be reported: {error}"
+    );
+}
+
+struct OneByteAtATime<R> {
+    inner: R,
+}
+
+impl<R: std::io::Read> std::io::Read for OneByteAtATime<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        self.inner.read(&mut buffer[..1])
+    }
+}
+
+#[test]
+fn framing_marker_tolerates_partial_reads() {
+    let mut reader = JournalReader::new(OneByteAtATime {
+        inner: std::io::Cursor::new(*b"PMR1rest"),
+    });
+    let marker = reader
+        .marker()
+        .expect("marker read")
+        .expect("marker present");
+    assert_eq!(
+        marker, RECORD_MAGIC,
+        "partial reads must assemble the marker"
+    );
+}
+
+#[test]
+fn streaming_positions_are_zero_based() {
+    let directory = fixture_run("journal-v1-golden");
+    let rows = stream_rows(&directory).expect("v1 observations");
+    let first = &rows[0].0;
+    assert_eq!(first.segment_record_ordinal, 0, "ordinals start at zero");
+    assert_eq!(
+        first.record_byte_offset, 0,
+        "record region offset starts at zero"
+    );
 }
