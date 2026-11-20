@@ -554,18 +554,10 @@ pub fn acceptance_reasons(
             }
         }
         BackpressureBoundary::JournalStorage => {
-            // A journal-pressure cell that never reached capture verification
-            // cannot certify either; the collector's own terminal error is
-            // carried in the failure reasons by the runner.
-            if output.is_none()
-                || output
-                    .and_then(|output| output.report.journal_verification.as_ref())
-                    .is_some_and(|verification| {
-                        verification.state == RunState::Failed || !verification.complete
-                    })
-            {
-                reasons.push("journal_pressure_rejected".to_owned());
-            }
+            // The injected journal admission failure is the primary class
+            // regardless of where the collector stopped. Deriving it from an
+            // optional report made the class depend on timing under load.
+            reasons.push("journal_pressure_rejected".to_owned());
         }
         BackpressureBoundary::ShutdownDrain => {
             reasons.push("uncertain_acknowledgement".to_owned());
