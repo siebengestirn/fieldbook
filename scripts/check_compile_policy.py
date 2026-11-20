@@ -24,7 +24,7 @@ def validate() -> list[str]:
     manifest = read("Cargo.toml")
     build_script = read("src/util/build.rs")
     dtos = read("src/util/dtos.rs")
-    generated = ROOT / "src" / "generated" / "challenge_orderbook.rs"
+    generated = ROOT / "src" / "generated" / "orderbook.rs"
     errors: list[str] = []
 
     if "[build-dependencies]" in manifest:
@@ -48,6 +48,15 @@ def validate() -> list[str]:
         errors.append("SBE codec must be included from src/generated")
     if not generated.is_file() or generated.stat().st_size == 0:
         errors.append("checked-in SBE codec is missing or empty")
+    else:
+        schema = read("sbe_schemas/fieldbook/orderbook.yaml")
+        codec = generated.read_text(encoding="utf-8")
+        if not schema.startswith("id: 1\nversion: 2\n"):
+            errors.append("supplied SBE schema id or version changed")
+        if "SCHEMA_ID: u16 = 1" not in codec:
+            errors.append("generated codec lost schema id 1")
+        if "SCHEMA_VERSION: u16 = 2" not in codec:
+            errors.append("generated codec lost schema version 2")
 
     if (
         "[profile.dev]" in manifest

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::util::{
     AlignedSbeReader, OrderbookSchema,
-    dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
+    dtos::orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
 };
 
 #[derive(Debug, Serialize)]

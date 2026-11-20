@@ -43,7 +43,7 @@ use fieldbook::{
     time::now_us,
     util::{
         AlignedSbeReader, OrderbookSchema,
-        dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
+        dtos::orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
         sha256_hex,
     },
     verify::{self, VerifySummary},

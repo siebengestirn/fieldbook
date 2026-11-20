@@ -1,4 +1,4 @@
-/// Generated from SBE schema package `challenge_orderbook_messages` id 1 version 2.
+/// Generated from SBE schema package `orderbook_messages` id 1 version 2.
 #[allow(
     clippy::absurd_extreme_comparisons,
     clippy::double_must_use,
@@ -1136,7 +1136,7 @@ impl<'a> SnapshotDecoder<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: Self::SCHEMA_ID,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         let acting_block_length = sbe_rt::checked_header_usize(
@@ -1183,7 +1183,7 @@ impl<'a> SnapshotDecoder<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: Self::SCHEMA_ID,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         let acting_block_length = sbe_rt::checked_header_usize(
@@ -1231,7 +1231,7 @@ impl<'a> SnapshotDecoder<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: Self::SCHEMA_ID,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         let acting_block_length = sbe_rt::checked_header_usize(
@@ -5229,7 +5229,7 @@ impl<'a> PriceLevelUpdateDecoder<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: Self::SCHEMA_ID,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         let acting_block_length = sbe_rt::checked_header_usize(
@@ -5276,7 +5276,7 @@ impl<'a> PriceLevelUpdateDecoder<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: Self::SCHEMA_ID,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         let acting_block_length = sbe_rt::checked_header_usize(
@@ -5324,7 +5324,7 @@ impl<'a> PriceLevelUpdateDecoder<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: Self::SCHEMA_ID,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         let acting_block_length = sbe_rt::checked_header_usize(
@@ -6913,13 +6913,13 @@ pub mod price_level_update_field_meta {
         },
     ];
 }
-pub const SCHEMA_HASH: u64 = 12864351005427035222;
+pub const SCHEMA_HASH: u64 = 15272676121458580380;
 pub const SCHEMA_SHA256: [u8; 32] = [
-    0x00, 0xfe, 0x01, 0xdb, 0xa9, 0x84, 0xcd, 0xd3, 0xf5, 0xc8, 0x68, 0x25, 0x16, 0x05,
-    0x7c, 0x0e, 0xbf, 0xbf, 0x3c, 0x6b, 0xa7, 0x62, 0x5e, 0x34, 0xff, 0xf1, 0xc4, 0xa8,
-    0xb3, 0xef, 0x14, 0x26,
+    0x0b, 0xd9, 0xdd, 0x07, 0xa7, 0x43, 0xe8, 0x20, 0x17, 0x00, 0x26, 0x98, 0xa6, 0xc0,
+    0x12, 0x93, 0x12, 0xac, 0x95, 0x39, 0x3a, 0xa2, 0xf8, 0x83, 0x4e, 0xfb, 0xca, 0xfc,
+    0x86, 0x65, 0x32, 0x3b,
 ];
-pub const SCHEMA_SHA256_HEX: &str = "00fe01dba984cdd3f5c8682516057c0ebfbf3c6ba7625e34fff1c4a8b3ef1426";
+pub const SCHEMA_SHA256_HEX: &str = "0bd9dd07a743e82017002698a6c0129312ac95393aa2f8834efbcafc8665323b";
 pub const SCHEMA_ID: u16 = 1;
 pub const SCHEMA_VERSION: u16 = 2;
 pub mod prelude {
@@ -7155,7 +7155,7 @@ impl<'a> AnyMessage<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: 1,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         match template_id {
@@ -7227,7 +7227,7 @@ impl<'a> AnyMessage<'a> {
             return Err(sbe_rt::DecodeError::WrongSchema {
                 expected: 1,
                 actual: schema_id,
-                expected_name: "challenge_orderbook_messages",
+                expected_name: "orderbook_messages",
             });
         }
         match template_id {

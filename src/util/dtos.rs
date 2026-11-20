@@ -96,25 +96,22 @@ macro_rules! sbe_encode {
     )*};
 }
 
-schemas!(challenge_orderbook);
+schemas!(orderbook);
 
-impl challenge_orderbook::TryFromSbe<challenge_orderbook::SideEncoding> for Side {
+impl orderbook::TryFromSbe<orderbook::SideEncoding> for Side {
     type Error = InvalidSide;
 
-    fn try_from_sbe(wire: challenge_orderbook::SideEncoding) -> Result<Self, Self::Error> {
+    fn try_from_sbe(wire: orderbook::SideEncoding) -> Result<Self, Self::Error> {
         Self::try_from(wire.value())
     }
 }
 
-impl challenge_orderbook::TryToSbe<challenge_orderbook::SideEncoding> for Side {
+impl orderbook::TryToSbe<orderbook::SideEncoding> for Side {
     type Error = std::convert::Infallible;
 
-    fn try_to_sbe(&self) -> Result<challenge_orderbook::SideEncoding, Self::Error> {
-        Ok(challenge_orderbook::SideEncoding::new(*self as u8))
+    fn try_to_sbe(&self) -> Result<orderbook::SideEncoding, Self::Error> {
+        Ok(orderbook::SideEncoding::new(*self as u8))
     }
 }
 
-sbe_encode!(
-    challenge_orderbook::SnapshotDomain,
-    challenge_orderbook::PriceLevelUpdateDomain,
-);
+sbe_encode!(orderbook::SnapshotDomain, orderbook::PriceLevelUpdateDomain,);

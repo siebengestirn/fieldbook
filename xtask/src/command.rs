@@ -47,10 +47,11 @@ impl Cmd {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail = format!("{stdout}{stderr}");
+        // Retain enough output to name a failing test and its assertion.
         let tail = tail
             .lines()
             .rev()
-            .take(20)
+            .take(120)
             .collect::<Vec<_>>()
             .into_iter()
             .rev()

@@ -22,7 +22,7 @@ use crate::{
     orderbook::OrderBook,
     util::{
         AlignedSbeReader, OrderbookSchema,
-        dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
+        dtos::orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
     },
 };
 
@@ -278,9 +278,7 @@ mod tests {
     use super::*;
     use crate::{
         model::OutputMessage,
-        util::dtos::challenge_orderbook::{
-            SnapshotAsksEntryDomain, SnapshotBidsEntryDomain, SnapshotDomain,
-        },
+        util::dtos::orderbook::{SnapshotAsksEntryDomain, SnapshotBidsEntryDomain, SnapshotDomain},
         writer::DirectWriter,
     };
 

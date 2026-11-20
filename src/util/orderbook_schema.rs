@@ -1,5 +1,5 @@
 use super::AlignedSbeSchema;
-use super::dtos::challenge_orderbook::{
+use super::dtos::orderbook::{
     AnyMessage, PriceLevelUpdateSchema, SCHEMA_ID, SCHEMA_VERSION, SnapshotSchema,
 };
 

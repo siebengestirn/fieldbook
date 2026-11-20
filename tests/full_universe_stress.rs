@@ -2085,7 +2085,7 @@ fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile)
 fn assert_sbe_receive_times_monotonic(capture: &std::path::Path) {
     use fieldbook::util::{
         AlignedSbeReader, OrderbookSchema,
-        dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
+        dtos::orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
     };
     let mut reader = AlignedSbeReader::<OrderbookSchema>::open_auto(capture).unwrap();
     let mut last: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
