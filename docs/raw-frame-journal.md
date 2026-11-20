@@ -299,7 +299,13 @@ manifest or segment digests.
 
 No compression, retention policy, disk watermark, or cross-run index is
   implemented. Operators must size the directory and remove old runs.
-`read_records` loads the full run into memory.
+`read_records` and `read_observations` load the full run into memory.
+`visit_observations` streams the same verified records with one record held at
+a time, a reusable buffer and a bounded per-record limit. All three entry
+points share one parser.
+- SBE output is a collector projection. Its level updates carry absolute
+  post-application quantities, not raw venue deltas, and carry no raw journal
+  position. Exporters must not join the two datasets by timestamp.
 - One writer thread serves the process; the queue bound converts overload into
   an explicit failure rather than unbounded memory growth.
 - Payloads are not encrypted. Directory permissions are the access boundary.
