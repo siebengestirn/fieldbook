@@ -2063,3 +2063,216 @@ fn post_commit_failure_does_not_downgrade_finalized_run() {
     assert!(verification.complete, "{:?}", verification.errors);
     assert_eq!(verification.state, RunState::Finalized);
 }
+
+fn fixture_run(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("fixtures/{name}/golden"))
+}
+
+fn copied_fixture(name: &str) -> (TempDir, PathBuf) {
+    let temp = TempDir::new().expect("tempdir");
+    let source = fixture_run(name);
+    let target = temp.path().join("golden");
+    fs::create_dir_all(&target).expect("create fixture directory");
+    for entry in fs::read_dir(&source).expect("read fixture directory") {
+        let path = entry.expect("fixture entry").path();
+        if path.is_file() {
+            let name = path.file_name().expect("fixture file name");
+            fs::copy(&path, target.join(name)).expect("copy fixture file");
+        }
+    }
+    (temp, target)
+}
+
+fn stream_rows(run_directory: &Path) -> anyhow::Result<Vec<(JournalPosition, JournalObservation)>> {
+    let mut rows = Vec::new();
+    visit_observations(run_directory, &mut |entry: &JournalEntry<'_>| {
+        assert_eq!(
+            entry.payload_sha256,
+            sha256_hex(entry.payload),
+            "payload digest must describe the delivered bytes"
+        );
+        let header = RecordHeader {
+            schema_version: entry.schema_version,
+            source: entry.source.to_owned(),
+            connection_epoch: entry.connection_epoch,
+            observation_seq: entry.observation_seq,
+            receive_seq: entry.receive_seq,
+            control_seq: entry.control_seq,
+            received_at_us: entry.received_at_us,
+            classification: entry.classification,
+            direction: entry.direction,
+            signal: entry.signal.cloned(),
+            mechanism: entry.mechanism.cloned(),
+            outcome: entry.outcome.cloned(),
+            send_result: entry.send_result.cloned(),
+            payload_len: entry.payload.len() as u64,
+        };
+        rows.push((
+            entry.position.clone(),
+            observation_from(&header, entry.payload),
+        ));
+        Ok(())
+    })?;
+    Ok(rows)
+}
+
+#[test]
+fn streaming_matches_vector_api_for_v1_and_v2() {
+    for fixture in ["journal-v1-golden", "journal-v2-golden"] {
+        let directory = fixture_run(fixture);
+        let expected = read_observations(&directory).expect("vector observations");
+        let streamed: Vec<JournalObservation> = stream_rows(&directory)
+            .expect("streamed observations")
+            .into_iter()
+            .map(|(_, observation)| observation)
+            .collect();
+        assert_eq!(streamed, expected, "{fixture} must yield identical rows");
+        let verification = verify_run(&directory).expect("verify fixture");
+        assert_eq!(
+            streamed.len() as u64,
+            verification.record_count,
+            "{fixture} row accounting must match verification"
+        );
+    }
+}
+
+#[test]
+fn streaming_exposes_stable_record_positions() {
+    let directory = fixture_run("journal-v2-golden");
+    let rows = stream_rows(&directory).expect("streamed observations");
+    let mut expected_offset = 0u64;
+    for (index, (position, _)) in rows.iter().enumerate() {
+        assert_eq!(position.run_id, "golden", "run id must be stable");
+        assert_eq!(position.segment_index, 0, "one fixture segment");
+        assert_eq!(
+            position.segment_file, "00000000.pmj",
+            "segment file must be named by the manifest"
+        );
+        assert_eq!(
+            position.segment_record_ordinal, index as u64,
+            "record ordinals must follow file order"
+        );
+        assert_eq!(
+            position.record_byte_offset, expected_offset,
+            "byte offset must follow framed record lengths"
+        );
+        expected_offset += position.record_byte_length;
+        assert!(
+            position.record_byte_length > 0,
+            "framed records must have a positive length"
+        );
+    }
+    let summary = visit_observations(&directory, &mut |_entry: &JournalEntry<'_>| Ok(()))
+        .expect("stream summary");
+    assert_eq!(summary.records, rows.len() as u64, "summary row count");
+    assert_eq!(summary.segments, 1, "summary segment count");
+    assert_eq!(
+        summary.record_bytes, expected_offset,
+        "summary byte accounting"
+    );
+}
+
+#[test]
+fn streaming_rejects_checksum_mismatch() {
+    let (_temp, directory) = copied_fixture("journal-v2-golden");
+    let segment = directory.join("00000000.pmj");
+    let mut bytes = fs::read(&segment).expect("read segment");
+    let offset = bytes
+        .windows(b"market_data".len())
+        .position(|window| window == b"market_data")
+        .expect("payload offset");
+    bytes[offset] = b'M';
+    fs::write(&segment, &bytes).expect("write corrupted segment");
+    let error = visit_observations(&directory, &mut |_entry: &JournalEntry<'_>| Ok(()))
+        .expect_err("corrupt run rejected");
+    assert!(
+        error.to_string().contains("checksum"),
+        "checksum failure must be reported: {error}"
+    );
+}
+
+#[test]
+fn streaming_rejects_truncated_segment() {
+    let (_temp, directory) = copied_fixture("journal-v2-golden");
+    let segment = directory.join("00000000.pmj");
+    let length = fs::metadata(&segment).expect("metadata").len();
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&segment)
+        .expect("open segment");
+    file.set_len(length - 8).expect("truncate segment");
+    drop(file);
+    assert!(
+        visit_observations(&directory, &mut |_entry: &JournalEntry<'_>| Ok(())).is_err(),
+        "truncated run must not be streamed"
+    );
+}
+
+#[test]
+fn streaming_rejects_incomplete_run() {
+    let temp = TempDir::new().expect("tempdir");
+    let handle = start(temp.path(), "run");
+    append(
+        &handle,
+        SourceId::new(0, 0),
+        1,
+        1,
+        b"unfinished",
+        DecodeOutcome::decoded(1),
+    );
+    handle.abort(Duration::from_secs(1));
+    let directory = run_directory(temp.path(), "run");
+    assert!(
+        visit_observations(&directory, &mut |_entry: &JournalEntry<'_>| Ok(())).is_err(),
+        "aborted run must not be streamed"
+    );
+}
+
+#[test]
+fn streaming_record_limit_is_enforced() {
+    let directory = fixture_run("journal-v2-golden");
+    let bounded = JournalStreamConfig {
+        max_record_bytes: 1,
+    };
+    let error =
+        visit_observations_with_config(&directory, &bounded, &mut |_entry: &JournalEntry<'_>| {
+            Ok(())
+        })
+        .expect_err("oversize record rejected");
+    assert!(
+        error.to_string().contains("outside the configured bound"),
+        "record bound must be enforced: {error}"
+    );
+    let adequate = JournalStreamConfig {
+        max_record_bytes: MAX_RECORD_BYTES,
+    };
+    assert!(
+        visit_observations_with_config(&directory, &adequate, &mut |_entry: &JournalEntry<'_>| Ok(
+            ()
+        ))
+        .is_ok(),
+        "records within the bound must stream"
+    );
+}
+
+#[test]
+fn repeated_streaming_is_deterministic() {
+    let directory = fixture_run("journal-v2-golden");
+    let first = stream_rows(&directory).expect("first traversal");
+    let second = stream_rows(&directory).expect("second traversal");
+    assert_eq!(
+        first, second,
+        "repeated traversal must yield identical rows"
+    );
+}
+
+#[test]
+fn streaming_preserves_absent_optional_fields() {
+    let directory = fixture_run("journal-v1-golden");
+    let rows = stream_rows(&directory).expect("v1 observations");
+    for (_, observation) in &rows {
+        assert_eq!(observation.control_seq, None, "v1 has no control sequence");
+        assert_eq!(observation.signal, None, "v1 has no signal field");
+        assert_eq!(observation.mechanism, None, "v1 has no mechanism field");
+    }
+}

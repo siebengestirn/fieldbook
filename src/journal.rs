@@ -2020,9 +2020,10 @@ fn verify_segment(
         expected.state
     );
     let path = run_directory.join(&expected.file);
-    let mut file =
+    let file =
         File::open(&path).with_context(|| format!("opening segment `{}`", path.display()))?;
-    let header = read_segment_header(&mut file)?;
+    let mut reader = JournalReader::new(file);
+    let header = read_segment_header(&mut reader.reader)?;
     anyhow::ensure!(
         header.run_id == manifest.run_id,
         "segment run id does not match the manifest"
@@ -2049,23 +2050,18 @@ fn verify_segment(
     let mut ranges: BTreeMap<String, SourceRange> = BTreeMap::new();
     let mut body_bytes = 0u64;
     loop {
-        let mut magic = [0u8; 4];
-        let read = file.read(&mut magic).context("reading segment framing")?;
-        if read == 0 {
+        let Some(magic) = reader.marker()? else {
             bail!("segment has no footer");
-        }
-        if read < 4 {
-            bail!("segment ends inside a framing marker");
-        }
+        };
         if magic == RECORD_MAGIC {
-            let parsed = read_record(&mut file)?;
+            let parsed = reader.read_record()?;
             anyhow::ensure!(
                 parsed.header.schema_version == segment_schema,
                 "record schema {} does not match the segment schema {segment_schema}",
                 parsed.header.schema_version
             );
             body_bytes = body_bytes.saturating_add(parsed.raw.len() as u64);
-            hasher.update(&parsed.raw);
+            hasher.update(parsed.raw);
             records = records.saturating_add(1);
             let header = parsed.header;
             first_us = Some(first_us.map_or(header.received_at_us, |value| {
@@ -2160,12 +2156,15 @@ fn verify_segment(
         }
         if magic == FOOTER_MAGIC[..4] {
             let mut rest = [0u8; 4];
-            file.read_exact(&mut rest).context("reading footer magic")?;
+            reader
+                .reader
+                .read_exact(&mut rest)
+                .context("reading footer magic")?;
             anyhow::ensure!(
                 rest == FOOTER_MAGIC[4..],
                 "segment footer magic is not recognized"
             );
-            let footer = read_footer(&mut file)?;
+            let footer = read_footer(&mut reader.reader)?;
             let checksum = hex_of(&hasher.clone().finalize());
             anyhow::ensure!(
                 footer.finalized,
@@ -2205,7 +2204,11 @@ fn verify_segment(
             );
             let mut trailing = [0u8; 1];
             anyhow::ensure!(
-                file.read(&mut trailing).context("reading segment tail")? == 0,
+                reader
+                    .reader
+                    .read(&mut trailing)
+                    .context("reading segment tail")?
+                    == 0,
                 "segment contains bytes after the footer"
             );
             let source_ranges: Vec<SourceRange> = ranges.values().cloned().collect();
@@ -2229,7 +2232,7 @@ fn verify_segment(
     }
 }
 
-fn read_segment_header(file: &mut File) -> anyhow::Result<SegmentHeader> {
+fn read_segment_header<R: Read>(file: &mut R) -> anyhow::Result<SegmentHeader> {
     let mut magic = [0u8; 8];
     file.read_exact(&mut magic)
         .context("reading segment header magic")?;
@@ -2263,7 +2266,7 @@ fn read_segment_header(file: &mut File) -> anyhow::Result<SegmentHeader> {
     Ok(header)
 }
 
-fn read_json_block(file: &mut File) -> anyhow::Result<Vec<u8>> {
+fn read_json_block<R: Read>(file: &mut R) -> anyhow::Result<Vec<u8>> {
     let mut length = [0u8; 4];
     file.read_exact(&mut length)
         .context("reading block length")?;
@@ -2277,72 +2280,109 @@ fn read_json_block(file: &mut File) -> anyhow::Result<Vec<u8>> {
     Ok(json)
 }
 
-struct ParsedRecord {
+/// One framed record parsed in place from a reusable buffer.
+struct ParsedRecordRef<'a> {
+    raw: &'a [u8],
     header: RecordHeader,
-    payload: Vec<u8>,
-    raw: Vec<u8>,
+    payload: &'a [u8],
 }
 
-fn read_record(file: &mut File) -> anyhow::Result<ParsedRecord> {
-    let mut record_len = [0u8; 4];
-    file.read_exact(&mut record_len)
-        .context("reading record length")?;
-    let record_len = u32::from_le_bytes(record_len) as usize;
-    anyhow::ensure!(
-        record_len <= MAX_RECORD_BYTES,
-        "record length {record_len} exceeds limit"
-    );
-    let mut rest = vec![0u8; record_len];
-    file.read_exact(&mut rest).context("reading record body")?;
-    anyhow::ensure!(
-        rest.len() >= 8 + CHECKSUM_BYTES,
-        "record is shorter than its framing"
-    );
-    let header_len = u32::from_le_bytes(
-        rest[0..4]
-            .try_into()
-            .context("reading record header length")?,
-    ) as usize;
-    let payload_len = u32::from_le_bytes(
-        rest[4..8]
-            .try_into()
-            .context("reading record payload length")?,
-    ) as usize;
-    anyhow::ensure!(
-        header_len
-            .checked_add(payload_len)
-            .and_then(|value| value.checked_add(8 + CHECKSUM_BYTES))
-            == Some(rest.len()),
-        "record length fields are inconsistent"
-    );
-    let header_json = &rest[8..8 + header_len];
-    let payload = rest[8 + header_len..8 + header_len + payload_len].to_vec();
-    let checksum = &rest[rest.len() - CHECKSUM_BYTES..];
-    let mut raw = Vec::with_capacity(RECORD_FRAMING_BYTES + rest.len());
-    raw.extend_from_slice(&RECORD_MAGIC);
-    raw.extend_from_slice(
-        &u32::try_from(rest.len())
-            .context("record exceeds u32")?
-            .to_le_bytes(),
-    );
-    raw.extend_from_slice(&rest);
-    anyhow::ensure!(
-        checksum == sha256_hex(&raw[..raw.len() - CHECKSUM_BYTES]).as_bytes(),
-        "record checksum mismatch"
-    );
-    let header = RecordHeader::parse(header_json)?;
-    anyhow::ensure!(
-        header.payload_len == payload_len as u64,
-        "record payload length does not match its header"
-    );
-    Ok(ParsedRecord {
-        header,
-        payload,
-        raw,
-    })
+/// Reusable, bounded record reader shared by verification and streaming.
+struct JournalReader<R: Read> {
+    reader: R,
+    buffer: Vec<u8>,
+    max_record_bytes: usize,
 }
 
-fn read_footer(file: &mut File) -> anyhow::Result<SegmentFooter> {
+impl<R: Read> JournalReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buffer: Vec::new(),
+            max_record_bytes: MAX_RECORD_BYTES,
+        }
+    }
+
+    fn with_limit(reader: R, max_record_bytes: usize) -> Self {
+        Self {
+            reader,
+            buffer: Vec::new(),
+            max_record_bytes,
+        }
+    }
+
+    /// Read the next four-byte framing marker. `None` means clean EOF.
+    fn marker(&mut self) -> anyhow::Result<Option<[u8; 4]>> {
+        let mut marker = [0u8; 4];
+        let read = self
+            .reader
+            .read(&mut marker)
+            .context("reading segment framing")?;
+        if read == 0 {
+            return Ok(None);
+        }
+        anyhow::ensure!(read == 4, "segment ends inside a framing marker");
+        Ok(Some(marker))
+    }
+
+    /// Parse one framed record without copying its body or payload.
+    fn read_record(&mut self) -> anyhow::Result<ParsedRecordRef<'_>> {
+        let mut length = [0u8; 4];
+        self.reader
+            .read_exact(&mut length)
+            .context("reading record length")?;
+        let record_len = u32::from_le_bytes(length) as usize;
+        anyhow::ensure!(
+            (8 + CHECKSUM_BYTES..=self.max_record_bytes).contains(&record_len),
+            "record length {record_len} is outside the configured bound"
+        );
+        // The checksum covers magic, encoded length and the full body. The
+        // two header-length fields already live inside that body.
+        let total = RECORD_MAGIC.len() + 4 + record_len;
+        self.buffer.resize(total, 0);
+        self.buffer[..4].copy_from_slice(&RECORD_MAGIC);
+        self.buffer[4..8].copy_from_slice(&length);
+        self.reader
+            .read_exact(&mut self.buffer[8..total])
+            .context("reading record body")?;
+        let header_len = u32::from_le_bytes(
+            self.buffer[8..12]
+                .try_into()
+                .context("reading record header length")?,
+        ) as usize;
+        let payload_len = u32::from_le_bytes(
+            self.buffer[12..16]
+                .try_into()
+                .context("reading record payload length")?,
+        ) as usize;
+        anyhow::ensure!(
+            header_len
+                .checked_add(payload_len)
+                .and_then(|value| value.checked_add(8 + CHECKSUM_BYTES))
+                == Some(record_len),
+            "record length fields are inconsistent"
+        );
+        let payload_start = 16 + header_len;
+        let checksum_start = total - CHECKSUM_BYTES;
+        let expected = sha256_hex(&self.buffer[..checksum_start]);
+        anyhow::ensure!(
+            &self.buffer[checksum_start..] == expected.as_bytes(),
+            "record checksum mismatch"
+        );
+        let header = RecordHeader::parse(&self.buffer[16..payload_start])?;
+        anyhow::ensure!(
+            header.payload_len == payload_len as u64,
+            "record payload length does not match its header"
+        );
+        Ok(ParsedRecordRef {
+            raw: &self.buffer,
+            header,
+            payload: &self.buffer[payload_start..checksum_start],
+        })
+    }
+}
+
+fn read_footer<R: Read>(file: &mut R) -> anyhow::Result<SegmentFooter> {
     let json = read_json_block(file).context("reading segment footer")?;
     let mut framed = Vec::with_capacity(FOOTER_MAGIC.len() + 4 + json.len());
     framed.extend_from_slice(&FOOTER_MAGIC);
@@ -2382,7 +2422,7 @@ pub struct JournalRecord {
 ///
 /// `signal` and `mechanism` are `None` for v1 records: those facts were never
 /// stored, and a reader must not fabricate them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalObservation {
     pub schema_version: u32,
     pub source: String,
@@ -2430,9 +2470,31 @@ pub fn read_records(run_directory: &Path) -> anyhow::Result<Vec<JournalRecord>> 
         .collect())
 }
 
+fn observation_from(header: &RecordHeader, payload: &[u8]) -> JournalObservation {
+    JournalObservation {
+        schema_version: header.schema_version,
+        source: header.source.clone(),
+        connection_epoch: header.connection_epoch,
+        observation_seq: header.observation_seq,
+        receive_seq: header.receive_seq,
+        control_seq: header.control_seq,
+        direction: header.direction,
+        classification: header.classification,
+        signal: header.signal.clone(),
+        mechanism: header.mechanism,
+        received_at_us: header.received_at_us,
+        payload: payload.to_vec(),
+        outcome: header.outcome.clone(),
+        send_result: header.send_result.clone(),
+    }
+}
+
 /// Read every retained observation (application data and native controls) from
 /// the finalized segments of one run in file order, preserving the order the
 /// source worker retained them.
+///
+/// This compatibility API materializes the whole run. Exporters use
+/// [`visit_observations`] instead.
 pub fn read_observations(run_directory: &Path) -> anyhow::Result<Vec<JournalObservation>> {
     let verification = verify_run(run_directory)?;
     anyhow::ensure!(
@@ -2443,30 +2505,16 @@ pub fn read_observations(run_directory: &Path) -> anyhow::Result<Vec<JournalObse
     let manifest: Manifest = serde_json::from_slice(&fs::read(run_directory.join(MANIFEST_FILE))?)?;
     let mut observations = Vec::new();
     for segment in &manifest.segments {
-        let mut file = File::open(run_directory.join(&segment.file))?;
-        read_segment_header(&mut file)?;
+        let file = File::open(run_directory.join(&segment.file))?;
+        let mut reader = JournalReader::new(file);
+        read_segment_header(&mut reader.reader)?;
         loop {
-            let mut magic = [0u8; 4];
-            file.read_exact(&mut magic)?;
+            let Some(magic) = reader.marker()? else {
+                bail!("segment has no footer");
+            };
             if magic == RECORD_MAGIC {
-                let parsed = read_record(&mut file)?;
-                let header = parsed.header;
-                observations.push(JournalObservation {
-                    schema_version: header.schema_version,
-                    source: header.source,
-                    connection_epoch: header.connection_epoch,
-                    observation_seq: header.observation_seq,
-                    receive_seq: header.receive_seq,
-                    control_seq: header.control_seq,
-                    direction: header.direction,
-                    classification: header.classification,
-                    signal: header.signal,
-                    mechanism: header.mechanism,
-                    received_at_us: header.received_at_us,
-                    payload: parsed.payload,
-                    outcome: header.outcome,
-                    send_result: header.send_result,
-                });
+                let parsed = reader.read_record()?;
+                observations.push(observation_from(&parsed.header, parsed.payload));
                 continue;
             }
             if magic == FOOTER_MAGIC[..4] {
@@ -2476,6 +2524,170 @@ pub fn read_observations(run_directory: &Path) -> anyhow::Result<Vec<JournalObse
         }
     }
     Ok(observations)
+}
+
+/// Stable storage position of one journal observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalPosition {
+    pub run_id: String,
+    pub segment_index: u64,
+    pub segment_file: String,
+    pub segment_record_ordinal: u64,
+    pub record_byte_offset: u64,
+    /// Length of the complete framed record, including magic, lengths and
+    /// checksum. The offset is relative to the segment record region.
+    pub record_byte_length: u64,
+}
+
+/// One observation delivered to a streaming visitor.
+///
+/// The payload borrows the reader's reusable buffer. A visitor that needs to
+/// retain it must copy it explicitly; the journal is the authoritative copy.
+#[derive(Debug)]
+pub struct JournalEntry<'a> {
+    pub position: JournalPosition,
+    pub schema_version: u32,
+    pub source: &'a str,
+    pub connection_epoch: u64,
+    pub observation_seq: u64,
+    pub receive_seq: Option<u64>,
+    pub control_seq: Option<u64>,
+    pub direction: FrameDirection,
+    pub classification: FrameClassification,
+    pub signal: Option<&'a SessionSignal>,
+    pub mechanism: Option<&'a HeartbeatMechanism>,
+    pub received_at_us: i64,
+    pub payload: &'a [u8],
+    pub payload_sha256: String,
+    pub outcome: Option<&'a DecodeOutcome>,
+    pub send_result: Option<&'a SendResult>,
+}
+
+/// Consumer of streamed journal observations.
+pub trait JournalVisitor {
+    fn visit(&mut self, entry: &JournalEntry<'_>) -> anyhow::Result<()>;
+}
+
+impl<F> JournalVisitor for F
+where
+    F: for<'a> FnMut(&JournalEntry<'a>) -> anyhow::Result<()>,
+{
+    fn visit(&mut self, entry: &JournalEntry<'_>) -> anyhow::Result<()> {
+        self(entry)
+    }
+}
+
+/// Bound on a single framed record accepted by the streaming reader.
+#[derive(Debug, Clone, Copy)]
+pub struct JournalStreamConfig {
+    pub max_record_bytes: usize,
+}
+
+impl Default for JournalStreamConfig {
+    fn default() -> Self {
+        Self {
+            max_record_bytes: MAX_RECORD_BYTES,
+        }
+    }
+}
+
+/// Row accounting for one completed streaming traversal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalStreamSummary {
+    pub run_id: String,
+    pub segments: u64,
+    pub records: u64,
+    pub record_bytes: u64,
+}
+
+/// Visit every retained observation in file order with bounded memory.
+///
+/// Verification runs first through the same record parser. The visitor holds
+/// one record at a time; the payload borrows a reusable buffer.
+pub fn visit_observations(
+    run_directory: &Path,
+    visitor: &mut impl JournalVisitor,
+) -> anyhow::Result<JournalStreamSummary> {
+    visit_observations_with_config(run_directory, &JournalStreamConfig::default(), visitor)
+}
+
+/// Bounded variant of [`visit_observations`] with an explicit record limit.
+pub fn visit_observations_with_config(
+    run_directory: &Path,
+    config: &JournalStreamConfig,
+    visitor: &mut impl JournalVisitor,
+) -> anyhow::Result<JournalStreamSummary> {
+    let verification = verify_run(run_directory)?;
+    anyhow::ensure!(
+        verification.complete,
+        "journal run is not complete: {}",
+        verification.errors.join("; ")
+    );
+    let manifest: Manifest = serde_json::from_slice(&fs::read(run_directory.join(MANIFEST_FILE))?)?;
+    let mut summary = JournalStreamSummary {
+        run_id: manifest.run_id.clone(),
+        segments: 0,
+        records: 0,
+        record_bytes: 0,
+    };
+    for segment in &manifest.segments {
+        let file = File::open(run_directory.join(&segment.file))?;
+        let mut reader = JournalReader::with_limit(file, config.max_record_bytes);
+        read_segment_header(&mut reader.reader)?;
+        let mut ordinal = 0u64;
+        let mut byte_offset = 0u64;
+        loop {
+            let Some(magic) = reader.marker()? else {
+                bail!("segment has no footer");
+            };
+            if magic == RECORD_MAGIC {
+                let parsed = reader.read_record()?;
+                let position = JournalPosition {
+                    run_id: manifest.run_id.clone(),
+                    segment_index: segment.index,
+                    segment_file: segment.file.clone(),
+                    segment_record_ordinal: ordinal,
+                    record_byte_offset: byte_offset,
+                    record_byte_length: parsed.raw.len() as u64,
+                };
+                ordinal = ordinal.saturating_add(1);
+                byte_offset = byte_offset.saturating_add(parsed.raw.len() as u64);
+                let entry = JournalEntry {
+                    position,
+                    schema_version: parsed.header.schema_version,
+                    source: &parsed.header.source,
+                    connection_epoch: parsed.header.connection_epoch,
+                    observation_seq: parsed.header.observation_seq,
+                    receive_seq: parsed.header.receive_seq,
+                    control_seq: parsed.header.control_seq,
+                    direction: parsed.header.direction,
+                    classification: parsed.header.classification,
+                    signal: parsed.header.signal.as_ref(),
+                    mechanism: parsed.header.mechanism.as_ref(),
+                    received_at_us: parsed.header.received_at_us,
+                    payload: parsed.payload,
+                    payload_sha256: sha256_hex(parsed.payload),
+                    outcome: parsed.header.outcome.as_ref(),
+                    send_result: parsed.header.send_result.as_ref(),
+                };
+                visitor.visit(&entry)?;
+                summary.records = summary.records.saturating_add(1);
+                summary.record_bytes = summary.record_bytes.saturating_add(parsed.raw.len() as u64);
+                continue;
+            }
+            if magic == FOOTER_MAGIC[..4] {
+                summary.segments = summary.segments.saturating_add(1);
+                break;
+            }
+            bail!("unknown framing marker while streaming records");
+        }
+    }
+    anyhow::ensure!(
+        summary.records == verification.record_count
+            && summary.segments == verification.segment_count,
+        "streamed row accounting does not match verification"
+    );
+    Ok(summary)
 }
 
 #[cfg(test)]
