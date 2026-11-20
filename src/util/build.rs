@@ -7,7 +7,7 @@ use std::fs;
 use ergo_sbe::miette::{IntoDiagnostic, Result, miette};
 use ergo_sbe::{ConversionSelector, DomainVarData, GenerationConfig, generate_str_to_out_dir};
 
-const SCHEMA: &str = "sbe_schemas/engineering_challenge/challenge_orderbook.yaml";
+const SCHEMA: &str = "sbe_schemas/fieldbook/challenge_orderbook.yaml";
 const COMMON_TYPES: &str = "sbe_schemas/includes/common-types.xml";
 
 fn main() -> Result<()> {

@@ -23,7 +23,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     durable::{
         CommitStore, StreamingLimits, run_streaming_pipeline, run_streaming_pipeline_bounded,
     },

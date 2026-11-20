@@ -6,11 +6,14 @@ use std::{net::SocketAddr, path::PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
-use engineering_challenge::config::{CatalogMode, ExchangeKind, KalshiEnvironment, Settings};
+use fieldbook::config::CatalogMode;
+use fieldbook::config::ExchangeKind;
+use fieldbook::config::KalshiEnvironment;
+use fieldbook::config::Settings;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "engineering-challenge",
+    name = "fieldbook",
     version,
     about = "Low-latency prediction-market order-book collector",
     long_about = "Collect live Kalshi (or public Polymarket) order books into the \
@@ -377,7 +380,7 @@ mod tests {
     #[test]
     fn journal_recover_command_requires_a_run_directory() {
         let cli = Cli::try_parse_from([
-            "engineering-challenge",
+            "fieldbook",
             "journal",
             "recover",
             "/var/lib/prediction/journal/run-1",

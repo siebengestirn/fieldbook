@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 
-use engineering_challenge::{
+use fieldbook::{
     Side, inspect,
     model::OutputMessage,
     util::dtos::challenge_orderbook::{
@@ -57,7 +57,7 @@ fn update(symbol: &str, received_us: i64, exchange_us: i64) -> OutputMessage {
 fn write_capture(messages: Vec<OutputMessage>) -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("capture.sbe");
-    let mut writer = DirectWriter::create(engineering_challenge::writer::WriterOptions {
+    let mut writer = DirectWriter::create(fieldbook::writer::WriterOptions {
         path: path.to_str().unwrap().to_owned(),
         chunk_size: 4096,
         queue: 16,

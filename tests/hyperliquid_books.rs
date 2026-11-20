@@ -30,7 +30,7 @@ use std::{
     time::Duration,
 };
 
-use engineering_challenge::{
+use fieldbook::{
     collector::{CollectorCore, CoreConfig},
     completeness,
     config::{ExchangeKind, HyperliquidSettings, NetworkSettings, Settings},
@@ -281,7 +281,7 @@ fn worker_config(journal: JournalHandle) -> WorkerConfig {
 fn selected_settings(addr: SocketAddr, coins: &[&str]) -> HyperliquidSettings {
     HyperliquidSettings {
         ws_url: format!("ws://{addr}"),
-        books: engineering_challenge::config::HyperliquidBookSettings {
+        books: fieldbook::config::HyperliquidBookSettings {
             perpetuals: coins.iter().map(|coin| (*coin).to_owned()).collect(),
             trades_telemetry: true,
         },
@@ -326,10 +326,7 @@ fn market(coin: &str) -> MarketInfo {
     }
 }
 
-fn write_capture(
-    directory: &Path,
-    messages: Vec<engineering_challenge::model::OutputMessage>,
-) -> PathBuf {
+fn write_capture(directory: &Path, messages: Vec<fieldbook::model::OutputMessage>) -> PathBuf {
     let path = directory.join("capture.sbe");
     let mut writer = DirectWriter::create(WriterOptions {
         path: path.to_str().unwrap().to_owned(),

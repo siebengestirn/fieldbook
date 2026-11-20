@@ -19,7 +19,7 @@ use std::{
     str::FromStr,
 };
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     TargetConnector,
     durable::{CommitStore, StoreFault, load_state, run_streaming_pipeline_bounded},
     file_source::{CheckpointBinding, DurableCheckpoint, FileSource, SourceIdentity},
@@ -86,7 +86,7 @@ fn postgres_live_bounded_batch_drives_real_target() {
             &mut target,
             &anchor,
             &mut store,
-            engineering_challenge::application::durable::StreamingLimits::new(2, usize::MAX, 1),
+            fieldbook::application::durable::StreamingLimits::new(2, usize::MAX, 1),
         )
     };
 
@@ -133,7 +133,7 @@ fn postgres_live_batch_exact_retry_and_changed_payload_are_distinguished() {
     let source_id = identity.source_id().as_str().to_owned();
 
     let observation = |index: usize, value: i64| {
-        engineering_challenge::application::RawObservation {
+        fieldbook::application::RawObservation {
         sequence: index as u64 + 1,
         line_number: index + 1,
         source_id: identity.source_id().clone(),
@@ -153,9 +153,9 @@ fn postgres_live_batch_exact_retry_and_changed_payload_are_distinguished() {
             .map(|(index, ((sequence, offset), value))| {
                 let obs = observation(index, value);
                 let event = transform_observation(&obs).expect("transform observation");
-                engineering_challenge::application::BatchMember {
+                fieldbook::application::BatchMember {
                     event,
-                    source_position: engineering_challenge::application::SourcePosition {
+                    source_position: fieldbook::application::SourcePosition {
                         source_id: source_id.clone(),
                         sequence,
                         offset,
@@ -163,7 +163,7 @@ fn postgres_live_batch_exact_retry_and_changed_payload_are_distinguished() {
                 }
             })
             .collect();
-        engineering_challenge::application::DeliveryBatch::new(&source_id, &target_id, 1, members)
+        fieldbook::application::DeliveryBatch::new(&source_id, &target_id, 1, members)
             .expect("valid batch")
     };
 
@@ -174,7 +174,7 @@ fn postgres_live_batch_exact_retry_and_changed_payload_are_distinguished() {
         assert!(
             receipts.iter().all(|receipt| matches!(
                 receipt,
-                engineering_challenge::application::DeliveryReceipt::DurableCommitted { .. }
+                fieldbook::application::DeliveryReceipt::DurableCommitted { .. }
             )),
             "first batch committed"
         );
@@ -192,7 +192,7 @@ fn postgres_live_batch_exact_retry_and_changed_payload_are_distinguished() {
         assert!(
             receipts.iter().any(|receipt| matches!(
                 receipt,
-                engineering_challenge::application::DeliveryReceipt::Uncertain { .. }
+                fieldbook::application::DeliveryReceipt::Uncertain { .. }
             )),
             "changed payload conflicts with the persisted canonical row"
         );
@@ -238,7 +238,7 @@ fn postgres_live_batch_replays_after_local_commit_failure() {
             &mut target,
             &anchor,
             &mut store,
-            engineering_challenge::application::durable::StreamingLimits::new(2, usize::MAX, 1),
+            fieldbook::application::durable::StreamingLimits::new(2, usize::MAX, 1),
         );
         assert_eq!(
             first.report.uncertain, 2,
@@ -259,7 +259,7 @@ fn postgres_live_batch_replays_after_local_commit_failure() {
             &mut target,
             &resume_anchor,
             &mut replay_store,
-            engineering_challenge::application::durable::StreamingLimits::new(3, usize::MAX, 1),
+            fieldbook::application::durable::StreamingLimits::new(3, usize::MAX, 1),
         )
     };
     assert_eq!(

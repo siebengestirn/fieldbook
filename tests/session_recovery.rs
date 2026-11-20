@@ -15,7 +15,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
-use engineering_challenge::{
+use fieldbook::{
     journal::{
         DataRecord, DecodeOutcome, JournalConfig, JournalHandle, JournalMeta, RawFrame, RunState,
         SyncMode,
@@ -94,8 +94,8 @@ impl MarketDataSession for MockSession {
 
     async fn send_keepalive(
         &mut self,
-    ) -> Result<engineering_challenge::session::HeartbeatRequest, SessionFailure> {
-        Ok(engineering_challenge::session::HeartbeatRequest::default())
+    ) -> Result<fieldbook::session::HeartbeatRequest, SessionFailure> {
+        Ok(fieldbook::session::HeartbeatRequest::default())
     }
 
     async fn request_snapshot(&mut self, _symbols: &[String]) -> Result<(), SessionFailure> {
@@ -455,8 +455,8 @@ async fn failed_journal_append_stops_worker_before_event_forwarding() {
             received_at_us: 1,
             frame: RawFrame::binary(b"first".to_vec()),
             outcome: DecodeOutcome::decoded(1),
-            signal: engineering_challenge::protocol::SessionSignal::MarketData,
-            mechanism: engineering_challenge::protocol::HeartbeatMechanism::Disabled,
+            signal: fieldbook::protocol::SessionSignal::MarketData,
+            mechanism: fieldbook::protocol::HeartbeatMechanism::Disabled,
         })
         .unwrap();
     let run_dir = {
@@ -485,8 +485,8 @@ async fn failed_journal_append_stops_worker_before_event_forwarding() {
         received_at_us: 2,
         frame: RawFrame::binary(large),
         outcome: DecodeOutcome::decoded(1),
-        signal: engineering_challenge::protocol::SessionSignal::MarketData,
-        mechanism: engineering_challenge::protocol::HeartbeatMechanism::Disabled,
+        signal: fieldbook::protocol::SessionSignal::MarketData,
+        mechanism: fieldbook::protocol::HeartbeatMechanism::Disabled,
     });
     for _ in 0..200 {
         if handle.status().state == RunState::Failed {

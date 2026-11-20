@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn rejects_non_zero_bytes_after_a_chunk_sentinel() {
         let path = std::env::temp_dir().join(format!(
-            "engineering-challenge-sentinel-{}-{}.sbe",
+            "fieldbook-sentinel-{}-{}.sbe",
             std::process::id(),
             crate::time::now_us().unwrap_or(0)
         ));

@@ -27,7 +27,7 @@ use tokio::{
     time::sleep,
 };
 
-use engineering_challenge::{
+use fieldbook::{
     Side, completeness,
     config::{ExchangeKind, JournalSyncMode, Settings},
     coordinator, coverage,
@@ -2667,7 +2667,7 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
     let mut sbe_snapshots = 0u64;
     let mut sbe_messages = 0u64;
     let scan = (|| -> anyhow::Result<()> {
-        use engineering_challenge::util::{
+        use fieldbook::util::{
             AlignedSbeReader, OrderbookSchema, dtos::challenge_orderbook::AnyMessage,
         };
         let mut reader = AlignedSbeReader::<OrderbookSchema>::open_auto(&capture)?;
@@ -2676,13 +2676,13 @@ async fn run_cell_inner(directory: &Path, config: &CellConfig) -> CellOutcome {
             match message {
                 AnyMessage::Snapshot(decoder) => {
                     sbe_snapshots += 1;
-                    let snapshot = engineering_challenge::util::dtos::challenge_orderbook::SnapshotDomain::try_from_decoder(decoder)?;
+                    let snapshot = fieldbook::util::dtos::challenge_orderbook::SnapshotDomain::try_from_decoder(decoder)?;
                     observed.insert(snapshot.symbol.clone());
                     anchored.insert(snapshot.symbol);
                 }
                 AnyMessage::PriceLevelUpdate(decoder) => {
                     sbe_deltas += 1;
-                    let update = engineering_challenge::util::dtos::challenge_orderbook::PriceLevelUpdateDomain::try_from_decoder(decoder)?;
+                    let update = fieldbook::util::dtos::challenge_orderbook::PriceLevelUpdateDomain::try_from_decoder(decoder)?;
                     observed.insert(update.symbol);
                 }
                 AnyMessage::Unknown { .. } => {}

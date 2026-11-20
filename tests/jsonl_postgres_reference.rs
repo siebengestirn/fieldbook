@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     Checkpoint, JsonlSource, SourceAdapter, TargetConnector, TransformError,
     postgres::{PostgresFault, PostgresTarget},
     run_jsonl_to_target, transform_observation,

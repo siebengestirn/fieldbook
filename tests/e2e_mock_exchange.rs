@@ -32,7 +32,7 @@ use std::{
     time::Duration,
 };
 
-use engineering_challenge::{
+use fieldbook::{
     Side,
     config::{ExchangeKind, Settings},
     coordinator,

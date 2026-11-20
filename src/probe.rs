@@ -146,7 +146,7 @@ pub async fn run_with_route(
     };
     let report = ProbeReport {
         schema_version: 1,
-        tool: "engineering-challenge network-probe",
+        tool: "fieldbook network-probe",
         binary_version: env!("CARGO_PKG_VERSION"),
         git_commit: option_env!("GIT_COMMIT")
             .or(option_env!("GITHUB_SHA"))
@@ -166,7 +166,7 @@ fn failed_config_report(target: &str) -> ProbeReport {
     // corrected by the operator, not classified for machines.
     ProbeReport {
         schema_version: 1,
-        tool: "engineering-challenge network-probe",
+        tool: "fieldbook network-probe",
         binary_version: env!("CARGO_PKG_VERSION"),
         git_commit: option_env!("GIT_COMMIT")
             .or(option_env!("GITHUB_SHA"))

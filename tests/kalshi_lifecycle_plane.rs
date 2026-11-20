@@ -47,7 +47,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use engineering_challenge::{
+use fieldbook::{
     config::{ExchangeKind, Settings},
     coordinator,
     report::RunReport,

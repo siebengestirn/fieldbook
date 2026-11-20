@@ -18,6 +18,14 @@ Status vocabulary is multi-dimensional:
 `N/A` means the dimension does not apply. `No` means it was not done — never
 read `No` as a defect when the milestone did not claim that dimension.
 
+## Crate identity
+
+The crate, binary and Rust module are named `fieldbook`. Historical evidence
+and source-export filenames retain the former identity `engineering-challenge`
+where it was recorded at capture time. Those files stay byte-exact: rewriting
+them would invalidate their SHA-256 hashes and the evidence chain. The SBE
+schema namespace `challenge_orderbook` is a wire contract and is unchanged.
+
 ## Integration history (exact commits)
 
 | Commit | Integration |

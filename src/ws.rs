@@ -408,7 +408,7 @@ async fn http_connect_tunnel(
         // The header is consumed by the proxy only and never logged.
         request.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
     }
-    request.push_str("User-Agent: engineering-challenge-collector\r\n\r\n");
+    request.push_str("User-Agent: fieldbook-collector\r\n\r\n");
     tokio::io::AsyncWriteExt::write_all(&mut stream, request.as_bytes())
         .await
         .context("writing proxy CONNECT request")?;

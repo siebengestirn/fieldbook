@@ -21,7 +21,7 @@ REPLICAS="${LIVE_REPLICAS:-1}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_ROOT="${LIVE_EVIDENCE_DIR:-$ROOT/captures/live-$STAMP}"
 case "$OUT_ROOT" in /*) ;; *) OUT_ROOT="$ROOT/$OUT_ROOT" ;; esac
-BIN="$ROOT/target/release/engineering-challenge"
+BIN="$ROOT/target/release/fieldbook"
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "ERROR: cargo is required (install the repository-pinned Rust 1.99.1 toolchain)." >&2

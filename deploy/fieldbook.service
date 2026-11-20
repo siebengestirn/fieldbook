@@ -10,7 +10,7 @@ User=collector
 Group=collector
 
 # Binary and config
-ExecStart=/usr/local/bin/engineering-challenge --config /etc/engineering-challenge/settings.toml
+ExecStart=/usr/local/bin/fieldbook --config /etc/fieldbook/settings.toml
 
 # Security hardening
 NoNewPrivileges=yes
@@ -37,10 +37,10 @@ MemoryMax=4G
 CPUQuota=200%
 
 # Output and state directories
-ReadWritePaths=/var/lib/engineering-challenge /var/log/engineering-challenge
-StateDirectory=engineering-challenge
-LogsDirectory=engineering-challenge
-CacheDirectory=engineering-challenge
+ReadWritePaths=/var/lib/fieldbook /var/log/fieldbook
+StateDirectory=fieldbook
+LogsDirectory=fieldbook
+CacheDirectory=fieldbook
 
 # Restart policy
 Restart=on-failure

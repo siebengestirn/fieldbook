@@ -31,7 +31,7 @@ mod stress_support;
 
 use std::collections::BTreeSet;
 
-use engineering_challenge::histogram::StageHistogram;
+use fieldbook::histogram::StageHistogram;
 
 use stress_support::{
     capacity::{
@@ -837,7 +837,7 @@ async fn successful_manifest_is_complete_and_published() {
     let bytes = std::fs::read(&body_path).unwrap();
     assert_eq!(
         entry["body_sha256"].as_str(),
-        Some(engineering_challenge::util::sha256_hex(&bytes).as_str()),
+        Some(fieldbook::util::sha256_hex(&bytes).as_str()),
         "the indexed hash must match the published body"
     );
 
@@ -2083,7 +2083,7 @@ fn sweep_config(seed: u64, symbols: usize, events: usize, profile: SweepProfile)
 /// Snapshots and deltas both carry a receive time; a recovered book must have
 /// monotonic receive order even across a failover snapshot.
 fn assert_sbe_receive_times_monotonic(capture: &std::path::Path) {
-    use engineering_challenge::util::{
+    use fieldbook::util::{
         AlignedSbeReader, OrderbookSchema,
         dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
     };
@@ -2305,7 +2305,7 @@ async fn disconnect_many_instruments_reanchor_certifies_coverage() {
 /// the gap. This is the contract the stress mock cannot synthesize on the wire.
 #[test]
 fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
-    use engineering_challenge::{
+    use fieldbook::{
         collector::{CollectorCore, CoreConfig},
         config::ExchangeKind,
         exchange::ExchangeCapabilities,
@@ -2316,8 +2316,7 @@ fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
     const SOURCE_A: SourceId = SourceId::new(0, 0);
     const SOURCE_B: SourceId = SourceId::new(0, 1);
 
-    let mut settings =
-        engineering_challenge::config::Settings::for_exchange(ExchangeKind::Polymarket);
+    let mut settings = fieldbook::config::Settings::for_exchange(ExchangeKind::Polymarket);
     settings.collector.shards = 1;
     settings.collector.replicas = 2;
     let mut core = CollectorCore::new(
@@ -2336,16 +2335,16 @@ fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
         tick_size_us: Some(10_000),
         price_ranges: Vec::new(),
         price_level_structure: None,
-        numeric_spec: engineering_challenge::model::NumericSpec::default(),
+        numeric_spec: fieldbook::model::NumericSpec::default(),
     };
     core.apply_discovery(NOW, vec![market]).unwrap();
     core.drain_controls();
     for source in [SOURCE_A, SOURCE_B] {
         core.handle_status(
-            engineering_challenge::model::SourceStatus {
+            fieldbook::model::SourceStatus {
                 source,
                 connected: true,
-                ..engineering_challenge::model::SourceStatus::new(source)
+                ..fieldbook::model::SourceStatus::new(source)
             },
             NOW,
         );
@@ -2353,7 +2352,7 @@ fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
     let snapshot =
         |bid: i64, ask: i64, received: i64, epoch: u64, seq: u64| ExchangeEvent::Snapshot {
             native_symbol: "A".to_owned(),
-            book: engineering_challenge::model::BookSnapshot {
+            book: fieldbook::model::BookSnapshot {
                 bids: vec![Level::new(bid, 10_000_000).unwrap()],
                 asks: vec![Level::new(ask, 5_000_000).unwrap()],
             },
@@ -2369,10 +2368,10 @@ fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
     core.handle_event(SOURCE_A, snapshot(400_000, 600_000, NOW, 1, 1));
     core.handle_event(SOURCE_B, snapshot(405_000, 595_000, NOW + 50, 1, 2));
     core.handle_status(
-        engineering_challenge::model::SourceStatus {
+        fieldbook::model::SourceStatus {
             source: SOURCE_A,
             connected: false,
-            ..engineering_challenge::model::SourceStatus::new(SOURCE_A)
+            ..fieldbook::model::SourceStatus::new(SOURCE_A)
         },
         NOW + 1,
     );
@@ -2380,9 +2379,7 @@ fn disconnect_delayed_old_epoch_frames_are_rejected_by_the_recovery_fence() {
         .drain_controls()
         .into_iter()
         .find_map(|(source, control)| match control {
-            engineering_challenge::model::Control::Recover { generation, .. }
-                if source == SOURCE_B =>
-            {
+            fieldbook::model::Control::Recover { generation, .. } if source == SOURCE_B => {
                 Some(generation)
             }
             _ => None,
@@ -2682,7 +2679,8 @@ async fn stage_timing_cell_records_real_writer_write_latency() {
     assert!(write.min_ns <= write.max_ns);
     assert_eq!(
         write.buckets.len(),
-        engineering_challenge::histogram::BUCKET_COUNT
+        fieldbook::histogram::BUCKET_COUNT,
+        "histogram bucket count must equal the configured value"
     );
 
     match &timing.writer_queue_wait {

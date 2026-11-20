@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use engineering_challenge::{
+use fieldbook::{
     application::{
         BatchMember, DeliveryBatch, RawObservation, SourcePosition,
         durable::{

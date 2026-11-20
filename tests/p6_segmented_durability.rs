@@ -13,7 +13,7 @@ use std::{
     path::Path, //
 };
 
-use engineering_challenge::application::{
+use fieldbook::application::{
     CommitIntent, CommitSink,
     durable::{CommitStore, load_state},
     durable_segmented::{
