@@ -246,6 +246,15 @@ pub enum Command {
         #[arg(long, value_name = "URL")]
         target: Option<String>,
     },
+    /// Verify every input artifact of one retained capture for offline export.
+    AnalyticsVerify {
+        /// Capture directory containing evidence.json and its artifacts.
+        #[arg(value_name = "CAPTURE_DIR")]
+        capture_dir: PathBuf,
+        /// Optional path for the JSON verification summary.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Inspect a raw-frame journal.
     Journal {
         #[command(subcommand)]
