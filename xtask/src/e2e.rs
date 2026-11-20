@@ -45,6 +45,8 @@ pub fn run(report: &mut Report, root: &Path, args: &[String]) -> Result<(), Stri
         println!("[{}] {}", outcome.status, line);
         report.push(outcome);
         if failed {
+            println!("--- failed step output ---");
+            println!("{}", outcome.output_tail);
             return Ok(());
         }
     }
