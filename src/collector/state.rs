@@ -26,7 +26,7 @@ use crate::{
     recovery::{RecoveryFence, RecoveryTarget},
     time::utc_from_us,
     util::{
-        dtos::challenge_orderbook::{
+        dtos::orderbook::{
             PriceLevelUpdateDomain, SnapshotAsksEntryDomain, SnapshotBidsEntryDomain,
             SnapshotDomain,
         },

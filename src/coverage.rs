@@ -53,7 +53,7 @@ use crate::{
     report::{MarketMetadata, RunReport},
     util::{
         AlignedSbeReader, OrderbookSchema,
-        dtos::challenge_orderbook::{AnyMessage, SnapshotDomain},
+        dtos::orderbook::{AnyMessage, SnapshotDomain},
         sha256_hex,
     },
 };
@@ -305,10 +305,9 @@ fn scan_capture(input: &Path, chunk_size: &str) -> anyhow::Result<(ObservedSymbo
                 anchored.insert(snapshot.symbol);
             }
             AnyMessage::PriceLevelUpdate(decoder) => {
-                let update = crate::util::dtos::challenge_orderbook::PriceLevelUpdateDomain::try_from_decoder(
-                    decoder,
-                )
-                .context("decoding SBE price-level update")?;
+                let update =
+                    crate::util::dtos::orderbook::PriceLevelUpdateDomain::try_from_decoder(decoder)
+                        .context("decoding SBE price-level update")?;
                 all.insert(update.symbol);
             }
             AnyMessage::Unknown { .. } => {}

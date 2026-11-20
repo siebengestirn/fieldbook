@@ -24,7 +24,8 @@ The crate, binary and Rust module are named `fieldbook`. Historical evidence
 and source-export filenames retain the former identity `engineering-challenge`
 where it was recorded at capture time. Those files stay byte-exact: rewriting
 them would invalidate their SHA-256 hashes and the evidence chain. The SBE
-schema namespace `challenge_orderbook` is a wire contract and is unchanged.
+wire identity — `schemaId`, `version`, template IDs and field IDs — is retained.
+The package and module names are internal: `orderbook_messages` and `orderbook`.
 
 ## Integration history (exact commits)
 

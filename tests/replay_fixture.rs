@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use fieldbook::{
     config::Settings,
     replay,
-    util::{AlignedSbeReader, OrderbookSchema, dtos::challenge_orderbook::AnyMessage},
+    util::{AlignedSbeReader, OrderbookSchema, dtos::orderbook::AnyMessage},
 };
 
 #[test]

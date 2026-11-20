@@ -28,7 +28,7 @@ use serde::Serialize;
 
 use crate::util::{
     AlignedSbeReader, OrderbookSchema,
-    dtos::challenge_orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
+    dtos::orderbook::{AnyMessage, PriceLevelUpdateDomain, SnapshotDomain},
 };
 
 /// Cap on per-symbol entries in [`CompletenessSummary::per_symbol`] and on
@@ -358,7 +358,7 @@ mod tests {
     use crate::{
         Side,
         model::OutputMessage,
-        util::dtos::challenge_orderbook::{
+        util::dtos::orderbook::{
             PriceLevelUpdateDomain, SnapshotAsksEntryDomain, SnapshotBidsEntryDomain,
             SnapshotDomain,
         },

@@ -23,7 +23,7 @@ use fieldbook::{
     metrics::{CollectorStats, WriterStats},
     model::{MarketInfo, NumericSpec, OutputMessage},
     report::{MarketMetadata, ReportConfig, RunReport},
-    util::dtos::challenge_orderbook::{
+    util::dtos::orderbook::{
         PriceLevelUpdateDomain, SnapshotAsksEntryDomain, SnapshotBidsEntryDomain, SnapshotDomain,
     },
     writer::DirectWriter,

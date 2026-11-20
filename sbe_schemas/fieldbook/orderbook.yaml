@@ -1,6 +1,6 @@
 id: 1
 version: 2
-description: Engineering challenge orderbook update schema.
+description: Fieldbook orderbook update schema.
 
 messages:
   Snapshot:

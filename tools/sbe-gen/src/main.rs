@@ -26,9 +26,9 @@ use ergo_sbe::{
     miette::{IntoDiagnostic, Result, miette},
 };
 
-const SCHEMA: &str = "sbe_schemas/fieldbook/challenge_orderbook.yaml";
+const SCHEMA: &str = "sbe_schemas/fieldbook/orderbook.yaml";
 const COMMON_TYPES: &str = "sbe_schemas/includes/common-types.xml";
-const MODULE: &str = "challenge_orderbook";
+const MODULE: &str = "orderbook";
 
 fn main() -> Result<()> {
     let mut schema_root = PathBuf::from(".");
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
         .into_diagnostic()
         .map_err(|error| miette!("common types read: {error}"))?;
     let xml = schema
-        .to_xml("challenge_orderbook_messages", &common_types)
+        .to_xml("orderbook_messages", &common_types)
         .map_err(|error| miette!("to_xml: {error}"))?;
     let config = GenerationConfig::new(MODULE)
         .with_domain_objects(DomainVarData::Strings)

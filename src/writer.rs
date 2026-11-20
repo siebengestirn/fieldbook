@@ -1176,7 +1176,7 @@ mod tests {
 
     use super::*;
     use crate::Side;
-    use crate::util::dtos::challenge_orderbook::PriceLevelUpdateDomain;
+    use crate::util::dtos::orderbook::PriceLevelUpdateDomain;
     use crate::util::{AlignedSbeReader, OrderbookSchema};
 
     const TINY_TIMEOUT: Duration = Duration::from_millis(100);

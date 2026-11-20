@@ -14,7 +14,7 @@ All measurements used an isolated target directory inside this repository.
 ## Changes
 
 1. **Generated SBE codec is checked in.** The 7,391-line module lives at
-   `src/generated/challenge_orderbook.rs` and is included directly by
+   `src/generated/orderbook.rs` and is included directly by
    `src/util/dtos.rs`. Generation moved to `tools/sbe-gen`, a standalone crate
    excluded from the workspace. The main build script now only tracks the two
    commit environment variables used by `option_env!`. No build-dependency
@@ -72,6 +72,9 @@ cargo xtask ci
 ## Boundaries
 
 No runtime behaviour, feature surface or safety gate was removed. The
-generated codec is byte-identical to the previous build output (SHA-256
-`6eab1a9de5826bd5372b396330f190213fa9ed0bfbe758dee92f21f9784e15ea`).
+checked-in codec is reproducible from the schema; `check_sbe_generated.py`
+compares its bytes. The internal module and package names now use
+`orderbook`, while `schemaId`, `version` and field IDs stayed at their
+supplied values and golden captures still decode. Current codec SHA-256:
+`2b8340ae33063bfbe71f97abd87d1d6546d8de869bc3b15f18071fd0ecf7b7f6`.
 Measurements describe this host and toolchain only.

@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 use fieldbook::{
     Side, inspect,
     model::OutputMessage,
-    util::dtos::challenge_orderbook::{
+    util::dtos::orderbook::{
         PriceLevelUpdateDomain, SnapshotAsksEntryDomain, SnapshotBidsEntryDomain, SnapshotDomain,
     },
     writer::DirectWriter,

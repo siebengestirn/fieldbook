@@ -181,7 +181,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/util/mod.rs": "SBE utility module exports",
     "src/util/numeric.rs": "exact instrument-scale to SBE numeric conversion",
     "src/util/orderbook_schema.rs": "schema-facing book message definitions/adaptation",
-    "src/generated/challenge_orderbook.rs": "checked-in SBE codec generated from the supplied schema and verified byte-for-byte by check_sbe_generated.py",
+    "src/generated/orderbook.rs": "checked-in SBE codec generated from the supplied schema and verified byte-for-byte by check_sbe_generated.py",
 }
 
 # Anchors that make the main structural claims falsifiable against code.
@@ -512,7 +512,7 @@ def collect_module_reachability(root: Path = ROOT) -> set[str]:
     # The checked-in codec is pulled in through a macro-generated `include!`,
     # which this conservative module scanner cannot resolve. It is verified
     # byte-for-byte against the schema by check_sbe_generated.py instead.
-    reachable: set[str] = {"src/generated/challenge_orderbook.rs"}
+    reachable: set[str] = {"src/generated/orderbook.rs"}
     pending = [path for path in roots if path.exists()]
     while pending:
         current = pending.pop()

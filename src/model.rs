@@ -7,7 +7,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::Side;
-use crate::util::dtos::challenge_orderbook::{PriceLevelUpdateDomain, SnapshotDomain};
+use crate::util::dtos::orderbook::PriceLevelUpdateDomain;
+use crate::util::dtos::orderbook::SnapshotDomain;
 
 /// Terminal disposition of one decoded order-book delta event.
 ///
