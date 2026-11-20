@@ -1851,9 +1851,9 @@ async fn journal_storage_pressure_profile_fails_closed() {
             queue_capacity: 1,
             enqueue_timeout_ms: 1,
         }),
-        events: 300,
-        limits: Some((20, 3)),
-        ..headless_cell_config(34, 200)
+        events: 2000,
+        limits: Some((5, 1)),
+        ..headless_cell_config(34, 50)
     };
     let outcome = stress_support::runner::run_cell(directory.path(), &config, Some(&out)).await;
     assert!(
