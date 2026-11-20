@@ -10,10 +10,12 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, ensure};
+use anyhow::Context;
+use anyhow::ensure;
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::{
     journal::{self, DecodeOutcome, JournalEntry},
@@ -24,7 +26,8 @@ use crate::{
     },
 };
 
-use super::{EXPORT_SCHEMA_VERSION, verify_capture};
+use super::EXPORT_SCHEMA_VERSION;
+use super::verify_capture;
 
 const CAPTURE_ID_DOMAIN: &[u8] = b"fieldbook.export.v1";
 
