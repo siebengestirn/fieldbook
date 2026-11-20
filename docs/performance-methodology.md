@@ -143,9 +143,15 @@ before claiming a compile-time gain for that path.
 
 `cargo bench --bench journal_reader` compares `read_observations` with
 `visit_observations` over 200 traversals of the checked-in v2 golden run.
-On this host the vector API took 178,191 ns per traversal and the visitor
-169,828 ns. The fixture is small; this compares the shared parser, not
-throughput or memory behaviour at capture scale.
+Two recorded runs describe different commits and must not be combined:
+
+| Run | Commit | Vector | Visitor |
+|---|---|---:|---:|
+| P2.1 implementation | `3f4312f` | 178,191 ns | 169,828 ns |
+| Review-bundle run | `a761206` | 166,937 ns | 161,085 ns |
+
+The fixture is small; these compare the shared parser, not throughput or
+memory behaviour at capture scale.
 
 ## Reproduce
 

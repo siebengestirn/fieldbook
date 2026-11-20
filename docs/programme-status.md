@@ -27,6 +27,14 @@ them would invalidate their SHA-256 hashes and the evidence chain. The SBE
 wire identity — `schemaId`, `version`, template IDs and field IDs — is retained.
 The package and module names are internal: `orderbook_messages` and `orderbook`.
 
+## Analytics workstream
+
+PR #17 (`3f4312f`) delivered P2.1: the verified streaming journal visitor,
+with v1/v2 parity tests and a reader benchmark. P2.1a closes the visitor
+metadata and second-pass verification gaps. Analytics milestones from P2.2
+use the `AN-` prefix, which keeps them distinct from the existing
+JSONL-to-target P5 and durable-file-to-target P6 applications.
+
 ## Integration history (exact commits)
 
 | Commit | Integration |
