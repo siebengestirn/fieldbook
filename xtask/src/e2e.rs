@@ -18,7 +18,7 @@ const SUITES: &[&str] = &[
     "lifecycle_churn",
     "full_universe_stress",
     "jsonl_postgres_reference",
-    "p6_durable_pipeline",
+    "durable_pipeline",
 ];
 
 pub fn run(report: &mut Report, root: &Path, args: &[String]) -> Result<(), String> {

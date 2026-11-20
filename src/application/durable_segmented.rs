@@ -4,7 +4,7 @@
 //! [`crate::application::DurableStore`] abstraction. Segments hold multiple
 //! framed commits, are bounded by record count and encoded bytes, rotate into
 //! a verified archive, and are finalized with separate record, footer, rename
-//! and directory sync boundaries. See `docs/p6-2-design.md`.
+//! and directory sync boundaries. See `docs/segmented-durability-design.md`.
 
 use std::{
     fs::{File, OpenOptions},

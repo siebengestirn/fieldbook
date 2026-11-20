@@ -27,6 +27,7 @@ pub fn checks(report: &mut Report, root: &Path) -> Result<(), String> {
         "python3 scripts/check_architecture.py --check",
         "python3 scripts/check_generated_paths.py",
         "python3 scripts/check_compile_policy.py",
+        "python3 scripts/check_naming_conventions.py",
     ] {
         let outcome = Cmd::new(script).execute(root)?;
         let failed = outcome.status == "failed";

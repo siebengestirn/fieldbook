@@ -149,21 +149,21 @@ fn target_rejection_requires_a_durable_quarantine_before_checkpoint_advance() {
     };
     assert_eq!(
         report.rejected, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:150"
+        "pg streaming runner tests/durable_pipeline.rs:150"
     );
     assert_eq!(
         report.quarantined, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:151"
+        "pg streaming runner tests/durable_pipeline.rs:151"
     );
     assert_eq!(
         report.last_committed_sequence, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:152"
+        "pg streaming runner tests/durable_pipeline.rs:152"
     );
     let quarantined_store = store_at(directory.path(), "fixture", bytes, "pg-local");
     assert_eq!(
         quarantined_store.state().quarantine_count(),
         1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:154"
+        "pg streaming runner tests/durable_pipeline.rs:154"
     );
 
     let failed_directory = tempfile::tempdir().expect("failed tempdir");
@@ -187,11 +187,11 @@ fn target_rejection_requires_a_durable_quarantine_before_checkpoint_advance() {
     };
     assert_eq!(
         failed.uncertain, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:175"
+        "pg streaming runner tests/durable_pipeline.rs:175"
     );
     assert_eq!(
         failed.last_committed_sequence, 0,
-        "pg streaming runner tests/p6_durable_pipeline.rs:176"
+        "pg streaming runner tests/durable_pipeline.rs:176"
     );
     assert_eq!(
         failed.total_read, 1,
@@ -234,20 +234,20 @@ fn streaming_runner_stops_before_a_later_record_can_overtake_uncertain_delivery(
     );
     assert_eq!(
         result.report.uncertain, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:216"
+        "pg streaming runner tests/durable_pipeline.rs:216"
     );
     assert_eq!(
         result.report.obligations.len(),
         1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:217"
+        "pg streaming runner tests/durable_pipeline.rs:217"
     );
     assert_eq!(
         result.checkpoint.last_committed_sequence, 0,
-        "pg streaming runner tests/p6_durable_pipeline.rs:218"
+        "pg streaming runner tests/durable_pipeline.rs:218"
     );
     assert!(
         store.state().records.is_empty(),
-        "pg streaming runner tests/p6_durable_pipeline.rs:219"
+        "pg streaming runner tests/durable_pipeline.rs:219"
     );
 }
 
@@ -277,7 +277,7 @@ fn streaming_runner_stops_when_local_commit_fails_after_target_commit() {
     assert_eq!(
         target.simulator().committed_count(),
         1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:245"
+        "pg streaming runner tests/durable_pipeline.rs:245"
     );
     assert_eq!(
         result.report.total_read, 1,
@@ -285,15 +285,15 @@ fn streaming_runner_stops_when_local_commit_fails_after_target_commit() {
     );
     assert_eq!(
         result.report.uncertain, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:250"
+        "pg streaming runner tests/durable_pipeline.rs:250"
     );
     assert_eq!(
         result.checkpoint.last_committed_sequence, 0,
-        "pg streaming runner tests/p6_durable_pipeline.rs:251"
+        "pg streaming runner tests/durable_pipeline.rs:251"
     );
     assert!(
         store.state().records.is_empty(),
-        "pg streaming runner tests/p6_durable_pipeline.rs:252"
+        "pg streaming runner tests/durable_pipeline.rs:252"
     );
 }
 
@@ -332,12 +332,12 @@ fn streaming_quarantine_preserves_exact_source_bytes() {
     );
     assert_eq!(
         malformed_result.report.quarantined, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:288"
+        "pg streaming runner tests/durable_pipeline.rs:288"
     );
     assert_eq!(
         malformed_store.state().records[0].quarantines[0].raw_bytes_hex,
         "7b6e6f74206a736f6e7d",
-        "pg streaming runner tests/p6_durable_pipeline.rs:289"
+        "pg streaming runner tests/durable_pipeline.rs:289"
     );
 
     let valid = record("transform-rejected", 1);
@@ -369,12 +369,12 @@ fn streaming_quarantine_preserves_exact_source_bytes() {
     }
     assert_eq!(
         transform_result.report.quarantined, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:321"
+        "pg streaming runner tests/durable_pipeline.rs:321"
     );
     assert_eq!(
         valid_store.state().records[0].quarantines[0].raw_bytes_hex,
         expected_hex,
-        "pg streaming runner tests/p6_durable_pipeline.rs:322"
+        "pg streaming runner tests/durable_pipeline.rs:322"
     );
 }
 
@@ -402,11 +402,11 @@ fn restart_from_durable_store_preserves_previously_committed_records() {
     assert_eq!(first.delivered, 1);
     assert_eq!(
         first.outstanding, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:350"
+        "pg streaming runner tests/durable_pipeline.rs:350"
     );
     assert_eq!(
         first.total_read, 2,
-        "pg streaming runner tests/p6_durable_pipeline.rs:351"
+        "pg streaming runner tests/durable_pipeline.rs:351"
     );
     assert_eq!(first.last_committed_sequence, 1);
     assert_eq!(accounted(&first), first.total_read);
@@ -468,11 +468,11 @@ fn db_unavailable_leaves_checkpoint_and_durable_store_unmoved() {
     };
     assert_eq!(
         report.outstanding, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:410"
+        "pg streaming runner tests/durable_pipeline.rs:410"
     );
     assert_eq!(
         report.total_read, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:411"
+        "pg streaming runner tests/durable_pipeline.rs:411"
     );
     assert_eq!(report.delivered, 0);
     assert_eq!(report.last_committed_sequence, 0);
@@ -622,11 +622,11 @@ fn multi_target_obligations_are_independent() {
 
     assert_eq!(
         a.outstanding, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:558"
+        "pg streaming runner tests/durable_pipeline.rs:558"
     );
     assert_eq!(
         a.total_read, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:559"
+        "pg streaming runner tests/durable_pipeline.rs:559"
     );
     assert_eq!(a.delivered, 0);
     assert_eq!(a.last_committed_sequence, 0);
@@ -776,11 +776,11 @@ fn streaming_file_source_restarts_from_a_verified_offset() {
     assert_eq!(first_run.report.delivered, 1);
     assert_eq!(
         first_run.report.outstanding, 1,
-        "pg streaming runner tests/p6_durable_pipeline.rs:706"
+        "pg streaming runner tests/durable_pipeline.rs:706"
     );
     assert_eq!(
         first_run.report.total_read, 2,
-        "pg streaming runner tests/p6_durable_pipeline.rs:707"
+        "pg streaming runner tests/durable_pipeline.rs:707"
     );
     assert_eq!(first_run.checkpoint.last_committed_sequence, 1);
     assert_eq!(

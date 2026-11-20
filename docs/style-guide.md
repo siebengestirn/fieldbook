@@ -140,6 +140,13 @@ These are operational rules, not style preferences:
    becomes a live claim. Live runs use direct, read-only public data with no
    proxy, VPN, hosted runner or private credentials.
 
+## File naming
+
+Active paths under `src/`, `tests/`, `xtask/`, `docs/`, `scripts/` and `tools/`
+use domain names without phase labels such as `p6_` or `m5-`. Historical
+labels stay in `measurements/` and `captures/`, which hold byte-exact evidence.
+`scripts/check_naming_conventions.py` enforces this boundary in `cargo xtask verify`.
+
 ## Commands
 
 ```bash

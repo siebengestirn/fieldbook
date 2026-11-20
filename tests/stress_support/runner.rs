@@ -1962,7 +1962,9 @@ async fn execute_fault_schedule(
     anchor_start: Instant,
 ) -> Vec<RecoveryEvidence> {
     let mut evidence = Vec::new();
-    for step in schedule.driven_steps() {
+    let steps = schedule.driven_steps();
+    let step_count = steps.len();
+    for (index, step) in steps.into_iter().enumerate() {
         let planned = Duration::from_millis(step.failure_time_ms);
         if let Some(wait) = planned.checked_sub(anchor_start.elapsed()) {
             sleep(wait).await;
@@ -2033,6 +2035,12 @@ async fn execute_fault_schedule(
             );
         }
         evidence.push(outcome);
+        // Let the collector settle before the next fault. Without this gap a
+        // later step can close sockets that are still reconnecting, so no new
+        // incident is recorded and recovery cannot be measured.
+        if index + 1 < step_count {
+            sleep(Duration::from_millis(200)).await;
+        }
     }
     // The mock is per-cell, so a latched outage (D8) is left set
     // for the rest of this run. Every non-reject step clears it before acting.
