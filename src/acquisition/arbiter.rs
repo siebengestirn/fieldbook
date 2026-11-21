@@ -129,7 +129,10 @@ impl FeedArbiter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ArbiterVerdict, FeedArbiter, FeedChannel, SequencedPacket};
+    use super::ArbiterVerdict;
+    use super::FeedArbiter;
+    use super::FeedChannel;
+    use super::SequencedPacket;
 
     fn packet(channel: FeedChannel, sequence: u64, body: &str, at: i64) -> SequencedPacket {
         SequencedPacket {

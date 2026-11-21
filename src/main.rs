@@ -1,7 +1,5 @@
 //! Collector binary entry point.
 
-mod cli;
-
 use std::io::Write;
 
 use anyhow::Context;
@@ -13,7 +11,9 @@ use fieldbook::{
     replay, report::write_json_atomic, verify,
 };
 
-use crate::cli::{Cli, Command, JournalCommand};
+use fieldbook::distribution::cli::Cli;
+use fieldbook::distribution::cli::Command;
+use fieldbook::distribution::cli::JournalCommand;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -28,34 +28,34 @@ scheduled work, not an implicit capability of this implementation.
 
 `src/main.rs` parses the CLI and dispatches `collect`, `discover`, `replay`,
 `inspect`, `verify`, `latency`, and `journal` subcommands. Live collection
-enters `src/coordinator.rs`, which constructs the exchange adapter, performs
+enters `src/distribution/coordinator.rs`, which constructs the exchange adapter, performs
 discovery, plans capacity, loads a catalog, starts session workers (plus the
 dedicated Kalshi lifecycle control plane), the writer, the journal, and the
 metrics endpoint, and then runs one serialized event loop.
 
-Discovery is venue-specific behind `Exchange`. `src/capacity.rs` converts the
+Discovery is venue-specific behind `Exchange`. `src/storage/capacity.rs` converts the
 discovered records and outcome symbols into shard, connection, subscription,
-memory, and snapshot-rate estimates before any worker starts. `src/catalog.rs`
+memory, and snapshot-rate estimates before any worker starts. `src/storage/catalog.rs`
 persists the last complete discovery round with a schema version, counts, and a
-SHA-256 envelope; `src/persistence.rs` writes metadata and catalog checkpoints
+SHA-256 envelope; `src/storage/persistence.rs` writes metadata and catalog checkpoints
 on a dedicated latest-wins thread.
 
 Each session worker owns one websocket. It decodes frames, captures the receive
 timestamp and optional raw payload, and emits normalized events. The
-synchronous `CollectorCore` in `src/collector/state.rs` applies discovery,
+synchronous `CollectorCore` in `src/market_state/collector/state.rs` applies discovery,
 snapshots, level changes, lifecycle events, stream resets, status, and ticks. It
 chooses the active source per symbol and produces ordered output messages.
-`src/writer.rs` is the only SBE writer: one bounded queue and one thread
-preserve total write order. `src/journal.rs` is a separate append-only path, so
-the SBE schema is unchanged. `src/metrics.rs` serves counters, health, and
+`src/storage/writer.rs` is the only SBE writer: one bounded queue and one thread
+preserve total write order. `src/integrity/journal.rs` is a separate append-only path, so
+the SBE schema is unchanged. `src/distribution/metrics.rs` serves counters, health, and
 readiness without putting network work on the data path. Stage-specific latency
-evidence lives in `src/histogram.rs`: one fixed-bucket histogram per boundary
+evidence lives in `src/market_state/histogram.rs`: one fixed-bucket histogram per boundary
 is shared across workers, and a snapshot reports raw bucket counts plus
 nearest-rank percentiles with explicit sample counts (never averaged worker
 percentiles). Unexercised boundaries are reported as `unavailable` with a
 reason, not zero.
 
-`src/egress.rs` binds how the process reaches the venue: direct networking by
+`src/acquisition/egress.rs` binds how the process reaches the venue: direct networking by
 default, or one explicitly configured proxy (`http` CONNECT or SOCKS5, with a
 typed remote-DNS choice) resolved from environment variables at load time. A
 failed proxy never falls back to direct egress; the failure is reported and
@@ -63,7 +63,7 @@ the connection is refused. REST discovery and websocket sessions build their
 transport from the same policy. The non-secret route identity — mode, kind,
 host, port, DNS mode, label and a SHA-256 fingerprint — is recorded in the
 journal manifest and in `network-probe` reports; credentials never appear in
-any of those artifacts. `src/probe.rs` implements `network-probe`, which
+any of those artifacts. `src/distribution/probe.rs` implements `network-probe`, which
 measures DNS, TCP, proxy negotiation, TLS and the websocket upgrade as
 independent stages. It never authenticates to a venue; it classifies a
 transport as `transport_ok` or `failed` with a deterministic reason and an
@@ -127,10 +127,10 @@ notifications ride the market channel and are unaffected.
 `Exchange` reports venue capabilities and creates discovery and session
 objects. `ExchangeCapabilities` currently carries `has_sequence_clock`; the core
 consumes that value instead of identifying a venue by name. `SessionFactory`
-creates a `MarketDataSession` for one source, and `src/session.rs` supervises
+creates a `MarketDataSession` for one source, and `src/acquisition/session.rs` supervises
 reconnects, heartbeats, status, and control handling around it. Kalshi and
-Polymarket implement these boundaries in `src/exchange/{kalshi,polymarket}/`.
-Hyperliquid implements them in `src/exchange/hyperliquid/`: H0 reference data,
+Polymarket implement these boundaries in `src/acquisition/exchange/{kalshi,polymarket}/`.
+Hyperliquid implements them in `src/acquisition/exchange/hyperliquid/`: H0 reference data,
 H1 telemetry, H2 selected perpetuals and H3 synthetic capacity evidence behind
 the same seams, with no branch in the state machine. H2 reconciles an exact
 finite book set, emits only full snapshots from `l2Book`, maps `trades` to
@@ -138,11 +138,11 @@ telemetry, and uses the existing `Control::{RequestSnapshot,Recover}` fences for
 recovery; `has_sequence_clock` stays `false`. H3 adds a test-only loopback wire
 mock that reuses the shared stress ledger, coverage hashes and manifest schema;
 it produces no production behavior and no live or capacity claim. Kraken
-implements H0 reference data in `src/exchange/kraken/`: namespaced `AssetPairs`
+implements H0 reference data in `src/acquisition/exchange/kraken/`: namespaced `AssetPairs`
 decoding with exact scales and an active-only filter, offline-fixture and
 read-only REST discovery, and a no-network session seam. H1-H3 remain planned;
 no Kraken socket, book, telemetry or live evidence exists.
-Binance implements H0 reference data in `src/exchange/binance/`: deterministic
+Binance implements H0 reference data in `src/acquisition/exchange/binance/`: deterministic
 discovery of spot and perpetual instruments from an offline `exchangeInfo`-style
 fixture, with explicit `binance:spot:<BASE>/<QUOTE>` /
 `binance:perp:<SYMBOL>` identities, canonical-quote scoping and exact numeric

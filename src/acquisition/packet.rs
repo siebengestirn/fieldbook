@@ -5,7 +5,8 @@
 //! Journal integration uses an explicit source identity supplied by the
 //! source manifest; no identity is inferred from packet content.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     acquisition::arbiter::FeedChannel,

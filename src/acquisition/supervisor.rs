@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Typed connection supervision with bounded recovery decisions.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Observable state of one source connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

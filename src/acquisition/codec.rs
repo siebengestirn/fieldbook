@@ -184,7 +184,11 @@ impl CodecRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodecRegistry, DecodeBatch, DecodeStatus, DecodedObservation, FeedCodec};
+    use super::CodecRegistry;
+    use super::DecodeBatch;
+    use super::DecodeStatus;
+    use super::DecodedObservation;
+    use super::FeedCodec;
 
     struct LengthPrefixedCodec {
         version: u32,

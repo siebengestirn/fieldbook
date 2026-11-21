@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Acquisition plane for the global data infrastructure.
-//!
-//! Transport acquisition, protocol decoding, feed arbitration, connection
-//! supervision and packet evidence remain separate modules. The live exchange
-//! collector is unchanged; these modules are additive and tested offline.
+//! `acquisition` domain module.
 
 pub mod arbiter;
 pub mod codec;
+pub mod egress;
+pub mod exchange;
 pub mod packet;
+pub mod session;
 pub mod supervisor;
 pub mod transport;
+pub mod ws;

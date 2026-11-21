@@ -144,14 +144,18 @@ mod tests {
     #[test]
     fn every_task_round_trips_through_parse() {
         for task in Task::ALL {
-            assert_eq!(Task::parse(task.name()), Some(*task));
+            assert_eq!(
+                Task::parse(task.name()),
+                Some(*task),
+                "task name must round-trip"
+            );
         }
     }
 
     #[test]
     fn unknown_tasks_are_rejected() {
-        assert_eq!(Task::parse("not-a-task"), None);
-        assert_eq!(Task::parse(""), None);
+        assert_eq!(Task::parse("not-a-task"), None, "unknown task must fail");
+        assert_eq!(Task::parse(""), None, "empty task must fail");
         assert_eq!(Task::parse("help "), None, "no whitespace trimming");
     }
 
@@ -160,9 +164,15 @@ mod tests {
         let help = help();
         let list = list();
         for task in Task::ALL {
-            assert!(help.contains(task.name()));
-            assert!(help.contains(task.summary()));
-            assert!(list.contains(&format!("{}\n", task.name())));
+            assert!(help.contains(task.name()), "help must name every task");
+            assert!(
+                help.contains(task.summary()),
+                "help must summarize every task"
+            );
+            assert!(
+                list.contains(&format!("{}\n", task.name())),
+                "list must contain every task"
+            );
         }
     }
 
