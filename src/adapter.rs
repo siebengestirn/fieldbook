@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     reference_data::VenueCategory,
@@ -316,8 +317,12 @@ mod tests {
     fn declaration_must_be_complete() {
         let mut incomplete = manifest();
         incomplete.data_categories.clear();
-        assert_eq!(incomplete.validate(), Err(ManifestError::MissingCoverage));
-        assert!(manifest().validate().is_ok());
+        assert_eq!(
+            incomplete.validate(),
+            Err(ManifestError::MissingCoverage),
+            "empty coverage must fail"
+        );
+        assert!(manifest().validate().is_ok(), "complete manifest must pass");
     }
 
     #[test]
@@ -326,7 +331,14 @@ mod tests {
         registry.register(manifest()).expect("first manifest");
         let mut altered = manifest();
         altered.book_model = DepthModel::Level1;
-        assert!(registry.register(altered).is_err());
-        assert_eq!(registry.resolve("source"), Some(&manifest()));
+        assert!(
+            registry.register(altered).is_err(),
+            "conflicting manifest must be rejected"
+        );
+        assert_eq!(
+            registry.resolve("source"),
+            Some(&manifest()),
+            "original manifest must remain"
+        );
     }
 }

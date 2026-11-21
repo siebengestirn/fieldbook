@@ -5,7 +5,8 @@
 //! does not collapse different information categories into one generic price
 //! update.
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     canonical::EventId, identity::InstrumentId, quality::QualityState, reference_data::EntityId,
@@ -280,20 +281,28 @@ mod tests {
     #[test]
     fn envelope_validates_receive_and_provenance() {
         let event = envelope();
-        assert!(event.validate().is_ok());
+        assert!(event.validate().is_ok(), "complete envelope must validate");
         let mut missing = event.clone();
         missing.timestamps.clear();
         assert_eq!(
             missing.validate(),
-            Err(EventModelError::MissingReceiveTimestamp)
+            Err(EventModelError::MissingReceiveTimestamp),
+            "receive timestamp is mandatory"
         );
     }
 
     #[test]
     fn payload_types_remain_distinct() {
         let event = envelope();
-        assert_eq!(event.payload.payload_type(), "equity_quote");
+        assert_eq!(
+            event.payload.payload_type(),
+            "equity_quote",
+            "payload type must be stable"
+        );
         let text = serde_json::to_string(&event.payload).expect("serialize payload");
-        assert!(text.contains("\"payload_type\":\"equity_quote\""));
+        assert!(
+            text.contains("\"payload_type\":\"equity_quote\""),
+            "serde tag must be present"
+        );
     }
 }

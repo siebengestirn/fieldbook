@@ -5,7 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     quality::QualityReport,
@@ -266,22 +267,34 @@ mod tests {
     #[test]
     fn certification_requires_all_prerequisites() {
         let certified = certify(&record(), &rights(), &quality(), 50).expect("certification");
-        assert_eq!(certified.status, CoverageStatus::Certified);
-        assert!(certified.certifiable());
+        assert_eq!(
+            certified.status,
+            CoverageStatus::Certified,
+            "prerequisites must promote status"
+        );
+        assert!(certified.certifiable(), "promoted record must certify");
 
         let mut with_gap = record();
         with_gap.known_gaps.push("missing auction data".to_owned());
-        assert!(certify(&with_gap, &rights(), &quality(), 50).is_err());
+        assert!(
+            certify(&with_gap, &rights(), &quality(), 50).is_err(),
+            "known gaps must block certification"
+        );
     }
 
     #[test]
     fn matrix_counts_only_declared_status() {
         let mut matrix = CoverageMatrix::new();
         matrix.insert(record());
-        assert_eq!(matrix.count_at_least(CoverageStatus::Certified), 0);
+        assert_eq!(
+            matrix.count_at_least(CoverageStatus::Certified),
+            0,
+            "uncertified records must not count"
+        );
         assert_eq!(
             matrix.count_at_least(CoverageStatus::TechnicallyValidated),
-            1
+            1,
+            "validated records must count"
         );
     }
 }

@@ -7,7 +7,8 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Broad financial information domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -352,7 +353,7 @@ mod tests {
     #[test]
     fn asset_strings_are_stable() {
         let text = serde_json::to_string(&AssetClass::FixedIncome).expect("serialize asset class");
-        assert_eq!(text, "\"fixed_income\"");
+        assert_eq!(text, "\"fixed_income\"", "asset string must be stable");
     }
 
     #[test]

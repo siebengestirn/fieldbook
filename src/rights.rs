@@ -5,7 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::taxonomy::CountryCode;
 
@@ -168,18 +169,21 @@ mod tests {
         assert!(
             registry
                 .authorize("quotes", &territory, UsageRight::HistoricalStorage, 1)
-                .is_err()
+                .is_err(),
+            "unregistered dataset must be denied"
         );
         registry.register(record());
         assert!(
             registry
                 .authorize("quotes", &territory, UsageRight::HistoricalStorage, 1)
-                .is_ok()
+                .is_ok(),
+            "registered right must be granted"
         );
         assert!(
             registry
                 .authorize("quotes", &territory, UsageRight::Redistribution, 1)
-                .is_err()
+                .is_err(),
+            "prohibited right must be denied"
         );
     }
 
@@ -191,7 +195,8 @@ mod tests {
         assert!(
             registry
                 .authorize("quotes", &territory, UsageRight::HistoricalStorage, 101)
-                .is_err()
+                .is_err(),
+            "expired right must be denied"
         );
     }
 }

@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::{
     identity::{InstrumentId, OpaqueId, VenueId, VenueInstrumentMapping},
@@ -385,7 +386,10 @@ mod tests {
         graph.insert_venue(venue()).expect("first venue");
         let mut altered = venue();
         altered.name = "Other Name".to_owned();
-        assert!(graph.insert_venue(altered).is_err());
+        assert!(
+            graph.insert_venue(altered).is_err(),
+            "conflicting venue must be rejected"
+        );
         graph
             .insert_venue(venue())
             .expect("duplicate is idempotent");
@@ -420,12 +424,16 @@ mod tests {
             .expect("second specification");
         assert_eq!(
             graph.resolve_specification(&instrument, 50),
-            ReferenceResolution::Resolved(first)
+            ReferenceResolution::Resolved(first),
+            "first specification must resolve"
         );
-        assert!(matches!(
-            graph.resolve_specification(&instrument, 150),
-            ReferenceResolution::Resolved(_)
-        ));
+        assert!(
+            matches!(
+                graph.resolve_specification(&instrument, 150),
+                ReferenceResolution::Resolved(_)
+            ),
+            "second specification must resolve"
+        );
     }
 
     #[test]
@@ -437,10 +445,20 @@ mod tests {
             valid_to_us: Some(20),
             source: "gleif".to_owned(),
         };
-        assert!(!identifier.is_valid_at(9));
-        assert!(identifier.is_valid_at(15));
-        assert!(!identifier.is_valid_at(21));
-        assert_eq!(MicRole::TradeReporting.as_str(), "trade_reporting");
+        assert!(
+            !identifier.is_valid_at(9),
+            "earlier time is outside validity"
+        );
+        assert!(identifier.is_valid_at(15), "interior time is valid");
+        assert!(
+            !identifier.is_valid_at(21),
+            "later time is outside validity"
+        );
+        assert_eq!(
+            MicRole::TradeReporting.as_str(),
+            "trade_reporting",
+            "MIC role string must be stable"
+        );
     }
 
     #[test]
@@ -467,11 +485,13 @@ mod tests {
         let graph = ReferenceGraph::new();
         assert_eq!(
             graph.resolve_venue_mapping(std::slice::from_ref(&mapping), 10),
-            ReferenceResolution::Resolved(mapping.clone())
+            ReferenceResolution::Resolved(mapping.clone()),
+            "single venue mapping must resolve"
         );
         assert_eq!(
             graph.resolve_venue_mapping(&[mapping.clone(), mapping], 10),
-            ReferenceResolution::Ambiguous
+            ReferenceResolution::Ambiguous,
+            "duplicate venue mapping must stay ambiguous"
         );
     }
 }

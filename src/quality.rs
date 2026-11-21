@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 
 /// Stage in the observation lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -188,26 +189,33 @@ mod tests {
             rejected: 2,
             quarantined: 1,
         };
-        assert!(report.reconciled());
+        assert!(report.reconciled(), "balanced accounting must reconcile");
         let lossy = Reconciliation {
             missing: 1,
             ..report
         };
-        assert!(!lossy.reconciled());
+        assert!(
+            !lossy.reconciled(),
+            "missing records must fail reconciliation"
+        );
     }
 
     #[test]
     fn transitions_are_explicit() {
         assert_eq!(
             transition(QualityState::RawCaptured, QualityState::Decoded),
-            Ok(QualityState::Decoded)
+            Ok(QualityState::Decoded),
+            "decode transition must be allowed"
         );
-        assert!(transition(QualityState::Rejected, QualityState::Reconciled).is_err());
+        assert!(
+            transition(QualityState::Rejected, QualityState::Reconciled).is_err(),
+            "rejected records must not reach reconciled"
+        );
     }
 
     #[test]
     fn quality_reasons_have_stable_strings() {
         let text = serde_json::to_string(&QualityReason::SequenceGap).expect("serialize reason");
-        assert_eq!(text, "\"sequence_gap\"");
+        assert_eq!(text, "\"sequence_gap\"", "reason string must be stable");
     }
 }
