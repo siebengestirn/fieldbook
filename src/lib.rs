@@ -33,6 +33,7 @@ pub use domain::taxonomy;
 pub use governance::adapter;
 pub use governance::config;
 pub use governance::coverage_certification;
+pub use governance::modality;
 pub use governance::rights;
 pub use integrity::completeness;
 pub use integrity::coverage;
