@@ -58,11 +58,13 @@ def added_paths(root: Path = ROOT, base: str | None = None) -> list[str]:
     ref = base or base_ref()
     tracked = subprocess.run(
         ["git", "diff", "--name-only", "--diff-filter=A", ref],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         cwd=root,
     )
+    if tracked.returncode != 0:
+        tracked.stdout = ""
     untracked = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard"],
         check=True,
