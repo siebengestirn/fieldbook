@@ -167,7 +167,7 @@ separate directory rather than changing the schema.
 External catalogues are discovery indexes, not quality certification. Reuse
 venue-client and multi-venue patterns narrowly, keep analytical and backtesting
 systems downstream from the collector, and do not graft order-execution or
-strategy subsystems into this collector merely to increase feature count.
+strategy subsystems into this collector to increase feature count.
 
 **Implementation.** `sbe_schemas/`, `src/util/build.rs`,
 `src/util/aligned_sbe_writer.rs`, `src/util/aligned_sbe_reader.rs`,

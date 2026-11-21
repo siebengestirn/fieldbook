@@ -28,34 +28,34 @@ scheduled work, not an implicit capability of this implementation.
 
 `src/main.rs` parses the CLI and dispatches `collect`, `discover`, `replay`,
 `inspect`, `verify`, `latency`, and `journal` subcommands. Live collection
-enters `src/coordinator.rs`, which constructs the exchange adapter, performs
+enters `src/distribution/coordinator.rs`, which constructs the exchange adapter, performs
 discovery, plans capacity, loads a catalog, starts session workers (plus the
 dedicated Kalshi lifecycle control plane), the writer, the journal, and the
 metrics endpoint, and then runs one serialized event loop.
 
-Discovery is venue-specific behind `Exchange`. `src/capacity.rs` converts the
+Discovery is venue-specific behind `Exchange`. `src/storage/capacity.rs` converts the
 discovered records and outcome symbols into shard, connection, subscription,
-memory, and snapshot-rate estimates before any worker starts. `src/catalog.rs`
+memory, and snapshot-rate estimates before any worker starts. `src/storage/catalog.rs`
 persists the last complete discovery round with a schema version, counts, and a
-SHA-256 envelope; `src/persistence.rs` writes metadata and catalog checkpoints
+SHA-256 envelope; `src/storage/persistence.rs` writes metadata and catalog checkpoints
 on a dedicated latest-wins thread.
 
 Each session worker owns one websocket. It decodes frames, captures the receive
 timestamp and optional raw payload, and emits normalized events. The
-synchronous `CollectorCore` in `src/collector/state.rs` applies discovery,
+synchronous `CollectorCore` in `src/market_state/collector/state.rs` applies discovery,
 snapshots, level changes, lifecycle events, stream resets, status, and ticks. It
 chooses the active source per symbol and produces ordered output messages.
-`src/writer.rs` is the only SBE writer: one bounded queue and one thread
-preserve total write order. `src/journal.rs` is a separate append-only path, so
-the SBE schema is unchanged. `src/metrics.rs` serves counters, health, and
+`src/storage/writer.rs` is the only SBE writer: one bounded queue and one thread
+preserve total write order. `src/integrity/journal.rs` is a separate append-only path, so
+the SBE schema is unchanged. `src/distribution/metrics.rs` serves counters, health, and
 readiness without putting network work on the data path. Stage-specific latency
-evidence lives in `src/histogram.rs`: one fixed-bucket histogram per boundary
+evidence lives in `src/market_state/histogram.rs`: one fixed-bucket histogram per boundary
 is shared across workers, and a snapshot reports raw bucket counts plus
 nearest-rank percentiles with explicit sample counts (never averaged worker
 percentiles). Unexercised boundaries are reported as `unavailable` with a
 reason, not zero.
 
-`src/egress.rs` binds how the process reaches the venue: direct networking by
+`src/acquisition/egress.rs` binds how the process reaches the venue: direct networking by
 default, or one explicitly configured proxy (`http` CONNECT or SOCKS5, with a
 typed remote-DNS choice) resolved from environment variables at load time. A
 failed proxy never falls back to direct egress; the failure is reported and
@@ -63,7 +63,7 @@ the connection is refused. REST discovery and websocket sessions build their
 transport from the same policy. The non-secret route identity — mode, kind,
 host, port, DNS mode, label and a SHA-256 fingerprint — is recorded in the
 journal manifest and in `network-probe` reports; credentials never appear in
-any of those artifacts. `src/probe.rs` implements `network-probe`, which
+any of those artifacts. `src/distribution/probe.rs` implements `network-probe`, which
 measures DNS, TCP, proxy negotiation, TLS and the websocket upgrade as
 independent stages. It never authenticates to a venue; it classifies a
 transport as `transport_ok` or `failed` with a deterministic reason and an
@@ -127,10 +127,10 @@ notifications ride the market channel and are unaffected.
 `Exchange` reports venue capabilities and creates discovery and session
 objects. `ExchangeCapabilities` currently carries `has_sequence_clock`; the core
 consumes that value instead of identifying a venue by name. `SessionFactory`
-creates a `MarketDataSession` for one source, and `src/session.rs` supervises
+creates a `MarketDataSession` for one source, and `src/acquisition/session.rs` supervises
 reconnects, heartbeats, status, and control handling around it. Kalshi and
-Polymarket implement these boundaries in `src/exchange/{kalshi,polymarket}/`.
-Hyperliquid implements them in `src/exchange/hyperliquid/`: H0 reference data,
+Polymarket implement these boundaries in `src/acquisition/exchange/{kalshi,polymarket}/`.
+Hyperliquid implements them in `src/acquisition/exchange/hyperliquid/`: H0 reference data,
 H1 telemetry, H2 selected perpetuals and H3 synthetic capacity evidence behind
 the same seams, with no branch in the state machine. H2 reconciles an exact
 finite book set, emits only full snapshots from `l2Book`, maps `trades` to
@@ -138,11 +138,11 @@ telemetry, and uses the existing `Control::{RequestSnapshot,Recover}` fences for
 recovery; `has_sequence_clock` stays `false`. H3 adds a test-only loopback wire
 mock that reuses the shared stress ledger, coverage hashes and manifest schema;
 it produces no production behavior and no live or capacity claim. Kraken
-implements H0 reference data in `src/exchange/kraken/`: namespaced `AssetPairs`
+implements H0 reference data in `src/acquisition/exchange/kraken/`: namespaced `AssetPairs`
 decoding with exact scales and an active-only filter, offline-fixture and
 read-only REST discovery, and a no-network session seam. H1-H3 remain planned;
 no Kraken socket, book, telemetry or live evidence exists.
-Binance implements H0 reference data in `src/exchange/binance/`: deterministic
+Binance implements H0 reference data in `src/acquisition/exchange/binance/`: deterministic
 discovery of spot and perpetual instruments from an offline `exchangeInfo`-style
 fixture, with explicit `binance:spot:<BASE>/<QUOTE>` /
 `binance:perp:<SYMBOL>` identities, canonical-quote scoping and exact numeric
@@ -229,6 +229,7 @@ flowchart LR
 | Canonical event model | `canonical.rs`, `docs/canonical-event-model.md` | Platform M4 Phase 1 typed canonical envelope and taxonomy with deterministic opaque event ids, explicit provenance, schema-versioned serialization and a fail-closed reader; exact `ExchangeEvent` mappings only (no fabricated trades, BBO, assets or gaps). `NormalizedStore` is a contract with a test-only in-memory implementation; the raw journal is independent, the SBE writer is one projection, and no durable store, connector, performance or live claim is made. |
 | Non-market-data reference app | `application.rs`, `application/postgres.rs`, `docs/jsonl-postgres-reference.md` | Platform P5 second application proving source/target independence: JSONL source -> typed `CanonicalBusinessEvent` -> idempotent target contract with receipts, obligations and checkpointed resume; parameterized PostgreSQL SQL, a deterministic in-memory simulator and an opt-in real `PgTarget` with explicit migrations and database-enforced idempotency. No market-data module, SBE/journal/replay/catalog change, replication or performance claim; the live test needs an operator-supplied server. |
 | Durable reference pipeline | `application/file_source.rs`, `application/network_source.rs`, `application/durable.rs`, `application/postgres.rs`, `docs/durability-contract.md`, `tests/durable_pipeline.rs`, `tests/network_source.rs`, `tests/postgres_live.rs` | Platform P6 adds a fixed-buffer `BufRead` line source with exact bytes, physical offsets, a registered identity and a one-shot SHA-256 content fingerprint (64 KiB hash buffer; exact duplicate detection uses a fixed-size bucket table with a disk-backed index, not an O(unique) in-memory map); a verified resume anchor bound to (source id, fingerprint, target id); and a real local append-only, checksummed, fsync-capable commit store whose single record carries ids, dispositions/quarantines and the new checkpoint. Reopen verifies checksums and sequence gaps. Delivery receipts are six categories with `ExecutionMode`; simulated modes never write externally or move the durable checkpoint; rejection quarantines durably before progression. PostgreSQL has a synchronous driver, explicit migrations, source-scoped checkpoints and idempotency, and an opt-in live `PgTarget`; the network source is loopback-only. No replication, production network certification or performance claim. |
+| Acquisition plane (V2) | `acquisition/{mod,transport,codec,arbiter,packet,supervisor}.rs` | Additive TCP/UDP/multicast transport, codec registry, dual-channel sequence arbitration, raw packet evidence and bounded connection supervision; no new dependency and no change to the live collector path |
 | Transport | `exchange/*/session.rs`, `session.rs`, `ws.rs`, `egress.rs`, `protocol.rs` | Protocol handling, supervised workers, connection options, shared typed frame/signal vocabulary; egress policy: direct or explicit fail-closed proxy, route provenance. Hyperliquid's session subscribes to H1 telemetry (`allMids`/`fastAssetCtxs`) plus H2 `l2Book`/`trades` for the exact selected perpetuals; `request_snapshot` resubscribes/wait-for-next-push and `Recover` fences by the existing receive epoch/sequence. |
 | Adapter telemetry | `exchange/hyperliquid/telemetry.rs` | H1 exact-decimal decoding of venue-wide `allMids`/`fastAssetCtxs` statistics into typed `ProtocolControl` observations; `fastAssetCtxs` base64 + raw DEFLATE JSON map decoded from the real venue wire shape, finer-than-SBE values retained verbatim without rounding, malformed values rejected; no depth, `Snapshot`, `LevelChange` or heartbeat acknowledgement |
 | Adapter books | `exchange/hyperliquid/books.rs` | H2 exact-decimal decoding of full two-sided `l2Book` pushes into `ExchangeEvent::Snapshot` with exact receive time and advisory feed timestamp; `trades` stay `ProtocolControl` telemetry; identity is `hyperliquid:perp:<dex>:<coin>`; no spot books, no `LevelChange`, no full universe |

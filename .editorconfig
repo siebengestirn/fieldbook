@@ -1,0 +1,57 @@
+# Editor baseline shared with the sibling quant workspace.
+# The binding gates remain the repository checkers, not this file.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 80
+
+# Rust: rustfmt owns layout; 100 columns is the pinned rustfmt default.
+[*.rs]
+indent_size = 4
+max_line_length = 100
+
+[*.py]
+indent_size = 4
+max_line_length = 80
+
+[*.{toml,json,jsonl,yml,yaml}]
+indent_size = 2
+max_line_length = 80
+
+[*.{c,cc,cpp,cxx,h,hpp,hxx}]
+indent_size = 2
+max_line_length = 80
+
+[*.md]
+indent_style = space
+indent_size = 2
+max_line_length = 80
+
+# q / kdb+ follows engineering/q-kdb-style.md in the sibling workspace.
+[*.q]
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.{sh,bash,zsh}]
+indent_size = 2
+max_line_length = 80
+
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+# Immutable, hash-pinned evidence and wire fixtures: never reflow.
+[*.{sbe,pmj,jsonl}]
+insert_final_newline = unset
+trim_trailing_whitespace = false
+
+[{references/**/*.html,captures/**,measurements/**}]
+trim_trailing_whitespace = false
+insert_final_newline = unset

@@ -62,14 +62,19 @@ class ArchitectureGateTests(unittest.TestCase):
 
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / "src").mkdir()
-            for name in (
-                "config.rs",
-                "capacity.rs",
-                "catalog.rs",
-                "coordinator.rs",
+            for directory in (
+                "governance",
+                "storage",
+                "distribution",
             ):
-                (root / "src" / name).write_text("", encoding="utf-8")
+                (root / "src" / directory).mkdir(parents=True)
+            for path in (
+                "governance/config.rs",
+                "storage/capacity.rs",
+                "storage/catalog.rs",
+                "distribution/coordinator.rs",
+            ):
+                (root / "src" / path).write_text("", encoding="utf-8")
             errors = gate.module_integration_errors(root)
             self.assertTrue(
                 any("capacity startup" in error for error in errors), errors

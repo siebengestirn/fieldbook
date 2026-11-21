@@ -45,6 +45,17 @@ tests, not claims of global coverage, licensed feeds or exchange-grade
 latency. The live collector, SBE wire identity and retained captures remain
 unchanged.
 
+## Acquisition engine milestone
+
+The V2 acquisition plane is implemented as additive modules under `src/acquisition/`. Loopback UDP receive, typed codec resolution, dual-channel sequence arbitration, raw packet evidence and bounded connection supervision are tested offline. No live venue, multicast deployment, FIX session, native binary feed, hardware timestamp or latency certification is claimed.
+
+## Domain reorganisation
+
+The source tree is organised by the six architectural planes. Modules moved
+into domain directories; crate-root re-exports preserve public paths. Gate
+maps, documentation references and fixture include paths were updated with the
+move. No wire format, evidence artifact or capture changed.
+
 ## Integration history (exact commits)
 
 | Commit | Integration |

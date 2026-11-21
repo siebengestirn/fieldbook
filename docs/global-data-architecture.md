@@ -16,6 +16,27 @@ orders, route orders, operate brokerage accounts, manage portfolios or run
 trading strategies. Observing market activity is in scope; participating in it
 is outside the boundary.
 
+## Repository layout
+
+The source tree follows the domain planes rather than venue names:
+
+```text
+src/
+├── acquisition/     transports, venue connectors, codecs, arbitration
+├── domain/          taxonomy, identity, instruments, typed events
+├── market_state/    books, collector core, recovery, protocol vocabulary
+├── integrity/       journal, verification, replay, quality, timestamps
+├── storage/         archive, event store, analytics, reference application
+├── governance/      source registry, rights, coverage certification
+├── distribution/    CLI, coordinator, probe, metrics, inspection
+├── util/            shared numeric, SBE and IO helpers
+└── generated/       generated SBE codec
+```
+
+Crate-root re-exports preserve existing `crate::` paths. This keeps the live
+collector and offline tools unchanged while the physical layout follows the
+target architecture.
+
 ## Six planes
 
 | Plane | Responsibility |
@@ -58,12 +79,12 @@ central-bank release is not engineered like a multicast exchange feed.
 
 | V2 contract | Rust module |
 |---|---|
-| Taxonomy | `src/taxonomy.rs` |
-| Instrument and entity graph | `src/reference_data.rs`, `src/identity.rs` |
-| Typed events | `src/event_model.rs`, `src/canonical.rs` |
-| Connector contract | `src/adapter.rs`, `src/products.rs` |
-| Quality and reconciliation | `src/quality.rs` |
-| Rights and coverage | `src/rights.rs`, `src/coverage_certification.rs` |
+| Taxonomy | `src/domain/taxonomy.rs` |
+| Instrument and entity graph | `src/domain/reference_data.rs`, `src/domain/identity.rs` |
+| Typed events | `src/domain/event_model.rs`, `src/domain/canonical.rs` |
+| Connector contract | `src/governance/adapter.rs`, `src/domain/products.rs` |
+| Quality and reconciliation | `src/integrity/quality.rs` |
+| Rights and coverage | `src/governance/rights.rs`, `src/governance/coverage_certification.rs` |
 
 These modules are additive. The live collector continues to use its existing
 SBE, journal and replay contracts. Integration happens through declared seams

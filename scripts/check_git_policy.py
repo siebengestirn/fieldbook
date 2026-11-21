@@ -115,6 +115,28 @@ def check_subjects(policy: dict, base: str) -> list[str]:
     return errors
 
 
+def check_authors(policy: dict, base: str) -> list[str]:
+    """Require the configured author email on all unmerged commits."""
+    expected = policy["commit_subject"].get("required_author_email")
+    if not expected:
+        return []
+    try:
+        authors = [
+            line
+            for line in git("log", "--format=%ae", f"{base}..HEAD").splitlines()
+            if line
+        ]
+    except RuntimeError:
+        authors = []
+    if not authors:
+        authors = [git("log", "-1", "--format=%ae").strip()]
+    return [
+        f"commit author `{author}` is not `{expected}`"
+        for author in authors
+        if author != expected
+    ]
+
+
 def check_generated(policy: dict) -> list[str]:
     """Check check generated."""
     rule = policy["generated_paths"]
@@ -251,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     errors: list[str] = []
     errors.extend(check_branch(policy, branch))
     errors.extend(check_subjects(policy, base))
+    errors.extend(check_authors(policy, base))
     errors.extend(check_generated(policy))
     errors.extend(check_inventory(policy, branch))
     if args.strict:

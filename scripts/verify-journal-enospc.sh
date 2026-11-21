@@ -57,7 +57,7 @@ mkdir "$mount_dir/journal"
 export JOURNAL_ENOSPC_TEST_ROOT="$mount_dir/journal"
 export JOURNAL_ENOSPC_FILLER="$mount_dir/filler"
 
-test_name="journal::tests::storage_write_failure_marks_run_failed"
+test_name="integrity::journal::tests::storage_write_failure_marks_run_failed"
 # A missing or renamed test makes `cargo test --exact` exit 0 with zero runs.
 # Verify the name first, then require exactly one passing test.
 list_output="$(cargo test --lib -- --list)"

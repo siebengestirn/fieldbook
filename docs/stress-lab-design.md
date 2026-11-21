@@ -53,7 +53,7 @@ Two disjoint sets, both generated deterministically:
 
 The synthetic identity format stays `STRESS-{seed:04}-{i:06}` for both sets;
 eligibility, not appearance, distinguishes them. Reports record three exact
-counts — `generated`, `eligible`, and `excluded` — plus the number actually
+counts — `generated`, `eligible`, and `excluded` — plus the number
 discovered. Vector-accuracy tests prove the filter rejects the decoys.
 
 ## 3. Bounded experiment phases (not a Cartesian product)

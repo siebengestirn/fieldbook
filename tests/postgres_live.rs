@@ -806,7 +806,7 @@ fn postgres_live_source_scoped_delivery() {
     );
 
     // A non-empty checkpoint event key must resolve to rows at the exact
-    // contract-version key, not merely to some event in another namespace.
+    // contract-version key, not to some event in another namespace.
     let orphan_legacy_target = format!("pg-legacy-orphan-{}", std::process::id());
     let orphan_checksum = legacy_v2_checksum(&orphan_legacy_target, 1, 10, "evt-checkpoint-orphan");
     client

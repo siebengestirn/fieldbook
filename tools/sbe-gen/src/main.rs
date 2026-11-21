@@ -1,6 +1,6 @@
 //! Regenerate the checked-in SBE codec from the schema sources.
 //!
-//! This tool is intentionally outside the workspace: generation is an explicit
+//! This tool sits outside the workspace by design: generation is an explicit
 //! maintenance operation, not a cost paid by every build. Run it from the
 //! repository root:
 //!

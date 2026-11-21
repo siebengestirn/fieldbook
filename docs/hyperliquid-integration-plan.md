@@ -167,7 +167,7 @@ The existing evidence tools answer different questions and must not be
 substituted for one
 another. `coverage.rs` defines **anchored** as "has at least one snapshot in the capture";
 `completeness.rs` requires that no delta precedes that baseline; `verify` checks delta→snapshot
-reconstruction; the journal records what the wire actually said. A mid price is
+reconstruction; the journal records what the wire recorded. A mid price is
 none of these.
 
 **`allMids` does not prove book coverage.** It is a venue-wide map of coin→mid price. It

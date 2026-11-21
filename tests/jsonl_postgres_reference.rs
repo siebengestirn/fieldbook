@@ -15,18 +15,21 @@ use fieldbook::application::{
 };
 
 const SOURCES: [(&str, &str); 4] = [
-    ("src/application.rs", include_str!("../src/application.rs")),
+    (
+        "src/application.rs",
+        include_str!("../src/storage/application.rs"),
+    ),
     (
         "src/application/postgres.rs",
-        include_str!("../src/application/postgres.rs"),
+        include_str!("../src/storage/application/postgres.rs"),
     ),
     (
         "src/application/file_source.rs",
-        include_str!("../src/application/file_source.rs"),
+        include_str!("../src/storage/application/file_source.rs"),
     ),
     (
         "src/application/durable.rs",
-        include_str!("../src/application/durable.rs"),
+        include_str!("../src/storage/application/durable.rs"),
     ),
 ];
 

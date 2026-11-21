@@ -133,7 +133,7 @@ A protocol failure observed before any payload was read (for example a
 pending-command acknowledgement timeout) likewise has no payload to journal and
 does not advance the fence. A frame the venue wrote into a socket at the moment
 a connection is torn down is a transport loss, not a journal accounting failure;
-the v1 journal accounts for every application payload the collector actually
+the v1 journal accounts for every application payload the collector
 read.
 
 Rejected frames keep their payload and a stable category. Error text and payload
@@ -157,9 +157,9 @@ larger than 64 MiB.
 A segment starts with a header and ends with a footer. Both are length-prefixed
 JSON blocks followed by a 64-byte SHA-256 hex checksum of the block:
 
-Header magic `PMJSEG01`: schema version, run id, venue, source commit,
+Header magic `PMJSEG01`:  # prose-audit-ignore: binary format magic-number field schema version, run id, venue, source commit,
   capture-configuration digest, segment index, and creation time.
-Footer magic `PMJEND01`: finalized flag, record count, record-region byte
+Footer magic `PMJEND01`:  # prose-audit-ignore: binary format magic-number field finalized flag, record count, record-region byte
   count, segment checksum, first and last receive times, and per-source
   `first_epoch`/`first_seq`/`last_epoch`/`last_seq`/`records` ranges.
 

@@ -98,93 +98,105 @@ LITERAL_ANCHORS = frozenset(
 
 # Every tracked Rust source module must have an assigned responsibility.
 SOURCE_RESPONSIBILITIES = {
-    "src/application/network_source.rs": "loopback network source reusing the generic line parser, exact duplicate index and resume anchor",
-    "src/cli.rs": "clap command model and CLI-to-settings overrides",
-    "src/config.rs": "configuration defaults, deserialization, and validation",
-    "src/completeness.rs": "per-symbol feed-completeness accounting for captures: anchored vs unanchored deltas, quiet intervals",
-    "src/coverage.rs": "per-symbol live-coverage certification: expected vs acknowledged vs snapshot-anchored symbols",
-    "src/coordinator.rs": "startup, orchestration loop, discovery reconciliation, controls, shutdown",
-    "src/egress.rs": "egress policy: direct/proxy routing, fail-closed tunnelling, route provenance and redaction",
-    "src/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",
-    "src/histogram.rs": "fixed-bucket stage-latency histograms, nearest-rank percentiles and unavailable-boundary reporting",
-    "src/inspect.rs": "offline SBE capture inspection command",
-    "src/identity.rs": "persistent opaque instrument/venue/listing identities, effective-dated mappings and as-of resolution",
-    "src/journal.rs": "raw-frame journal writer, segment/manifest format, verification, ordered reading",
-    "src/journal/tests.rs": "journal unit tests for framing, checksums, durability, recovery, and failure handling",
-    "src/latency.rs": "latency experiment orchestration and result output",
-    "src/adapter.rs": "universal source connector contract, machine-readable capability manifest, source registry and protocol vocabulary",
-    "src/coverage_certification.rs": "ordered coverage statuses, country dossiers, rights- and quality-gated certification and coverage matrix",
-    "src/event_model.rs": "universal typed event envelope with multi-role timestamps, provenance, quality state and domain payloads",
-    "src/quality.rs": "universal quality states, reason vocabulary, transition rules and two-sided reconciliation accounting",
-    "src/reference_data.rs": "effective-dated entity, venue, listing and specification graph with fail-closed identity resolution",
-    "src/rights.rs": "fail-closed licensing registry, usage rights, decisions and entitlement authorization",
-    "src/taxonomy.rs": "universal asset, instrument, information, depth, frequency and temporal classification with validated country and currency codes",
+    "src/storage/application/network_source.rs": "loopback network source reusing the generic line parser, exact duplicate index and resume anchor",
+    "src/distribution/cli.rs": "clap command model and CLI-to-settings overrides",
+    "src/governance/config.rs": "configuration defaults, deserialization, and validation",
+    "src/integrity/completeness.rs": "per-symbol feed-completeness accounting for captures: anchored vs unanchored deltas, quiet intervals",
+    "src/integrity/coverage.rs": "per-symbol live-coverage certification: expected vs acknowledged vs snapshot-anchored symbols",
+    "src/distribution/coordinator.rs": "startup, orchestration loop, discovery reconciliation, controls, shutdown",
+    "src/acquisition/egress.rs": "egress policy: direct/proxy routing, fail-closed tunnelling, route provenance and redaction",
+    "src/domain/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",
+    "src/market_state/histogram.rs": "fixed-bucket stage-latency histograms, nearest-rank percentiles and unavailable-boundary reporting",
+    "src/distribution/inspect.rs": "offline SBE capture inspection command",
+    "src/domain/identity.rs": "persistent opaque instrument/venue/listing identities, effective-dated mappings and as-of resolution",
+    "src/integrity/journal.rs": "raw-frame journal writer, segment/manifest format, verification, ordered reading",
+    "src/integrity/journal/tests.rs": "journal unit tests for framing, checksums, durability, recovery, and failure handling",
+    "src/integrity/latency.rs": "latency experiment orchestration and result output",
+    "src/acquisition/mod.rs": "acquisition plane module root for transport, codec, arbiter, packet evidence and supervision",
+    "src/distribution/mod.rs": "distribution plane module root for CLI, coordinator, probe, metrics and inspect",
+    "src/domain/mod.rs": "financial domain module root for taxonomy, identity, instruments, events and numeric types",
+    "src/governance/mod.rs": "governance plane module root for adapter, config, rights and coverage certification",
+    "src/integrity/mod.rs": "data integrity plane module root for journal, verification, replay and quality",
+    "src/market_state/mod.rs": "market state plane module root for books, collector, recovery and protocol",
+    "src/storage/mod.rs": "storage plane module root for archive, event store, analytics and reference application",
+    "src/acquisition/transport.rs": "tokio TCP/UDP/multicast transport configuration, bounded datagram receive and packet metadata",
+    "src/acquisition/codec.rs": "protocol codec registry with fail-closed decode batches and raw packet identity retention",
+    "src/acquisition/arbiter.rs": "dual-channel sequence arbitration with duplicate, gap, stale and out-of-order decisions",
+    "src/acquisition/packet.rs": "raw packet evidence with payload digests and explicit-source journal mapping",
+    "src/acquisition/supervisor.rs": "typed connection supervision with bounded retry and backoff decisions",
+    "src/governance/adapter.rs": "universal source connector contract, machine-readable capability manifest, source registry and protocol vocabulary",
+    "src/governance/coverage_certification.rs": "ordered coverage statuses, country dossiers, rights- and quality-gated certification and coverage matrix",
+    "src/domain/event_model.rs": "universal typed event envelope with multi-role timestamps, provenance, quality state and domain payloads",
+    "src/integrity/quality.rs": "universal quality states, reason vocabulary, transition rules and two-sided reconciliation accounting",
+    "src/domain/reference_data.rs": "effective-dated entity, venue, listing and specification graph with fail-closed identity resolution",
+    "src/governance/rights.rs": "fail-closed licensing registry, usage rights, decisions and entitlement authorization",
+    "src/domain/taxonomy.rs": "universal asset, instrument, information, depth, frequency and temporal classification with validated country and currency codes",
     "src/lib.rs": "library module exports and public entry points",
     "src/main.rs": "process entry point and collect/discover/replay/inspect/verify/completeness/coverage/latency dispatch",
-    "src/metrics.rs": "metrics registry, Prometheus text encoding, HTTP health/metrics endpoint",
-    "src/model.rs": "normalized market, source, event, control, and output domain types",
-    "src/orderbook.rs": "normalized order-book representation and mutation invariants",
-    "src/probe.rs": "network-probe command: stage-timed egress transport diagnostic and JSON report",
-    "src/protocol.rs": "shared venue-neutral transport vocabulary: frame class/direction, control opcodes, session signals, heartbeat mechanism, send result, and transport observations",
-    "src/recovery.rs": "typed recovery policy: explicit causes, authorized actions, and bounded attempt decisions",
-    "src/replay.rs": "deterministic JSONL replay into the collector/output path",
-    "src/report.rs": "market metadata and run-report sidecars; atomic JSON helper",
-    "src/session.rs": "generic websocket session/factory contract and supervised worker lifecycle",
-    "src/side.rs": "normalized buy/sell side semantics",
-    "src/time.rs": "wall-clock and monotonic timing helpers",
-    "src/verify.rs": "SBE delta-to-snapshot self-consistency verification",
-    "src/writer.rs": "bounded writer queue, dedicated writer thread, SBE sink lifecycle",
-    "src/ws.rs": "websocket connection options, source binding and connection experiments",
-    "src/capacity.rs": "startup and fixed-topology discovery capacity admission",
-    "src/catalog.rs": "versioned discovery checkpoint with integrity envelope, age, and counts",
-    "src/persistence.rs": "latest-wins metadata/catalog background writer and lifecycle status",
-    "src/products.rs": "typed data-product and source-capability contracts, deterministic subscription keys, and explicit subscription state transitions",
-    "src/canonical.rs": "canonical event envelope and normalized event taxonomy with deterministic opaque ids, explicit provenance, schema-versioned fail-closed reading, and a conceptual normalized store contract with a test-only in-memory implementation",
-    "src/application.rs": "generic non-market-data source/target reference application: SourceAdapter, JsonlSource with exact bytes/sequence/rejection evidence and duplicate detection, deterministic CanonicalBusinessEvent transform with separate source/receive time, six-category receipts and ExecutionMode, CommitSink seam, DeliveryObligation accounting, quarantine-before-progression runner, and side-effect-free replay connector",
-    "src/application/postgres.rs": "parameterized PostgreSQL SQL contract, target-specific idempotency keys, BEGIN/INSERT/UPSERT/COMMIT transcript builder, SqlExecutor seam and deterministic in-memory simulator with idempotency by event id, transaction commit/rollback and unavailable/ack-lost fault injection; no driver or live connection",
-    "src/application/file_source.rs": "bounded-memory BufRead line source with exact bytes, physical offsets, registered source identity, one-shot SHA-256 fingerprint, duplicate/schema/malformed evidence and a resume anchor bound to source identity, fingerprint and target",
-    "src/application/durable.rs": "local append-only checksummed fsync-capable commit store built on atomic JSON and sha2, one checksummed record carrying ids, dispositions/quarantines and checkpoint, reopen verification with fail-closed truncation/corruption checks, fault injection and a streaming pipeline runner",
-    "src/application/durable_segmented.rs": "versioned segmented local durability with explicit finalization and sync boundary, framed segments, checksummed recovery snapshot with bounded Bloom filter, verified archive manifest and restore, exact-scan lookup, fail-closed missing-evidence handling, and verified migration from the legacy commit-file store",
-    "src/analytics.rs": "offline analytics input verification, domain-separated capture identity and hash-checked artifact containment",
-    "src/analytics/tests.rs": "capture verification tests covering all three retained captures, deterministic identity, modified hashes and path traversal",
-    "src/analytics/export.rs": "streaming typed NDJSON export of verified journal observations, SBE projections and capture metadata into staging",
-    "src/analytics/export/tests.rs": "export tests for symbol ambiguity, unit parts, UTC dates and staged export of retained captures",
-    "src/collector/mod.rs": "collector core module boundary",
-    "src/collector/state.rs": "serialized per-symbol/source state machine, discovery and failover decisions",
-    "src/collector/state/tests.rs": "collector state-machine tests for discovery, ordering, capabilities, snapshots, recovery, and readiness",
-    "src/exchange/mod.rs": "exchange capabilities and adapter-independent session factory abstraction",
-    "src/exchange/kalshi/auth.rs": "Kalshi request signing and auth header construction",
-    "src/exchange/kalshi/codec.rs": "Kalshi wire-frame parsing and normalized events",
-    "src/exchange/kalshi/discovery.rs": "Kalshi REST pagination, market eligibility and metadata conversion",
-    "src/exchange/kalshi/discovery/tests.rs": "Kalshi REST discovery tests for pagination, eligibility, caps, retries, and duplicate detection",
-    "src/exchange/kalshi/mod.rs": "Kalshi adapter construction and Exchange implementation",
-    "src/exchange/kalshi/session.rs": "Kalshi websocket protocol, subscriptions, acknowledgements and sequence recovery",
-    "src/exchange/polymarket/codec.rs": "Polymarket CLOB payload validation and normalized events",
-    "src/exchange/polymarket/discovery.rs": "Gamma keyset pagination, version-aware identifiers and outcome expansion",
-    "src/exchange/polymarket/mod.rs": "Polymarket adapter construction and Exchange implementation",
-    "src/exchange/polymarket/session.rs": "public CLOB websocket protocol and subscription/resubscription behavior",
-    "src/exchange/coinbase/mod.rs": "Coinbase H0 exchange composition, clockless capability declaration and offline reference-data tests",
-    "src/exchange/coinbase/codec.rs": "Coinbase products to MarketInfo decoding with explicit spot identity, active filtering and exact increment-derived numeric specs",
-    "src/exchange/coinbase/discovery.rs": "offline-fixture and REST products discovery with H0 page/record telemetry",
-    "src/exchange/coinbase/session.rs": "H0 no-network session seam with disabled heartbeat and no book or telemetry feed",
-    "src/exchange/hyperliquid/mod.rs": "Hyperliquid H0 exchange composition, H1 telemetry adapter wiring and H2 selected-book wiring",
-    "src/exchange/hyperliquid/codec.rs": "Hyperliquid meta/spotMeta to MarketInfo decoding with exact numeric specs",
-    "src/exchange/hyperliquid/discovery.rs": "offline-fixture and REST reference-data discovery with telemetry",
-    "src/exchange/hyperliquid/books.rs": "H2 exact-decimal decoding of l2Book full snapshots into normalized snapshots and trades into telemetry, with exact selected-perpetual identity scoping and no LevelChange",
-    "src/exchange/hyperliquid/telemetry.rs": "H1 exact-decimal decoding of allMids/fastAssetCtxs telemetry into typed observations, never book events",
-    "src/exchange/hyperliquid/session.rs": "H1 telemetry and H2 selected-book websocket session: exact subscription reconciliation, raw-frame decoding, snapshot-only events, resubscribe snapshot requests and disabled heartbeat",
-    "src/exchange/kraken/mod.rs": "Kraken H0 exchange composition, capability declaration and fixture-backed reference-data tests",
-    "src/exchange/kraken/codec.rs": "Kraken AssetPairs to MarketInfo decoding with namespaced identity, exact numeric specs and active-only filter",
-    "src/exchange/kraken/discovery.rs": "offline-fixture and REST AssetPairs reference-data discovery with telemetry and explicit pair selection",
-    "src/exchange/kraken/session.rs": "H0 no-network session seam with disabled heartbeat",
-    "src/exchange/okx/mod.rs": "OKX H0 exchange composition: identity, clockless capability declaration, offline discovery wiring and inert no-network session factory",
-    "src/exchange/okx/codec.rs": "OKX instruments document to validated MarketInfo decoding: product-type scoping, explicit namespace identity, exact tickSz/lotSz scales, live-state filter and no silent rounding",
-    "src/exchange/okx/discovery.rs": "offline OKX instruments reference-data discovery with reconciled page/record telemetry and fail-closed missing fixture",
-    "src/exchange/okx/session.rs": "OKX H0 no-network session stub with disabled heartbeat that fails closed instead of opening a socket",
-    "src/exchange/binance/mod.rs": "Binance H0 reference-data exchange composition, clockless capability declaration and no-network session factory wiring",
-    "src/exchange/binance/codec.rs": "Binance exchangeInfo to MarketInfo decoding with explicit spot/perp namespace identity, canonical quote filter and exact price/lot steps",
-    "src/exchange/binance/discovery.rs": "offline-fixture-only Binance reference-data discovery with page/record telemetry, finite caps and no network fallback",
-    "src/exchange/binance/session.rs": "Binance H0 no-network session stub: disabled heartbeat, fatal-on-network operations and no subscriptions or lifecycle plane",
+    "src/distribution/metrics.rs": "metrics registry, Prometheus text encoding, HTTP health/metrics endpoint",
+    "src/domain/model.rs": "normalized market, source, event, control, and output domain types",
+    "src/market_state/orderbook.rs": "normalized order-book representation and mutation invariants",
+    "src/distribution/probe.rs": "network-probe command: stage-timed egress transport diagnostic and JSON report",
+    "src/market_state/protocol.rs": "shared venue-neutral transport vocabulary: frame class/direction, control opcodes, session signals, heartbeat mechanism, send result, and transport observations",
+    "src/market_state/recovery.rs": "typed recovery policy: explicit causes, authorized actions, and bounded attempt decisions",
+    "src/integrity/replay.rs": "deterministic JSONL replay into the collector/output path",
+    "src/storage/report.rs": "market metadata and run-report sidecars; atomic JSON helper",
+    "src/acquisition/session.rs": "generic websocket session/factory contract and supervised worker lifecycle",
+    "src/domain/side.rs": "normalized buy/sell side semantics",
+    "src/integrity/time.rs": "wall-clock and monotonic timing helpers",
+    "src/integrity/verify.rs": "SBE delta-to-snapshot self-consistency verification",
+    "src/storage/writer.rs": "bounded writer queue, dedicated writer thread, SBE sink lifecycle",
+    "src/acquisition/ws.rs": "websocket connection options, source binding and connection experiments",
+    "src/storage/capacity.rs": "startup and fixed-topology discovery capacity admission",
+    "src/storage/catalog.rs": "versioned discovery checkpoint with integrity envelope, age, and counts",
+    "src/storage/persistence.rs": "latest-wins metadata/catalog background writer and lifecycle status",
+    "src/domain/products.rs": "typed data-product and source-capability contracts, deterministic subscription keys, and explicit subscription state transitions",
+    "src/domain/canonical.rs": "canonical event envelope and normalized event taxonomy with deterministic opaque ids, explicit provenance, schema-versioned fail-closed reading, and a conceptual normalized store contract with a test-only in-memory implementation",
+    "src/storage/application.rs": "generic non-market-data source/target reference application: SourceAdapter, JsonlSource with exact bytes/sequence/rejection evidence and duplicate detection, deterministic CanonicalBusinessEvent transform with separate source/receive time, six-category receipts and ExecutionMode, CommitSink seam, DeliveryObligation accounting, quarantine-before-progression runner, and side-effect-free replay connector",
+    "src/storage/application/postgres.rs": "parameterized PostgreSQL SQL contract, target-specific idempotency keys, BEGIN/INSERT/UPSERT/COMMIT transcript builder, SqlExecutor seam and deterministic in-memory simulator with idempotency by event id, transaction commit/rollback and unavailable/ack-lost fault injection; no driver or live connection",
+    "src/storage/application/file_source.rs": "bounded-memory BufRead line source with exact bytes, physical offsets, registered source identity, one-shot SHA-256 fingerprint, duplicate/schema/malformed evidence and a resume anchor bound to source identity, fingerprint and target",
+    "src/storage/application/durable.rs": "local append-only checksummed fsync-capable commit store built on atomic JSON and sha2, one checksummed record carrying ids, dispositions/quarantines and checkpoint, reopen verification with fail-closed truncation/corruption checks, fault injection and a streaming pipeline runner",
+    "src/storage/application/durable_segmented.rs": "versioned segmented local durability with explicit finalization and sync boundary, framed segments, checksummed recovery snapshot with bounded Bloom filter, verified archive manifest and restore, exact-scan lookup, fail-closed missing-evidence handling, and verified migration from the legacy commit-file store",
+    "src/storage/analytics.rs": "offline analytics input verification, domain-separated capture identity and hash-checked artifact containment",
+    "src/storage/analytics/tests.rs": "capture verification tests covering all three retained captures, deterministic identity, modified hashes and path traversal",
+    "src/storage/analytics/export.rs": "streaming typed NDJSON export of verified journal observations, SBE projections and capture metadata into staging",
+    "src/storage/analytics/export/tests.rs": "export tests for symbol ambiguity, unit parts, UTC dates and staged export of retained captures",
+    "src/market_state/collector/mod.rs": "collector core module boundary",
+    "src/market_state/collector/state.rs": "serialized per-symbol/source state machine, discovery and failover decisions",
+    "src/market_state/collector/state/tests.rs": "collector state-machine tests for discovery, ordering, capabilities, snapshots, recovery, and readiness",
+    "src/acquisition/exchange/mod.rs": "exchange capabilities and adapter-independent session factory abstraction",
+    "src/acquisition/exchange/kalshi/auth.rs": "Kalshi request signing and auth header construction",
+    "src/acquisition/exchange/kalshi/codec.rs": "Kalshi wire-frame parsing and normalized events",
+    "src/acquisition/exchange/kalshi/discovery.rs": "Kalshi REST pagination, market eligibility and metadata conversion",
+    "src/acquisition/exchange/kalshi/discovery/tests.rs": "Kalshi REST discovery tests for pagination, eligibility, caps, retries, and duplicate detection",
+    "src/acquisition/exchange/kalshi/mod.rs": "Kalshi adapter construction and Exchange implementation",
+    "src/acquisition/exchange/kalshi/session.rs": "Kalshi websocket protocol, subscriptions, acknowledgements and sequence recovery",
+    "src/acquisition/exchange/polymarket/codec.rs": "Polymarket CLOB payload validation and normalized events",
+    "src/acquisition/exchange/polymarket/discovery.rs": "Gamma keyset pagination, version-aware identifiers and outcome expansion",
+    "src/acquisition/exchange/polymarket/mod.rs": "Polymarket adapter construction and Exchange implementation",
+    "src/acquisition/exchange/polymarket/session.rs": "public CLOB websocket protocol and subscription/resubscription behavior",
+    "src/acquisition/exchange/coinbase/mod.rs": "Coinbase H0 exchange composition, clockless capability declaration and offline reference-data tests",
+    "src/acquisition/exchange/coinbase/codec.rs": "Coinbase products to MarketInfo decoding with explicit spot identity, active filtering and exact increment-derived numeric specs",
+    "src/acquisition/exchange/coinbase/discovery.rs": "offline-fixture and REST products discovery with H0 page/record telemetry",
+    "src/acquisition/exchange/coinbase/session.rs": "H0 no-network session seam with disabled heartbeat and no book or telemetry feed",
+    "src/acquisition/exchange/hyperliquid/mod.rs": "Hyperliquid H0 exchange composition, H1 telemetry adapter wiring and H2 selected-book wiring",
+    "src/acquisition/exchange/hyperliquid/codec.rs": "Hyperliquid meta/spotMeta to MarketInfo decoding with exact numeric specs",
+    "src/acquisition/exchange/hyperliquid/discovery.rs": "offline-fixture and REST reference-data discovery with telemetry",
+    "src/acquisition/exchange/hyperliquid/books.rs": "H2 exact-decimal decoding of l2Book full snapshots into normalized snapshots and trades into telemetry, with exact selected-perpetual identity scoping and no LevelChange",
+    "src/acquisition/exchange/hyperliquid/telemetry.rs": "H1 exact-decimal decoding of allMids/fastAssetCtxs telemetry into typed observations, never book events",
+    "src/acquisition/exchange/hyperliquid/session.rs": "H1 telemetry and H2 selected-book websocket session: exact subscription reconciliation, raw-frame decoding, snapshot-only events, resubscribe snapshot requests and disabled heartbeat",
+    "src/acquisition/exchange/kraken/mod.rs": "Kraken H0 exchange composition, capability declaration and fixture-backed reference-data tests",
+    "src/acquisition/exchange/kraken/codec.rs": "Kraken AssetPairs to MarketInfo decoding with namespaced identity, exact numeric specs and active-only filter",
+    "src/acquisition/exchange/kraken/discovery.rs": "offline-fixture and REST AssetPairs reference-data discovery with telemetry and explicit pair selection",
+    "src/acquisition/exchange/kraken/session.rs": "H0 no-network session seam with disabled heartbeat",
+    "src/acquisition/exchange/okx/mod.rs": "OKX H0 exchange composition: identity, clockless capability declaration, offline discovery wiring and inert no-network session factory",
+    "src/acquisition/exchange/okx/codec.rs": "OKX instruments document to validated MarketInfo decoding: product-type scoping, explicit namespace identity, exact tickSz/lotSz scales, live-state filter and no silent rounding",
+    "src/acquisition/exchange/okx/discovery.rs": "offline OKX instruments reference-data discovery with reconciled page/record telemetry and fail-closed missing fixture",
+    "src/acquisition/exchange/okx/session.rs": "OKX H0 no-network session stub with disabled heartbeat that fails closed instead of opening a socket",
+    "src/acquisition/exchange/binance/mod.rs": "Binance H0 reference-data exchange composition, clockless capability declaration and no-network session factory wiring",
+    "src/acquisition/exchange/binance/codec.rs": "Binance exchangeInfo to MarketInfo decoding with explicit spot/perp namespace identity, canonical quote filter and exact price/lot steps",
+    "src/acquisition/exchange/binance/discovery.rs": "offline-fixture-only Binance reference-data discovery with page/record telemetry, finite caps and no network fallback",
+    "src/acquisition/exchange/binance/session.rs": "Binance H0 no-network session stub: disabled heartbeat, fatal-on-network operations and no subscriptions or lifecycle plane",
     "src/util/aligned_sbe_reader.rs": "aligned SBE capture reader",
     "src/util/aligned_sbe_writer.rs": "aligned SBE chunk writer and sink helpers",
     "src/util/build.rs": "build-time SBE DTO/codec generation integration",
@@ -206,7 +218,7 @@ REQUIRED_ANCHORS = {
         "Command::Discover",
         "Command::Journal",
     ],
-    "src/coordinator.rs": [
+    "src/distribution/coordinator.rs": [
         "run_with_shutdown",
         "discover_with_retry",
         "process_worker_event",
@@ -215,12 +227,12 @@ REQUIRED_ANCHORS = {
         "core.finalize",
         "writer.shutdown_with_stats",
     ],
-    "src/capacity.rs": [
+    "src/storage/capacity.rs": [
         "derive_shard_count",
         "pub fn plan",
         "CapacityPlan",
     ],
-    "src/collector/state.rs": [
+    "src/market_state/collector/state.rs": [
         "apply_discovery",
         "handle_event",
         "handle_snapshot",
@@ -232,55 +244,69 @@ REQUIRED_ANCHORS = {
         "pub fn finalize",
         "fn reseat",
     ],
-    "src/session.rs": [
+    "src/acquisition/session.rs": [
         "pub trait MarketDataSession",
         "pub trait SessionFactory",
         "pub async fn run_worker",
         "backoff_or_stop",
         "handle_control",
     ],
-    "src/writer.rs": [
+    "src/storage/writer.rs": [
         "pub struct WriterHandle",
         "pub async fn send",
         "shutdown_inner",
         "blocking_recv",
         "sync_on_close",
     ],
-    "src/exchange/kalshi/auth.rs": ["pub struct KalshiAuth", "pub fn headers"],
-    "src/exchange/kalshi/discovery.rs": ["fetch_markets", "fetch_page"],
-    "src/exchange/kalshi/session.rs": [
+    "src/acquisition/exchange/kalshi/auth.rs": [
+        "pub struct KalshiAuth",
+        "pub fn headers",
+    ],
+    "src/acquisition/exchange/kalshi/discovery.rs": [
+        "fetch_markets",
+        "fetch_page",
+    ],
+    "src/acquisition/exchange/kalshi/session.rs": [
         "struct SequenceTracker",
         "on_snapshot",
         "on_delta",
     ],
-    "src/exchange/polymarket/discovery.rs": [
+    "src/acquisition/exchange/polymarket/discovery.rs": [
         "fetch_markets",
         "fetch_page",
         "identifier_kind",
     ],
-    "src/exchange/polymarket/codec.rs": [
+    "src/acquisition/exchange/polymarket/codec.rs": [
         "price_change",
         "unknown_event_types_are_counted_but_not_fatal",
     ],
-    "src/exchange/polymarket/session.rs": [
+    "src/acquisition/exchange/polymarket/session.rs": [
         "send_initial",
         "next_frame",
         "send_keepalive",
     ],
-    "src/exchange/coinbase/mod.rs": ["CoinbaseExchange", "capabilities"],
-    "src/exchange/coinbase/codec.rs": [
+    "src/acquisition/exchange/coinbase/mod.rs": [
+        "CoinbaseExchange",
+        "capabilities",
+    ],
+    "src/acquisition/exchange/coinbase/codec.rs": [
         "parse_reference_document",
         "parse_products",
     ],
-    "src/exchange/coinbase/discovery.rs": ["discover_with_stats"],
-    "src/exchange/coinbase/session.rs": ["CoinbaseSessionFactory"],
-    "src/exchange/hyperliquid/mod.rs": ["HyperliquidExchange", "capabilities"],
-    "src/exchange/hyperliquid/codec.rs": [
+    "src/acquisition/exchange/coinbase/discovery.rs": ["discover_with_stats"],
+    "src/acquisition/exchange/coinbase/session.rs": ["CoinbaseSessionFactory"],
+    "src/acquisition/exchange/hyperliquid/mod.rs": [
+        "HyperliquidExchange",
+        "capabilities",
+    ],
+    "src/acquisition/exchange/hyperliquid/codec.rs": [
         "parse_reference_document",
         "parse_spot_meta",
     ],
-    "src/exchange/hyperliquid/discovery.rs": ["discover_with_stats"],
-    "src/exchange/hyperliquid/books.rs": [
+    "src/acquisition/exchange/hyperliquid/discovery.rs": [
+        "discover_with_stats"
+    ],
+    "src/acquisition/exchange/hyperliquid/books.rs": [
         "CHANNEL_L2_BOOK",
         "CHANNEL_TRADES",
         "decode_l2_book",
@@ -289,13 +315,13 @@ REQUIRED_ANCHORS = {
         "selected_symbols",
         "subscription_request",
     ],
-    "src/exchange/hyperliquid/telemetry.rs": [
+    "src/acquisition/exchange/hyperliquid/telemetry.rs": [
         "decode_telemetry",
         "CHANNEL_ALL_MIDS",
         "CHANNEL_FAST_ASSET_CTXS",
         "CHANNEL_ASSET_CTXS_NOT_SUBSCRIBED",
     ],
-    "src/exchange/hyperliquid/session.rs": [
+    "src/acquisition/exchange/hyperliquid/session.rs": [
         "HyperliquidSessionFactory",
         "apply_subscriptions",
         "next_frame",
@@ -304,58 +330,65 @@ REQUIRED_ANCHORS = {
         "selected_books",
         "request_snapshot",
     ],
-    "src/exchange/kraken/mod.rs": ["KrakenExchange", "capabilities"],
-    "src/exchange/kraken/codec.rs": [
+    "src/acquisition/exchange/kraken/mod.rs": [
+        "KrakenExchange",
+        "capabilities",
+    ],
+    "src/acquisition/exchange/kraken/codec.rs": [
         "parse_asset_pairs",
         "decode_pair",
         "parse_reference_document",
     ],
-    "src/exchange/kraken/discovery.rs": ["discover_with_stats"],
-    "src/exchange/kraken/session.rs": ["KrakenSessionFactory"],
-    "src/exchange/okx/mod.rs": [
+    "src/acquisition/exchange/kraken/discovery.rs": ["discover_with_stats"],
+    "src/acquisition/exchange/kraken/session.rs": ["KrakenSessionFactory"],
+    "src/acquisition/exchange/okx/mod.rs": [
         "OkxExchange",
         "capabilities",
         "pub const fn kind",
     ],
-    "src/exchange/okx/codec.rs": [
+    "src/acquisition/exchange/okx/codec.rs": [
         "parse_instruments_document",
         "tickSz",
         "lotSz",
         "state",
         "native_symbol",
     ],
-    "src/exchange/okx/discovery.rs": ["discover_with_stats"],
-    "src/exchange/okx/session.rs": [
+    "src/acquisition/exchange/okx/discovery.rs": ["discover_with_stats"],
+    "src/acquisition/exchange/okx/session.rs": [
         "OkxSessionFactory",
         "OkxNoNetworkSession",
         "fn heartbeat_spec",
         "Disabled",
     ],
-    "src/exchange/binance/mod.rs": ["BinanceExchange", "capabilities", "kind"],
-    "src/exchange/binance/codec.rs": [
+    "src/acquisition/exchange/binance/mod.rs": [
+        "BinanceExchange",
+        "capabilities",
+        "kind",
+    ],
+    "src/acquisition/exchange/binance/codec.rs": [
         "parse_reference_document",
         "parse_section",
         "exact_step",
         "parse_decimal",
     ],
-    "src/exchange/binance/discovery.rs": [
+    "src/acquisition/exchange/binance/discovery.rs": [
         "discover_with_stats",
         "reference_fixture",
         "network discovery is not implemented",
     ],
-    "src/exchange/binance/session.rs": [
+    "src/acquisition/exchange/binance/session.rs": [
         "BinanceSessionFactory",
         "BinanceSession",
         "heartbeat_spec",
         "HeartbeatSpec::disabled",
     ],
-    "src/verify.rs": ["pub fn run"],
-    "src/identity.rs": [
+    "src/integrity/verify.rs": ["pub fn run"],
+    "src/domain/identity.rs": [
         "pub struct InstrumentId",
         "pub struct ReferenceCatalog",
         "pub fn venue_mappings_from_markets",
     ],
-    "src/products.rs": [
+    "src/domain/products.rs": [
         "pub enum DataProduct",
         "pub enum ProductKind",
         "pub struct SubscriptionSet",
@@ -364,7 +397,7 @@ REQUIRED_ANCHORS = {
         "pub enum SubscriptionState",
         "pub struct SubscriptionLease",
     ],
-    "src/canonical.rs": [
+    "src/domain/canonical.rs": [
         "pub const CANONICAL_SCHEMA_VERSION",
         "pub struct EventId",
         "pub struct SequenceMetadata",
@@ -376,12 +409,12 @@ REQUIRED_ANCHORS = {
         "pub trait NormalizedStore",
         "pub struct InMemoryNormalizedStore",
     ],
-    "src/exchange/mod.rs": [
+    "src/acquisition/exchange/mod.rs": [
         "pub fn capabilities_for",
         "pub fn source_capabilities_for",
         "fn source_capabilities(&self) -> SourceCapabilities",
     ],
-    "src/journal.rs": [
+    "src/integrity/journal.rs": [
         "pub struct JournalHandle",
         "pub fn verify_run",
         "pub fn read_records",
@@ -390,12 +423,12 @@ REQUIRED_ANCHORS = {
         "struct SegmentFooter",
         "RunState::Finalized",
     ],
-    "src/protocol.rs": [
+    "src/market_state/protocol.rs": [
         "pub enum SessionSignal",
         "pub enum FrameClassification",
         "pub struct TransportObservation",
     ],
-    "src/recovery.rs": [
+    "src/market_state/recovery.rs": [
         "pub enum RecoveryAction",
         "pub enum RecoveryCause",
         "pub fn decide",
@@ -406,7 +439,7 @@ REQUIRED_ANCHORS = {
         "pub struct RecoveryCoordinator",
     ],
     "src/util/build.rs": ["fn main()", "println!"],
-    "src/application.rs": [
+    "src/storage/application.rs": [
         "pub trait SourceAdapter",
         "pub trait TargetConnector",
         "pub struct JsonlSource",
@@ -429,7 +462,7 @@ REQUIRED_ANCHORS = {
         "pub trait CommitSink",
         "pub fn run_jsonl_to_target_with_mode",
     ],
-    "src/application/file_source.rs": [
+    "src/storage/application/file_source.rs": [
         "pub struct SourceFingerprint",
         "pub struct SourceIdentity",
         "pub struct SourceRegistry",
@@ -440,7 +473,7 @@ REQUIRED_ANCHORS = {
         "pub const MAX_LINE_BYTES",
         "impl<R: BufRead> SourceAdapter for FileSource<R>",
     ],
-    "src/application/durable.rs": [
+    "src/storage/application/durable.rs": [
         "pub struct CommitRecord",
         "pub struct CommitEnvelope",
         "pub struct CommitStore",
@@ -452,7 +485,7 @@ REQUIRED_ANCHORS = {
         "pub fn run_streaming_pipeline",
         "impl CommitSink for CommitStore",
     ],
-    "src/application/postgres.rs": [
+    "src/storage/application/postgres.rs": [
         "pub const INSERT_SQL",
         "pub struct ParameterizedStatement",
         "pub enum SqlValue",
@@ -469,10 +502,10 @@ REQUIRED_ANCHORS = {
 # The P5 reference application must stay independent of market-data modules.
 # These tokens are checked only against the two new source files.
 REFERENCE_APP_SOURCES = (
-    "src/application.rs",
-    "src/application/postgres.rs",
-    "src/application/file_source.rs",
-    "src/application/durable.rs",
+    "src/storage/application.rs",
+    "src/storage/application/postgres.rs",
+    "src/storage/application/file_source.rs",
+    "src/storage/application/durable.rs",
 )
 REFERENCE_APP_FORBIDDEN_TOKENS = (
     "crate::model",
@@ -555,8 +588,10 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
     errors: list[str] = []
 
     # Check active source files reference missing dependencies
-    config = mask_rust((root / "src/config.rs").read_text(encoding="utf-8"))
-    capacity_path = root / "src/capacity.rs"
+    config = mask_rust(
+        (root / "src/governance/config.rs").read_text(encoding="utf-8")
+    )
+    capacity_path = root / "src/storage/capacity.rs"
     if capacity_path.exists():
         capacity = mask_rust(capacity_path.read_text(encoding="utf-8"))
         collector_struct = re.search(
@@ -570,9 +605,9 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
         referenced = set(re.findall(r"settings\.collector\.(\w+)", capacity))
         for field in sorted(referenced - declared):
             errors.append(
-                f"src/capacity.rs references CollectorSettings.{field}, absent from src/config.rs"
+                f"src/storage/capacity.rs references CollectorSettings.{field}, absent from src/governance/config.rs"
             )
-    catalog_path = root / "src/catalog.rs"
+    catalog_path = root / "src/storage/catalog.rs"
     catalog = (
         mask_rust(catalog_path.read_text(encoding="utf-8"))
         if catalog_path.exists()
@@ -585,11 +620,11 @@ def module_integration_errors(root: Path = ROOT) -> list[str]:
         )
         if not re.search(r"\bfn\s+sha256_hex\b", util_text):
             errors.append(
-                "src/catalog.rs references util::sha256_hex, but no such function exists under src/util/"
+                "src/storage/catalog.rs references util::sha256_hex, but no such function exists under src/util/"
             )
 
     coordinator = mask_rust(
-        (root / "src/coordinator.rs").read_text(encoding="utf-8")
+        (root / "src/distribution/coordinator.rs").read_text(encoding="utf-8")
     )
     required = {
         "capacity startup": "capacity::plan(&settings, &initial_markets)",

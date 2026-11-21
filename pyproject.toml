@@ -1,52 +1,8 @@
-# Python tooling for the repository's gate scripts.
+# Python formatter settings for the repository's gate scripts.
 #
-# Ruff enforces the language rules of the Google Python Style Guide; Pyink is
-# Google's Black fork and is the formatter named by that guide. Both are
-# pinned in requirements-dev.txt and invoked by `cargo xtask style`.
-[tool.ruff]
-line-length = 80
-target-version = "py311"
-src = ["scripts"]
-extend-exclude = [
-  "target",
-  "build",
-  "captures",
-  ".git",
-  ".pytest_cache",
-  "__pycache__",
-]
-
-[tool.ruff.lint]
-# Zero warning-level suppressions. Every selected rule is fail-closed.
-select = [
-  "E",   # pycodestyle errors
-  "F",   # pyflakes
-  "W",   # pycodestyle warnings
-  "I",   # isort (Google section/import ordering)
-  "N",   # pep8-naming (Google naming conventions)
-  "D",   # pydocstyle with the Google convention below
-  "UP",  # pyupgrade
-  "B",   # flake8-bugbear
-  "SIM", # flake8-simplify
-  "C4",  # flake8-comprehensions
-  "BLE", # flake8-blind-except
-  "PIE", # flake8-pie
-  "RET", # flake8-return
-  "RUF", # ruff-specific rules
-  "ANN", # flake8-annotations
-]
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
-
-[tool.ruff.lint.per-file-ignores]
-# Google's explicit line-length exception: long module-level string constants
-# that cannot sensibly be split (matcher vocabulary, Rust lint reasons and the
-# responsibility map). These are data, not prose, and are reviewed as data.
-"scripts/check_architecture.py" = ["E501"]
-"scripts/assurance/english_audit.py" = ["E501"]
-"scripts/annotate_test_lint_reasons.py" = ["E501"]
-
+# Pyink is Google's Black fork and is the formatter named by the Google Python
+# Style Guide. Ruff's lint policy lives in ruff.toml; both tools are pinned in
+# requirements-dev.txt and invoked by `cargo xtask style`.
 [tool.pyink]
 line-length = 80
 pyink-indentation = 4

@@ -3,3 +3,14 @@
 shell=bash
 external-sources=true
 source-path=scripts/assurance
+
+# Curated optional checks (ShellCheck 0.11.0). These are deterministic and do
+# not conflict with each other; `enable=all` is deliberately not used because
+# subjective checks conflict and would make the gate unstable.
+enable=add-default-case
+enable=avoid-negated-conditions
+enable=avoid-nullary-conditions
+enable=deprecate-which
+enable=quote-safe-variables
+enable=require-double-brackets
+enable=useless-use-of-cat

@@ -1,18 +1,27 @@
-# Clippy configuration: thresholds and test-allowance policy only.
-# Deny/warn levels live in Cargo.toml [lints]; format rules in .rustfmt.toml;
-# do not restate them here.
+# Clippy policy. Lint levels live in Cargo.toml [workspace.lints]; this file
+# sets the analysis thresholds shared by the workspace and the separate
+# archived local reference workspace under .local/extras. Test-only allowances are restricted to test
+# code and do not weaken production lints.
 
-# Floor for lint tuning: matches Cargo.toml rust-version and the pinned
-# toolchain (1.99.x); keeps lints from suggesting post-MSRV idioms.
+# Fail instead of silently preserving a semver-breaking public API.
+avoid-breaking-exported-api = false
+
+# Project MSRV matches rust-toolchain.toml and Cargo.toml.
 msrv = "1.99"
 
-# Never propose API-breaking rewrites of the library surface; the public
-# API is the contract other challenge code depends on.
-avoid-breaking-exported-api = true
+# Complexity and size limits. Values are strict but compatible
+# with financial state machines and protocol decoders.
+cognitive-complexity-threshold = 20
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 150
+type-complexity-threshold = 250
+single-char-binding-names-threshold = 4
 
-# Allowances for test code only. Production code must be clean.
+# Tests may use unwrap/expect/panic/print/dbg for assertions and diagnostics;
+# library and binary targets remain denied by [workspace.lints.clippy].
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-print-in-tests = true
-
+allow-dbg-in-tests = true
+allow-indexing-slicing-in-tests = true

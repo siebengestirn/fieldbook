@@ -37,8 +37,17 @@ jobs:
         run: python3 scripts/check_rust_style.py
       - name: Tool isolation
         run: python3 scripts/check_no_cross_pollution.py
+      - name: Git policy
+        if: github.event_name == 'push'
+        run: python3 scripts/check_git_policy.py
       - name: Style reference integrity
         run: python3 scripts/check_style_references.py
+      - name: q / kdb+ style
+        env:
+          FIELDBOOK_STYLE_BASE: origin/main
+        run: |
+          python3 scripts/check_q_style.py --self-test
+          python3 scripts/check_q_style.py
 
   rust:
     name: Format, lint, test, release build
