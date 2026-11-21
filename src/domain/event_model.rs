@@ -428,7 +428,10 @@ mod tests {
             ClockSynchronization::Ptp,
             "synchronization retained"
         );
-        assert!(timestamp.accuracy_claim_is_evidenced());
+        assert!(
+            timestamp.accuracy_claim_is_evidenced(),
+            "declared synchronization evidences the accuracy claim"
+        );
     }
 
     #[test]

@@ -12,8 +12,13 @@
 //! bound. Sequence arithmetic is checked so exhaustion is an explicit
 //! decision rather than a wraparound.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::mem::size_of;
+use std::{
+    collections::{
+        BTreeMap, //
+        VecDeque, //
+    },
+    mem::size_of,
+};
 
 use serde::{
     Deserialize, //

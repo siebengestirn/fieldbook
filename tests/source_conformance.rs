@@ -19,7 +19,12 @@
 
 use std::collections::BTreeMap;
 
-use fieldbook::acquisition::codec::{CodecRegistry, DecodeStatus, DecodedObservation, FeedCodec};
+use fieldbook::acquisition::codec::{
+    CodecRegistry,      //
+    DecodeStatus,       //
+    DecodedObservation, //
+    FeedCodec,          //
+};
 use fieldbook::adapter::{
     AccessStatus, HistoricalCapability, Protocol, RecoveryCapability, SourceCapabilityManifest,
     TimestampCapability, Transport,
@@ -28,10 +33,25 @@ use fieldbook::conformance::{
     ConformanceDeclaration, ConformanceFixture, ExpectedObservation, run_conformance,
 };
 use fieldbook::coverage_certification::ExpectedUniverse;
-use fieldbook::modality::{AcquisitionModality, SnapshotCapability, StreamingCapability};
+use fieldbook::modality::{
+    AcquisitionModality, //
+    SnapshotCapability,  //
+    StreamingCapability, //
+};
 use fieldbook::reference_data::VenueCategory;
-use fieldbook::rights::{LicensingRecord, LicensingRegistry, RightDecision, UsageRight};
-use fieldbook::taxonomy::{AssetClass, CountryCode, DataCategory, DepthModel, Frequency};
+use fieldbook::rights::{
+    LicensingRecord,   //
+    LicensingRegistry, //
+    RightDecision,     //
+    UsageRight,        //
+};
+use fieldbook::taxonomy::{
+    AssetClass,   //
+    CountryCode,  //
+    DataCategory, //
+    DepthModel,   //
+    Frequency,    //
+};
 
 struct TradeCodec {
     status: DecodeStatus,

@@ -369,7 +369,10 @@ pub fn run_conformance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acquisition::codec::{DecodedObservation, FeedCodec};
+    use crate::acquisition::codec::{
+        DecodedObservation, //
+        FeedCodec,          //
+    };
     use crate::governance::adapter::{
         AccessStatus, HistoricalCapability, Protocol, RecoveryCapability, TimestampCapability,
         Transport,
@@ -378,7 +381,13 @@ mod tests {
         AcquisitionModality, SnapshotCapability, StreamingCapability,
     };
     use crate::reference_data::VenueCategory;
-    use crate::taxonomy::{AssetClass, CountryCode, DataCategory, DepthModel, Frequency};
+    use crate::taxonomy::{
+        AssetClass,   //
+        CountryCode,  //
+        DataCategory, //
+        DepthModel,   //
+        Frequency,    //
+    };
     use std::collections::BTreeMap;
 
     struct JsonCodec {

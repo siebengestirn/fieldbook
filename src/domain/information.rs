@@ -260,7 +260,12 @@ pub type InformationEnvelope = crate::event_model::UniversalEnvelope<Information
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event_model::{ObservedTimestamp, Provenance, TimestampRole, UniversalEnvelope};
+    use crate::event_model::{
+        ObservedTimestamp, //
+        Provenance,        //
+        TimestampRole,     //
+        UniversalEnvelope, //
+    };
     use crate::identity::InstrumentId;
     use crate::quality::QualityState;
 

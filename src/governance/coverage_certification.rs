@@ -8,7 +8,10 @@
 //! certification are separate dimensions, so a live feed without history, or
 //! a licensed dataset awaiting validation, cannot hide an unmet condition.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{
+    BTreeMap, //
+    BTreeSet, //
+};
 
 use serde::Deserialize;
 use serde::Serialize;

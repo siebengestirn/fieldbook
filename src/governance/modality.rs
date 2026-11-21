@@ -226,7 +226,10 @@ pub trait OnChainConnector: SourceLifecycle {
 /// Check that every declared modality has its capability declaration and a
 /// protocol/transport combination that can realize it.
 pub fn validate_modalities(manifest: &SourceCapabilityManifest) -> Result<(), ManifestError> {
-    use crate::governance::adapter::{Protocol, Transport};
+    use crate::governance::adapter::{
+        Protocol,  //
+        Transport, //
+    };
 
     if manifest.modalities.is_empty() {
         return Err(ManifestError::MissingModalities);
@@ -308,9 +311,20 @@ pub fn validate_modalities(manifest: &SourceCapabilityManifest) -> Result<(), Ma
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::adapter::{AccessStatus, Protocol, SourceCapabilityManifest, Transport};
+    use crate::governance::adapter::{
+        AccessStatus,             //
+        Protocol,                 //
+        SourceCapabilityManifest, //
+        Transport,                //
+    };
     use crate::reference_data::VenueCategory;
-    use crate::taxonomy::{AssetClass, CountryCode, DataCategory, DepthModel, Frequency};
+    use crate::taxonomy::{
+        AssetClass,   //
+        CountryCode,  //
+        DataCategory, //
+        DepthModel,   //
+        Frequency,    //
+    };
 
     fn manifest() -> SourceCapabilityManifest {
         SourceCapabilityManifest {
@@ -366,15 +380,25 @@ mod tests {
 
     #[test]
     fn modality_labels_and_ports_are_stable() {
-        assert_eq!(AcquisitionModality::Streaming.as_str(), "streaming");
-        assert_eq!(AcquisitionModality::OnChain.as_str(), "on_chain");
+        assert_eq!(
+            AcquisitionModality::Streaming.as_str(),
+            "streaming",
+            "streaming label is stable"
+        );
+        assert_eq!(
+            AcquisitionModality::OnChain.as_str(),
+            "on_chain",
+            "on-chain label is stable"
+        );
         assert_eq!(
             AcquisitionModality::Streaming.required_port(),
-            "StreamingConnector"
+            "StreamingConnector",
+            "streaming port name is stable"
         );
         assert_eq!(
             AcquisitionModality::Document.required_port(),
-            "DocumentConnector"
+            "DocumentConnector",
+            "document port name is stable"
         );
     }
 
@@ -393,21 +417,27 @@ mod tests {
     fn modality_without_capability_is_rejected() {
         let mut source = manifest();
         source.streaming = None;
-        assert!(matches!(
-            validate_modalities(&source),
-            Err(ManifestError::MissingModalityCapability(
-                AcquisitionModality::Streaming
-            ))
-        ));
+        assert!(
+            matches!(
+                validate_modalities(&source),
+                Err(ManifestError::MissingModalityCapability(
+                    AcquisitionModality::Streaming
+                ))
+            ),
+            "a declared modality without capability must fail"
+        );
     }
 
     #[test]
     fn inconsistent_protocol_is_rejected() {
         let mut source = manifest();
         source.protocols = vec![Protocol::File];
-        assert!(matches!(
-            validate_modalities(&source),
-            Err(ManifestError::InconsistentModality { .. })
-        ));
+        assert!(
+            matches!(
+                validate_modalities(&source),
+                Err(ManifestError::InconsistentModality { .. })
+            ),
+            "an unrealizable modality must fail"
+        );
     }
 }
