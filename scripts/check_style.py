@@ -17,7 +17,7 @@ are deliberate and must be made by hand so evidence text is never rewritten
 blindly.
 
 Language rules for Python are additionally enforced by Ruff, configured in
-``pyproject.toml``; shell correctness is enforced by shellcheck.
+``ruff.toml``; shell correctness is enforced by shellcheck.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ SKIP_DIRS = frozenset(
         "__pycache__",
     }
 )
-# Google's long-string-constant exception, mirrored in pyproject.toml Ruff
+# Google's long-string-constant exception, mirrored in ruff.toml Ruff
 # per-file-ignores. These files hold vocabulary, regexes and a responsibility
 # map as data; their long lines are not wrap-able prose or code.
 LONG_STRING_FILES = frozenset(

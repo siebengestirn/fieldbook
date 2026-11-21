@@ -31,6 +31,7 @@ MANDATED = frozenset(
         "shellguide.html",
         "verilogguide.html",
         "docguide-style.html",
+        "awesome-style-guide-master.md",
     }
 )
 

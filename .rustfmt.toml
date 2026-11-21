@@ -6,4 +6,17 @@
 newline_style = "Unix"
 # Match the edition-2024 style applied by the pinned toolchain.
 style_edition = "2024"
+# Same layout contract as the sibling quant workspace: four spaces and the
+# 100-column rustfmt default, stated explicitly rather than left implicit.
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+# Only stable options are listed so the pinned stable toolchain applies all
+# of them without warnings. Unstable fail-closed knobs are not usable here.
+reorder_imports = true
+reorder_modules = true
+merge_derives = true
+use_try_shorthand = true
+use_field_init_shorthand = true
+force_explicit_abi = true
 

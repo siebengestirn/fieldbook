@@ -38,6 +38,7 @@ standard.
 | Makefile | `scripts/check_style.py` | same checker | `cargo xtask style` |
 | JSON | `scripts/check_style.py` | same checker | `cargo xtask style` |
 | Markdown | `scripts/check_style.py --fix` | same checker | `cargo xtask style` |
+| q / kdb+ | none (scripts are short) | `scripts/check_q_style.py` (added lines) | `cargo xtask style` |
 
 Versions are pinned in `requirements-dev.txt`. `make tools` installs them;
 CI installs the same file before running any gate.
@@ -59,8 +60,8 @@ Pyink is Google's Black fork and implements the guide's 4-space indentation,
 80-column lines and majority-quote rule. Its settings are in `pyproject.toml`.
 Ruff enforces pycodestyle, pyflakes, isort ordering, naming, Google-convention
 docstrings, pyupgrade, bugbear, simplification, blind-except, PIE, return,
-Ruff-specific rules and annotations. Every selected rule is a failure; there
-are no warning-level suppressions.
+Ruff-specific rules and annotations. Its settings are in `ruff.toml`. Every
+selected rule is a failure; there are no warning-level suppressions.
 
 Every module has a docstring and `from __future__ import annotations`.
 Public functions, methods and classes have docstrings and return annotations.
@@ -161,7 +162,7 @@ scripts/assurance/polish.sh --loop 2
 ## Explicit exceptions
 
 Three Python files hold long vocabulary, regex and responsibility-map
-  string constants. They are exempt from E501 in `pyproject.toml` and from
+  string constants. They are exempt from E501 in `ruff.toml` and from
   the 80-column line check by name in `scripts/check_style.py`; both lists
   must stay in lockstep.
 - Immutable evidence and the raw wire fixture are excluded from formatting.

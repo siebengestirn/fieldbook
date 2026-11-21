@@ -1,3 +1,4 @@
+pub mod acquisition;
 pub mod adapter;
 pub mod analytics;
 pub mod application;

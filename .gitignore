@@ -2,9 +2,12 @@
 .DS_Store
 captures/
 
-# Python validation scripts
+# Python validation scripts and tool caches
 __pycache__/
 *.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
 
 # Local assurance audit output
 /build/

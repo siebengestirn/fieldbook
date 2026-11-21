@@ -597,7 +597,7 @@ mod tests {
             r#""12.5""#,
             r#""abc""#,
             r#""9223372036854775807""#,
-            r#"true"#,
+            r"true",
             r#"{"ms":1}"#,
         ] {
             let payload = format!(

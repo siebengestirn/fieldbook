@@ -1,0 +1,64 @@
+# Ruff policy for the repository's Python gate scripts.
+#
+# This file is the single source of truth for Ruff. `cargo xtask style` runs
+# `python3 -m ruff check --config ruff.toml --no-cache .` in `make check` and
+# CI; the `ruff-check` Make target exposes the same gate locally. Pyink,
+# Google's Black fork, keeps its formatter settings in `pyproject.toml`.
+#
+# Zero warning-level suppressions: every selected rule is fail-closed. The
+# E501 exemptions below are long string constants reviewed as data, and must
+# stay in lockstep with LONG_STRING_FILES in scripts/check_style.py.
+
+# Deterministic contract: the same pinned Ruff version must run everywhere,
+# exclusions are honoured even for explicitly named files, and gates never
+# mutate code. These settings are shared with the sibling workspace.
+required-version = "==0.17.5"
+force-exclude = true
+fix = false
+unsafe-fixes = false
+
+line-length = 80
+target-version = "py311"
+src = ["scripts"]
+extend-exclude = [
+  "target",
+  "build",
+  "captures",
+  ".git",
+  ".pytest_cache",
+  "__pycache__",
+]
+
+[lint]
+# No implicit suppression by underscore-prefixed names other than `_`, and
+# postponed annotations are mandatory on every Python 3.11+ target.
+dummy-variable-rgx = "^_$"
+future-annotations = true
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "W",   # pycodestyle warnings
+  "I",   # isort (Google section/import ordering)
+  "N",   # pep8-naming (Google naming conventions)
+  "D",   # pydocstyle with the Google convention below
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+  "C4",  # flake8-comprehensions
+  "BLE", # flake8-blind-except
+  "PIE", # flake8-pie
+  "RET", # flake8-return
+  "RUF", # ruff-specific rules
+  "ANN", # flake8-annotations
+]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.per-file-ignores]
+# Google's explicit line-length exception: long module-level string constants
+# that cannot sensibly be split (matcher vocabulary, Rust lint reasons and the
+# responsibility map). These are data, not prose, and are reviewed as data.
+"scripts/check_architecture.py" = ["E501"]
+"scripts/assurance/english_audit.py" = ["E501"]
+"scripts/annotate_test_lint_reasons.py" = ["E501"]

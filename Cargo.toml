@@ -85,6 +85,8 @@ debug = 0
 # isolated, build-generated module with its own `allow(unsafe_code)`; all
 # hand-written project code is still denied.
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = "deny"
 
 [lints.clippy]
 unwrap_used = "deny"
@@ -106,3 +108,5 @@ manual_assert = "deny"
 missing_panics_doc = "deny"
 items_after_test_module = "deny"
 wildcard_imports = "deny"
+redundant_else = "deny"
+needless_raw_string_hashes = "deny"

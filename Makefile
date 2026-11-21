@@ -9,8 +9,8 @@
 # file produced by any target name, so `.PHONY` prevents stale-file skips.
 
 .PHONY: all check ci style style-fix fmt lint test docs e2e verify \
-	python-check python-fmt shell-check json-check markdown-check \
-	makefile-check rust-check tools
+	python-check ruff-check q-check standards-check python-fmt shell-check \
+	json-check markdown-check makefile-check rust-check tools
 
 .DEFAULT_GOAL := check
 
@@ -25,13 +25,27 @@ ci:
 
 fmt: style-fix
 
-style: python-check shell-check json-check markdown-check makefile-check
+style: python-check ruff-check q-check standards-check shell-check \
+	json-check markdown-check makefile-check
 
 style-fix:
 	python3 scripts/check_style.py --fix
 
 python-check:
 	python3 scripts/check_style.py --python
+
+ruff-check:
+	python3 scripts/ruff_gate.py .
+
+q-check:
+	python3 scripts/check_q_style.py
+	python3 scripts/check_q_style.py --self-test
+
+standards-check:
+	python3 scripts/check_quality_contract.py --self-test
+	python3 scripts/check_quality_contract.py
+	python3 scripts/check_license_provenance.py --self-test
+	python3 scripts/check_license_provenance.py
 
 python-fmt:
 	python3 -m pyink --config pyproject.toml scripts
@@ -53,7 +67,7 @@ rust-check:
 	cargo xtask fmt
 	cargo xtask lint
 
-lint: rust-check python-check shell-check
+lint: rust-check python-check ruff-check q-check standards-check shell-check
 
 test:
 	cargo xtask test
