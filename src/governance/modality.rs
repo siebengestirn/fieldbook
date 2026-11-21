@@ -2,7 +2,7 @@
 //! Typed acquisition ports separated by source modality.
 //!
 //! A historical file provider and a multicast exchange do not share one
-//! lifecycle. The shared contract here is deliberately small: identity via a
+//! lifecycle. The shared contract here is kept minimal: identity via a
 //! manifest, health, and disconnect. Everything else is a typed port that a
 //! connector implements only for the modality it genuinely declares.
 //!

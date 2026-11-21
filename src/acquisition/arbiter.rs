@@ -55,7 +55,7 @@ pub struct SequencedPacket {
 
 /// Differences between the required sequence and the observed sequence are
 /// measured, declared and enforced. These are the production bounds; the
-/// defaults are deliberately finite but generous so that offline helpers can
+/// defaults are finite by construction but generous so offline helpers can
 /// use [`FeedArbiter::new`] without choosing a policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArbiterLimits {

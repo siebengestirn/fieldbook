@@ -37,6 +37,7 @@ pub use governance::coverage_certification;
 pub use governance::modality;
 pub use governance::rights;
 pub use integrity::completeness;
+pub use integrity::conformance;
 pub use integrity::coverage;
 pub use integrity::journal;
 pub use integrity::latency;

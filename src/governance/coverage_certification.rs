@@ -324,7 +324,7 @@ pub enum ExpectedUniverse {
     Enumerated {
         /// Objects the source is expected to publish.
         expected: BTreeSet<String>,
-        /// Objects Fieldbook actually supports.
+        /// Objects Fieldbook supports.
         supported: BTreeSet<String>,
     },
     /// No complete published universe exists; no denominator is invented.

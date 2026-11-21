@@ -103,6 +103,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/governance/config.rs": "configuration defaults, deserialization, and validation",
     "src/integrity/completeness.rs": "per-symbol feed-completeness accounting for captures: anchored vs unanchored deltas, quiet intervals",
     "src/integrity/coverage.rs": "per-symbol live-coverage certification: expected vs acknowledged vs snapshot-anchored symbols",
+    "src/integrity/conformance.rs": "independent source conformance harness checking declarations, fixtures, typed output, rights and universe disclosure",
     "src/distribution/coordinator.rs": "startup, orchestration loop, discovery reconciliation, controls, shutdown",
     "src/acquisition/egress.rs": "egress policy: direct/proxy routing, fail-closed tunnelling, route provenance and redaction",
     "src/domain/fixed.rs": "fixed-point price/quantity parsing and checked arithmetic",
