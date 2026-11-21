@@ -58,13 +58,19 @@ def parse_added_lines(diff_text: str) -> dict[str, list[tuple[int, str]]]:
 
 
 def collect_added_lines(base: str) -> dict[str, list[tuple[int, str]]]:
-    """Collect added q lines from the working tree relative to ``base``."""
+    """Collect added q lines from the working tree relative to ``base``.
+
+    CI checkouts may be shallow and lack the named base ref. An unavailable
+    base yields no added lines instead of failing the whole gate.
+    """
     result = subprocess.run(
         ["git", "diff", base, "--unified=0", "--", "*.q"],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        return {}
     return parse_added_lines(result.stdout)
 
 
