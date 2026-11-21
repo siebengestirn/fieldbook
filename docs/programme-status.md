@@ -35,6 +35,16 @@ metadata and second-pass verification gaps. Analytics milestones from P2.2
 use the `AN-` prefix, which keeps them distinct from the existing
 JSONL-to-target P5 and durable-file-to-target P6 applications.
 
+## Global data infrastructure target
+
+The V2 target architecture and six mandatory specifications are recorded in
+`docs/global-data-architecture.md` and `docs/specifications/`. Additive Rust
+modules declare taxonomy, identity, typed events, connector capabilities,
+quality, rights and coverage certification. These are declarations with
+tests, not claims of global coverage, licensed feeds or exchange-grade
+latency. The live collector, SBE wire identity and retained captures remain
+unchanged.
+
 ## Integration history (exact commits)
 
 | Commit | Integration |

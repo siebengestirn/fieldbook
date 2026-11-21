@@ -222,6 +222,7 @@ flowchart LR
 | Area | Files | Responsibility |
 |---|---|---|
 | Composition | `main.rs`, `coordinator.rs`, `cli.rs`, `config.rs` | CLI, settings precedence, adapter construction, lifecycle |
+| Universal data foundation | `taxonomy.rs`, `reference_data.rs`, `event_model.rs`, `adapter.rs`, `quality.rs`, `rights.rs`, `coverage_certification.rs`, `docs/specifications/` | Declarative V2 contracts for domains, identity, typed events, source capabilities, quality, rights and coverage certification; additive to the live collector |
 | Discovery | `exchange/*/discovery.rs`, `capacity.rs`, `catalog.rs` | Venue discovery, eligibility, capacity admission, checkpoint |
 | State | `collector/state.rs`, `orderbook.rs`, `model.rs`, `fixed.rs` | Serialized books, failover, fixed-point values, output model |
 | Data-product contracts | `products.rs`, `exchange/mod.rs` (`source_capabilities_for`) | Platform M3 Phase 1 typed products, stable subscription keys from legacy native symbols, typed source capabilities, and an explicit subscription state machine with connection epochs; declarations only, no session-API, SBE, journal, replay or catalog change. H0-only venues declare reference data and no live products. |
