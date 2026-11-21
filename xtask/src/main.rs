@@ -7,6 +7,7 @@ mod command;
 mod e2e;
 mod evidence;
 mod report;
+mod tasks;
 
 use std::{
     path::{Path, PathBuf},
@@ -15,6 +16,7 @@ use std::{
 
 use command::Cmd;
 use report::Report;
+use tasks::Task;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -52,13 +54,18 @@ fn root() -> PathBuf {
 
 fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
     let mut report = Report::new(args);
-    let command = args.first().map(String::as_str).unwrap_or("help");
-    match command {
-        "fmt" => {
+    let command = canonical_command(args.first().map(String::as_str));
+    let Some(task) = Task::parse(command) else {
+        return Err(format!(
+            "unknown command `{command}`; run `cargo xtask help`"
+        ));
+    };
+    match task {
+        Task::Fmt => {
             run(&mut report, root, &[Cmd::new("cargo fmt --all -- --check")])?;
             Ok(report)
         }
-        "lint" => {
+        Task::Lint => {
             run(
                 &mut report,
                 root,
@@ -68,7 +75,7 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             )?;
             Ok(report)
         }
-        "test" => {
+        Task::Test => {
             run(
                 &mut report,
                 root,
@@ -79,7 +86,7 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             )?;
             Ok(report)
         }
-        "docs" => {
+        Task::Docs => {
             run(
                 &mut report,
                 root,
@@ -92,11 +99,11 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             )?;
             Ok(report)
         }
-        "style" => {
+        Task::Style => {
             run(&mut report, root, &style_commands())?;
             Ok(report)
         }
-        "style-fix" => {
+        Task::StyleFix => {
             run(
                 &mut report,
                 root,
@@ -107,29 +114,34 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             )?;
             Ok(report)
         }
-        "e2e" => {
+        Task::E2e => {
             e2e::run(&mut report, root, &args[1..])?;
             Ok(report)
         }
-        "verify" => {
+        Task::Verify => {
             evidence::checks(&mut report, root)?;
             Ok(report)
         }
-        "perf" => {
+        Task::Perf => {
             let label = args.get(1).map(String::as_str).unwrap_or("local");
+            if !valid_label(label) {
+                return Err(format!(
+                    "invalid perf label `{label}`; use [a-z0-9][a-z0-9._-]*"
+                ));
+            }
             let line = format!("python3 scripts/measure_compile.py --label {label}");
             run(&mut report, root, &[Cmd::new(&line)])?;
             Ok(report)
         }
-        "fixtures" => {
+        Task::Fixtures => {
             evidence::verify(&mut report, root)?;
             Ok(report)
         }
-        "assure" => {
+        Task::Assure => {
             evidence::assure(&mut report, root)?;
             Ok(report)
         }
-        "check" => {
+        Task::Check => {
             run(&mut report, root, &style_commands())?;
             run(
                 &mut report,
@@ -145,7 +157,7 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             e2e::run(&mut report, root, &[])?;
             Ok(report)
         }
-        "ci" => {
+        Task::Ci => {
             run(&mut report, root, &style_commands())?;
             run(
                 &mut report,
@@ -167,11 +179,14 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
             e2e::run(&mut report, root, &[])?;
             Ok(report)
         }
-        "help" | "--help" | "-h" => {
-            println!("{HELP}");
+        Task::List => {
+            print!("{}", tasks::list());
             Ok(report)
         }
-        other => Err(format!("unknown command `{other}`; run `cargo xtask help`")),
+        Task::Help => {
+            print!("{}", tasks::help());
+            Ok(report)
+        }
     }
 }
 
@@ -195,6 +210,27 @@ fn style_commands() -> Vec<Cmd> {
     ]
 }
 
+/// Normalise CLI aliases to canonical task names.
+fn canonical_command(name: Option<&str>) -> &str {
+    match name {
+        None | Some("--help") | Some("-h") => "help",
+        Some("--list") => "list",
+        Some(other) => other,
+    }
+}
+
+/// Reject labels that could add arguments or shell metacharacters.
+fn valid_label(label: &str) -> bool {
+    let mut chars = label.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
 fn run(report: &mut Report, root: &Path, commands: &[Cmd]) -> Result<(), String> {
     for command in commands {
         let outcome = command.execute(root)?;
@@ -212,23 +248,37 @@ fn run(report: &mut Report, root: &Path, commands: &[Cmd]) -> Result<(), String>
     Ok(())
 }
 
-const HELP: &str = "\
-xtask - repository tasks
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-Usage: cargo xtask <command> [args]
+    #[test]
+    fn perf_label_accepts_safe_tokens() {
+        for label in ["local", "ci-1", "nightly.2", "a_b"] {
+            assert!(valid_label(label), "label `{label}` should be valid");
+        }
+    }
 
-Commands:
-  style     Python, shell, Makefile, JSON and Markdown style gates
-  style-fix apply the safe Python and Markdown style fixes
-  fmt       check formatting
-  lint      clippy with warnings denied
-  test      all-target and doc tests
-  docs      rustdoc with warnings denied and broken links rejected
-  e2e       run the curated e2e suites; --list-ignored lists opt-in tests
-  verify    matrix, architecture and generated-path gates
-  fixtures  verify checked-in journal fixtures
-  assure    run the assurance scripts
-  check     fmt, lint, tests, checks, e2e
-  ci        check plus release build (the full gate)
-  help      show this message
-";
+    #[test]
+    fn perf_label_rejects_injection() {
+        for label in ["", "--help", "a b", "a;b", "A", ".hidden", "-x"] {
+            assert!(!valid_label(label), "label `{label}` must be rejected");
+        }
+    }
+
+    #[test]
+    fn cli_aliases_normalise_to_registered_tasks() {
+        for (alias, expected) in [
+            (None, Task::Help),
+            (Some("--help"), Task::Help),
+            (Some("-h"), Task::Help),
+            (Some("--list"), Task::List),
+        ] {
+            assert_eq!(
+                Task::parse(canonical_command(alias)),
+                Some(expected),
+                "alias {alias:?} must map to {expected:?}"
+            );
+        }
+    }
+}
