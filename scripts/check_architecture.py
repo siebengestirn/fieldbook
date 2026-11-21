@@ -128,6 +128,7 @@ SOURCE_RESPONSIBILITIES = {
     "src/governance/modality.rs": "typed acquisition ports by modality, declared modality capabilities, validation and independent raw/record envelopes",
     "src/governance/coverage_certification.rs": "ordered coverage statuses, country dossiers, rights- and quality-gated certification and coverage matrix",
     "src/domain/event_model.rs": "universal typed event envelope with multi-role timestamps, provenance, quality state and domain payloads",
+    "src/domain/information.rs": "versioned institutional information payloads with bitemporal history, vintages, revisions and domain-specific structures",
     "src/integrity/quality.rs": "universal quality states, reason vocabulary, transition rules and two-sided reconciliation accounting",
     "src/domain/reference_data.rs": "effective-dated entity, venue, listing and specification graph with fail-closed identity resolution",
     "src/governance/rights.rs": "fail-closed licensing registry, usage rights, decisions and entitlement authorization",

@@ -25,6 +25,7 @@ pub use domain::canonical;
 pub use domain::event_model;
 pub use domain::fixed;
 pub use domain::identity;
+pub use domain::information;
 pub use domain::model;
 pub use domain::products;
 pub use domain::reference_data;
