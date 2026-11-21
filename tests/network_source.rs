@@ -89,6 +89,10 @@ impl MockServer {
                     let _ = stream.write_all(format!("{line}\n").as_bytes());
                     let _ = stream.flush();
                 }
+                // Keep the connection open briefly so the client drains all
+                // declared lines before teardown; this removes a scheduler
+                // race from the resume assertion without changing semantics.
+                std::thread::sleep(Duration::from_millis(25));
                 connections += 1;
             }
         });
