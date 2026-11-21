@@ -105,7 +105,7 @@ Annotated tags may be created only after the relevant milestone has landed on
 
 Never use `git push --force` or rewrite published commits.
 - Never merge a dependent branch before its foundational branch.
-- Never delete a branch merely because it looks old.
+- Never delete a branch solely because it looks old.
 - Never leave an outdated PR description after implementation changes.
 Never use a ZIP export or secondary working copy as Git history.
 Never let local `main` drift from `origin/main`.

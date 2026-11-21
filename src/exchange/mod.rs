@@ -143,7 +143,7 @@ pub trait Exchange: Send + Sync + 'static {
         ))
     }
 
-    /// Narrow one discovery round to the markets this collector actually
+    /// Narrow one discovery round to the markets this collector
     /// subscribes. The default keeps every discovered market; a venue whose
     /// runtime subscribes only a configured subset overrides it so metadata,
     /// desired subscriptions, acknowledgements and coverage all describe the

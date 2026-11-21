@@ -18,7 +18,7 @@ no per-worker percentile to combine.
 
 | Boundary | Start | End | Measured when |
 |---|---|---|---|
-| `core_processing` | Just before `CollectorCore::handle_event` (core admission in the coordinator event loop and drain loop) | Return of that call (state transition complete, outputs produced) | At least one normalized event is applied |
+| `core_processing` | Immediately before `CollectorCore::handle_event` (core admission in the coordinator event loop and drain loop) | Return of that call (state transition complete, outputs produced) | At least one normalized event is applied |
 | `writer_queue_wait` | `Instant` captured in `WriterHandle::send` when a reserved queue slot is filled (admission) | Writer thread dequeues the `WriterCommand::Message` | At least one message is admitted |
 | `sbe_write` | Entry to `MessageSink::write` on the writer thread | Return from `sink.write` | At least one SBE message is written (successful or failed) |
 | `flush` | Entry to `MessageSink::flush` for an explicit `Flush` command | Return from `sink.flush` | A flush was requested and completed |

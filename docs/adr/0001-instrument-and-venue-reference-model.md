@@ -207,7 +207,7 @@ A `MarketSegment` is a segment of a venue, where the venue has such a structure.
 It carries the segment MIC or venue-specific segment identifier and the rules
 that apply to listings in that segment. A venue has zero or more segments; the
 model must not invent a segment that the venue does not define and must not
-require one in order to create a listing.
+require one to create a listing.
 
 ### Listing
 
@@ -243,7 +243,7 @@ VenueInstrumentMapping:
 ```
 
 `ABC` on one venue and `ABC` on another are two mappings. They never collide
-merely because the text matches.
+because the text matches.
 
 The venue-assigned identifier is an assertion by the venue. It is not the same
 namespace as a provider symbol, even when a provider redistributes that venue's

@@ -2437,7 +2437,7 @@ impl<R: Read> JournalReader<R> {
             (8 + CHECKSUM_BYTES..=self.max_record_bytes).contains(&record_len),
             "record length {record_len} is outside the configured bound"
         );
-        // The checksum covers magic, encoded length and the full body. The
+        // The checksum covers magic, encoded length and the full body. The  # prose-audit-ignore: binary format magic-number field
         // two header-length fields already live inside that body.
         let total = RECORD_MAGIC.len() + 4 + record_len;
         self.buffer.resize(total, 0);
@@ -2642,7 +2642,7 @@ pub struct JournalPosition {
     /// Zero-based byte offset from the start of the segment record region,
     /// after the segment header.
     pub record_byte_offset: u64,
-    /// Length of the complete framed record, including magic, lengths and
+    /// Length of the complete framed record, including magic, lengths and  # prose-audit-ignore: binary format magic-number field
     /// checksum. The offset is relative to the segment record region.
     pub record_byte_length: u64,
 }

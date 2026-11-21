@@ -1,6 +1,6 @@
 //! Coverage certification for global sources, markets and instruments.
 //!
-//! A coverage record discloses what a source actually provides. Missing data
+//! A coverage record discloses what a source provides. Missing data
 //! is never represented as a zero value or as full coverage.
 
 use std::collections::BTreeMap;

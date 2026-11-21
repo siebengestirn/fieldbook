@@ -93,7 +93,7 @@ pub fn run(input: &Path, chunk_size: &str) -> anyhow::Result<VerifySummary> {
     let mut symbols = BTreeSet::new();
     let mut snapshots_seen: BTreeSet<String> = BTreeSet::new();
     // A snapshot mismatch is evidence of a lost or corrupted delta, so it can
-    // only be judged for a symbol whose book has actually been changed by
+    // only be judged for a symbol whose book has been changed by
     // deltas since its last authoritative snapshot. Snapshot-only venues
     // (Hyperliquid `l2Book`) legitimately replace the whole book on every push
     // without emitting any delta; treating that as a mismatch would flag every

@@ -659,7 +659,7 @@ impl MetricsRegistry {
         // authoritative catalog. A fully disconnected plane degrades
         // readiness; the REST reconciliation still bounds catalog divergence
         // to one discovery interval. Venues without a separate lifecycle
-        // channel report configured == 0 and pass trivially.
+        // channel report configured == 0 and pass without a lifecycle check.
         let lifecycle_ok = snapshot.lifecycle.configured == 0 || snapshot.lifecycle.connected > 0;
         checks.insert(
             "lifecycle".to_owned(),

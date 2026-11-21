@@ -195,6 +195,8 @@ fn dispatch(root: &Path, args: &[String]) -> Result<Report, String> {
 fn style_commands() -> Vec<Cmd> {
     vec![
         Cmd::new("python3 scripts/check_style.py"),
+        Cmd::new("python3 scripts/check_prose_unified.py --self-test"),
+        Cmd::new("python3 scripts/check_prose_unified.py"),
         Cmd::new("python3 scripts/ruff_gate.py ."),
         Cmd::new("python3 -m pyink --check --config pyproject.toml scripts"),
         Cmd::new("python3 scripts/check_q_style.py --self-test"),

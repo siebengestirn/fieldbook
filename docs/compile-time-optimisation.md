@@ -49,7 +49,7 @@ largest units are the application crate, `tokio`, `rustls`, `syn` and
 
 ## Rejected experiments
 
-These were measured and deliberately **not** committed:
+These were measured and **not** committed by design:
 
 | Experiment | Result | Decision |
 |---|---|---|

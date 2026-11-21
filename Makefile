@@ -42,6 +42,8 @@ q-check:
 	python3 scripts/check_q_style.py --self-test
 
 standards-check:
+	python3 scripts/check_prose_unified.py --self-test
+	python3 scripts/check_prose_unified.py
 	python3 scripts/check_quality_contract.py --self-test
 	python3 scripts/check_quality_contract.py
 	python3 scripts/check_license_provenance.py --self-test

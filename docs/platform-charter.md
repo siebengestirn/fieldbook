@@ -4,7 +4,7 @@ This document defines the target domain and adapter boundaries for the
 platform. It is a design decision, not a description of current support.
 [`architecture.md`](architecture.md) remains the authoritative description of
 the implemented system, and [`requirement-test-matrix.md`](requirement-test-matrix.md)
-remains the evidence index for what is actually tested.
+remains the evidence index for what is tested.
 
 The current implementation is a prediction-market collector built on reusable
 market-data infrastructure. Kalshi and Polymarket are its first connectors and
@@ -269,7 +269,7 @@ the event model.
 
 Choose the first traditional-market connector only after checking feed access,
 entitlement terms, protocol documentation, and test-data availability. Do not
-add an adapter merely to increase the connector count.
+add an adapter to increase the connector count.
 
 Do not begin instrument-model refactoring until these boundaries and
 compatibility rules are written and reviewed.
@@ -309,6 +309,6 @@ fixed-scale gaps: `Price` and `Quantity` are signed `i64` coefficients,
 and `OrderBook` no longer imposes `[0, 1]`. The `[0, 1]` check remains only in
 the Kalshi and Polymarket adapters.
 
-Closing these gaps changes the domain model, not just documentation. Until then,
+Closing these gaps changes the domain model, not docs alone. Until then,
 the platform is a prediction-market collector with reusable infrastructure, and
 this charter is the reviewed target it is being moved toward.
